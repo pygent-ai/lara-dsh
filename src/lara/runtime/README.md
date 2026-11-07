@@ -16,6 +16,8 @@ Owns model execution, tool execution, context management, and the high-level run
   source of execution-scoped facts. It carries session/case/run/turn identity,
   model projection, complete persisted history, and deferred file-effect jobs.
 - `context_compression.py`: model-context compaction.
+- `fork_context.py`: shared live/frozen session fork windows for realtime
+  fork-replies and memory extraction.
 - `reminders/`: session bootstrap, Git/CLI/Skill observations, and the persistent
   Agent-message inbox. Rendered runtime context and Agent messages are nested XML,
   so the reminder module appends both directly to `ToolMessage.content`; Pygent's

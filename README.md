@@ -92,8 +92,12 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
 ## 溯源
 
 - 抽取自 `C:\Projects\lara`（lara 0.3.3，pygent-ai 0.3.33）。
-- 修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与 `cli/main.py`、
-  新增 `src/standard_agent/`、tests 与示例；`src/lara` 其余代码为原样副本
-  （仅修正文档/注释）。
+- 抽取时修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与 `cli/main.py`、
+  新增 `src/standard_agent/`、tests 与示例；`src/lara` 其余代码为抽取时的
+  原样副本。
+- 功能演进（有意偏离上游忠实副本）：新增
+  `src/lara/runtime/fork_context.py`，以 `session_fork_window()` 统一实时
+  fork-reply 的 live 上下文与 memory extractor 的 frozen 上下文；`service.py`
+  实时路径与 extractor 改走该入口，`agents` 包仍不依赖 runtime。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更（副本内避免就地魔改，
   保持"梳理副本 + 标准接口层"的分层）。

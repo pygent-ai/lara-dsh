@@ -63,12 +63,10 @@ from lara.agents import (
     ChildSpec,
     ForkAgent,
     ForkSpec,
-    StaticContextSource,
     ToolProfile,
     ToolRegistry,
     ToolkitToolSurface,
     build_model_layer_factory,
-    messages_from_history,
 )
 from lara.core.io import aclose_if_supported, plain_object, read_json, write_json
 from lara.runtime.attachments import (
@@ -93,7 +91,6 @@ from lara.tracing import DIFF_TOOL_SPEC, DiffTool, EventStore
 
 from .agent.common import (
     DEFAULT_REACT_MAX_STEPS,
-    _initial_lara_context,
     _to_pygent_message,
 )
 from .agent.core import (
@@ -102,10 +99,7 @@ from .agent.core import (
     SessionCompressionModule,
     model_retry_policy,
 )
-from .agent.pipeline import (
-    checkpoint_conversation_message,
-    render_model_request_text,
-)
+from .agent.pipeline import checkpoint_conversation_message
 from .realtime.fork_agent import ForkReplyModule, outcome_from_result
 from .realtime.fork_reply import build_fork_context
 from .realtime.posting import queue_exchange_envelope
@@ -128,6 +122,11 @@ from .eternal_conversation import (
     render_memory_snapshot,
 )
 from .file_effects import FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor
+from .fork_context import (
+    SessionForkWindowSource,
+    restore_session_context,
+    session_fork_window,
+)
 from .model_configuration import preferred_models, preferred_profile_name
 
 if TYPE_CHECKING:
@@ -1169,17 +1168,16 @@ class LaraRuntimeService:
             eternal_memory_enabled=eternal_enabled_for(session, config),
             realtime_interaction_enabled=True,
         )
-        fork_context = self._restored_session_context(
+        fork_window = session_fork_window(
+            mode="live",
+            config=config,
             session=session,
             run_ref=run_ref,
             turn_id=f"fork:{input_id}",
-            config=config,
-            carry_context=True,
         )
-        system_prompt = render_model_request_text(config, fork_context, None)
         request = build_fork_context(
-            system_prompt=system_prompt,
-            messages=tuple(fork_context.messages),
+            system_prompt=fork_window.system_prompt,
+            messages=fork_window.messages,
             tools=main_agent.tool_definitions,
         )
         fork_agent = self._fork_agent(
@@ -1466,44 +1464,14 @@ class LaraRuntimeService:
         config: RunConfig,
         carry_context: bool = True,
     ) -> LaraContext:
-        """Rebuild one session projection from its durable checkpoint and tail."""
+        """Rebuild one session projection for main turns and compression."""
 
-        memory_projection = (
-            load_projection(session.session_dir) if carry_context else {}
-        )
-        lara_context = LaraContext(
-            session_id=session.session_id,
-            case_id=run_ref.case_id,
-            case_run_id=run_ref.case_run_id,
-            run_dir=run_ref.run_dir,
+        return restore_session_context(
+            session=session,
+            run_ref=run_ref,
             turn_id=turn_id,
-            system_prompt=session.system_prompt,
-            eternal_memory_enabled=eternal_enabled_for(session, config),
-            memory_covered_through=int(
-                memory_projection.get("covered_through") or 0
-            ),
-            memory_projection=freeze_json_object(memory_projection),
-            raw_history_location=str(
-                Path(session.session_dir) / "raw-history" / "events.jsonl"
-            ),
-        )
-        history, _ = _initial_lara_context(
-            context=lara_context,
-            history=session.history,
-            checkpoint=session.metadata.get("agent_context"),
-            checkpoint_history_count=session.metadata.get(
-                "agent_context_history_count"
-            ),
-        )
-        return replace(
-            history,
-            metadata={
-                "session_id": run_ref.session_id,
-                "case_run_id": run_ref.case_run_id,
-                "persist_conversation_history": carry_context,
-                "model_group_name": session.model_group_name,
-                "selected_model_key": session.selected_model_key,
-            },
+            config=config,
+            carry_context=carry_context,
         )
 
     async def _prepare_turn(
@@ -1683,12 +1651,15 @@ class LaraRuntimeService:
                 label=request.label,
             )
             if request.role == "extractor":
-                source = StaticContextSource(
+                window = session_fork_window(
+                    mode="frozen",
                     system_prompt=request.system_prompt,
-                    messages=messages_from_history(request.history_range),
+                    history_range=request.history_range,
                 )
                 result = await ForkAgent(
-                    runner, ForkSpec(source=source), label=request.label
+                    runner,
+                    ForkSpec(source=SessionForkWindowSource(window)),
+                    label=request.label,
                 ).run(request.directive)
                 return result.text
             child = ChildAgent(
