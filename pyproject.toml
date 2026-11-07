@@ -1,0 +1,49 @@
+[project]
+name = "lara-agent"
+version = "0.1.0"
+description = "Standalone agent runtime extracted from the lara project (complete agent implementation)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dynamic-memory-cli",
+    "pygent-ai[video]==0.3.33",
+    "python-dateutil>=2.9.0",
+    "tzdata>=2025.2",
+    "tzlocal>=5.2",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.400",
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.23.0",
+]
+credentials = [
+    "keyring>=25.0.0",
+]
+
+[tool.uv.sources]
+# 永续会话的动态记忆 CLI 依赖（与原仓一致的分支锁定）。
+dynamic-memory-cli = { git = "https://github.com/pygent-ai/memory-cli", branch = "codex/dynamic-memory-cli" }
+
+[project.scripts]
+lara = "lara.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lara", "standard_agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+# 本机验证环境：暂用原 lara 项目的 venv（内含 pygent/凭据组）；
+# 独立 `uv sync` 之后可删去 venvPath/venv 两行。
+[tool.pyright]
+include = ["standard_agent", "tests", "examples"]
+venvPath = "C:/Projects/lara"
+venv = ".venv"
