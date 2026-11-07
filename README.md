@@ -2,7 +2,7 @@
 
 从 lara 项目**完整抽取的独立 agent 实现仓**。本仓自包含：不依赖原 lara 仓
 （无路径依赖、无 import 引用），`src/lara` 是 lara agent 运行时的完整代码
-梳理副本，`standard_agent` 是其上的标准接口层。
+梳理副本，`src/standard_agent` 是其上的标准接口层。统一 src 布局。
 
 ## 抽取范围
 
@@ -73,12 +73,14 @@ uv run python -m examples.run_lara_session_agent    # 真实运行时示例（�
 
 # 本机开发期验证也可复用原 lara 的 venv（pyproject 已注明）：
 C:\Projects\lara\.venv\Scripts\python.exe -m pytest -q
+# 该方式未安装本仓，裸跑示例需自带 src 到 sys.path：
+set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_simple_agent
 ```
 
 ## 溯源
 
 - 抽取自 `C:\Projects\lara`（lara 0.3.3，pygent-ai 0.3.33）。
 - 修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与 `cli/main.py`、
-  新增 `standard_agent/`、tests 与示例；`src/lara` 其余代码为原样副本。
+  新增 `src/standard_agent/`、tests 与示例；`src/lara` 其余代码为原样副本。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更（副本内避免就地魔改，
   保持"梳理副本 + 标准接口层"的分层）。
