@@ -16,9 +16,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from pygent import freeze_json_object
+from pygent.core import JsonValue
 
 from lara.agents.context import ContextWindow, messages_from_history
 from lara.schema import AgentSession, CaseRunRef, RunConfig
@@ -117,7 +118,9 @@ def session_fork_window(
         return ContextWindow(
             system_prompt=render_model_request_text(config, context, None),
             messages=tuple(context.messages),
-            metadata=dict(context.metadata),
+            # LaraContext.metadata 类型标注是 Mapping[str, object]，但实际只存
+            # FrozenJsonObject（JSON）值；与 AgentRunResult.window() 同一处理。
+            metadata=cast("Mapping[str, JsonValue]", dict(context.metadata)),
         )
     if mode == "frozen":
         if system_prompt is None or not system_prompt.strip():
