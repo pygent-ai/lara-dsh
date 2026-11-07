@@ -1,6 +1,6 @@
 """standard_agent 试点实现的单元测试。
 
-沿用 lara/tests/unit/test_lara_agents.py 的假模型手法：脚本化 ``Module``
+沿用 tests/test_lara_agents.py 的假模型手法：脚本化 ``Module``
 驱动 pygent ReAct 循环，不访问网络。
 """
 
@@ -69,14 +69,14 @@ class _ScriptedModel(Module[Message, AIMessage]):
 
 
 @tool(
-    tool_id="standard-agent.test.echo",
+    tool_id="lara-agent.test.echo",
     version="1.0.0",
     side_effect=ToolSideEffect.PURE,
     idempotency=IdempotencyPolicy.INHERENT,
     name="echo",
     description="Echo the given text back.",
     timeout=30,
-    resource_key="standard-agent-test",
+    resource_key="lara-agent-test",
     required_permissions=(),
 )
 async def echo(text: str) -> str:
@@ -115,13 +115,37 @@ def _tool_call_answer(call_id: str = "t1", text: str = "hi") -> AIMessage:
 
 
 async def test_simple_agent_without_tools_returns_text() -> None:
-    agent, _model = _agent([AIMessage(content="done")], with_tools=False)
+    agent, model = _agent([AIMessage(content="done")], with_tools=False)
 
     result = await agent.run("hello")
 
     assert result.text == "done"
     assert result.label == "simple-agent.greeter"
     assert isinstance(result, AgentResult)
+    # 输入未覆盖时回退到 spec 的系统提示词。
+    assert model.state.seen[0][1].system_prompt == "You are a standard agent."
+
+
+async def test_simple_agent_input_overrides_spec_prompt_and_label() -> None:
+    model = _ScriptedModel([AIMessage(content="overridden")])
+    engine = PygentEngine(model_factory=lambda _definitions: model)
+    agent = SimpleAgent(
+        SimpleAgentSpec(name="greeter", system_prompt="spec prompt"),
+        engine=engine,
+        label="default-label",
+    )
+
+    result = await agent.run(
+        AgentInput(
+            message="hi",
+            system_prompt="request prompt",
+            label="turn-label",
+        )
+    )
+
+    assert result.text == "overridden"
+    assert result.label == "turn-label"
+    assert model.state.seen[0][1].system_prompt == "request prompt"
 
 
 async def test_simple_agent_satisfies_standard_protocol() -> None:
