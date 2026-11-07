@@ -6,7 +6,8 @@
 
 接入真实模型时，把 ``model_factory`` 换成
 ``build_model_layer_factory(invoker, model_group_name=..., models=...)``
-的产物即可，其余接线完全不变（见 README「接入真实模型」）。
+的产物即可，其余接线完全不变（见
+``standard_agent.engine.build_model_layer_factory``）。
 """
 
 from __future__ import annotations
@@ -62,14 +63,14 @@ class _ScriptedModel(Module[Message, AIMessage]):
 
 
 @tool(
-    tool_id="standard-agent.example.echo",
+    tool_id="lara-agent.example.echo",
     version="1.0.0",
     side_effect=ToolSideEffect.PURE,
     idempotency=IdempotencyPolicy.INHERENT,
     name="echo",
     description="Echo the given text back.",
     timeout=30,
-    resource_key="standard-agent-example",
+    resource_key="lara-agent-example",
     required_permissions=(),
 )
 async def echo(text: str) -> str:

@@ -2,8 +2,8 @@
 
 本示例会发起**真实模型调用**（凭据来自 ~/.lara 的用户配置），请确认后再跑：
 
-    cd C:\\Projects\\standard-agent
-    C:\\Projects\\lara\\.venv\\Scripts\\python.exe -m examples.run_lara_session_agent
+    cd C:\\Projects\\lara-agent
+    uv run python -m examples.run_lara_session_agent
 
 演示内容：
 1. 多轮 chat 会话（LaraAgent harness + 持久上下文），开启永续会话；
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 
-from standard_agent.lara_rt import LaraSessionAgent
+from standard_agent.lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
 
 
 async def main() -> None:
