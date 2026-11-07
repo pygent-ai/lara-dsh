@@ -108,7 +108,7 @@ class ToolkitToolSurface:
             return ToolAuthorizationDecision(
                 call_id=request.call.call_id,
                 allowed=True,
-                reason_code="standard-agent-uniform-tool-surface",
+                reason_code="lara-uniform-tool-surface",
             )
 
         return self._toolkit.local_layer(authorization_adapter=authorize)
@@ -196,7 +196,7 @@ class PygentEngine:
                 )
             surface = self._registry.resolve(profile)
         limits = request.limits if request.limits is not None else self._limits
-        label = request.label or "standard-agent"
+        label = request.label or "lara-agent"
         definitions = surface.definitions if surface is not None else ()
         system_prompt = (
             prefix.system_prompt if prefix is not None else request.system_prompt
@@ -216,7 +216,8 @@ class PygentEngine:
             max_model_calls=limits.max_model_calls,
             max_tool_calls=limits.max_tool_calls,
         )
-        metadata: dict[str, JsonValue] = {"standard_agent.label": label}
+        # 与 lara 运行时的 metadata 键惯例对齐（runner/fork 同用此键）。
+        metadata: dict[str, JsonValue] = {"lara.agent.label": label}
         if prefix is not None:
             metadata = {**dict(prefix.metadata), **metadata}
         context = agent.new_context(tools=definitions, metadata=metadata)

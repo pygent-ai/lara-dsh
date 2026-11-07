@@ -88,7 +88,7 @@ class LaraSessionAgent:
             raise RuntimeError("LaraSessionAgent is already started")
         if self._session_id is None:
             self._session_id = self._manager.create(
-                "standard-agent", mode=self._mode
+                "lara", mode=self._mode
             ).session_id
         else:
             self._manager.load(self._session_id)
