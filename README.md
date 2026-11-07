@@ -1,5 +1,11 @@
 # lara-agent
 
+这个仓里的 agent 叫 **Lara**。它的名字不是标签，而是原理：`src/lara` 就是
+Lara 的完整实现——主 agent harness、会话上下文、永续会话、实时对话、ReAct
+脚手架与统一工具面。prompt 层的自我认知与之对应（`runtime/agent/prompt_sources.py`）：
+
+> "You are Lara, an interactive coding agent for software engineering work."
+
 从 lara 项目**完整抽取的独立 agent 实现仓**。本仓自包含：不依赖原 lara 仓
 （无路径依赖、无 import 引用），`src/lara` 是 lara agent 运行时的完整代码
 梳理副本，`src/standard_agent` 是其上的标准接口层。统一 src 布局。

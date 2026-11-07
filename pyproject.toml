@@ -1,7 +1,7 @@
 [project]
 name = "lara-agent"
 version = "0.1.0"
-description = "Standalone agent runtime extracted from the lara project (complete agent implementation)"
+description = "Lara — a standalone agent implementation: the complete agent runtime extracted from the lara project"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
