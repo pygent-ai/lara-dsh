@@ -2,12 +2,12 @@
 
 这个仓里的 agent 叫 **Lara**。它的名字不是标签，而是原理：`src/lara` 就是
 Lara 的完整实现——主 agent harness、会话上下文、永续会话、实时对话、ReAct
-脚手架与统一工具面。prompt 层的自我认知与之对应（`runtime/agent/prompt_sources.py`）：
+脚手架与统一工具面。prompt 层的自我认知与之对应（`src/lara/runtime/agent/prompt_sources.py`）：
 
 > "You are Lara, an interactive coding agent for software engineering work."
 
-从 lara 项目**完整抽取的独立 agent 实现仓**。本仓自包含：不依赖原 lara 仓
-（无路径依赖、无 import 引用），`src/lara` 是 lara agent 运行时的完整代码
+从 lara 项目**完整抽取的独立 agent 实现仓**。本仓运行时自包含：不依赖原
+lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent 运行时的完整代码
 梳理副本，`src/standard_agent` 是其上的标准接口层。统一 src 布局。
 
 ## 抽取范围
@@ -31,7 +31,13 @@ Lara 的完整实现——主 agent harness、会话上下文、永续会话、�
 脚手架（BenchRunner/swe-smoke）。`lara/__init__.py` 与 `cli/main.py` 已相应
 瘦身（CLI 仅保留 session / credentials / projects 子命令）。
 
-**import 包名保持 `lara` 不变**——被复制的模块一行未改，保证与原仓行为一致。
+**已知的上游残留（未就地修改，以保持副本可对照）：** `src/lara` 的 prompt
+与部分 docstring 仍提到上游的 `lara automation` 子命令、`lara_api` 适配层和
+`docs/design/...` 设计文档；这些能力/文档在本仓已裁剪或未包含。需要自动化
+或 API 能力时请使用原 lara 仓。
+
+**import 包名保持 `lara` 不变**——除上述瘦身与文档修正外，被复制的代码
+保持原样，以对齐原仓行为。
 注意：本仓与原 lara 仓不能装进同一个 Python 环境（包名冲突）。
 
 ## 标准接口层（`standard_agent`）
@@ -64,7 +70,7 @@ async with LaraSessionAgent(mode=REALTIME_SESSION_MODE) as rt: ...
 也可以直接用抽取版 CLI（会话聊天驱动）：
 
 ```bash
-python -m lara session chat --help
+uv run lara session chat --help
 ```
 
 ## 快速开始
@@ -87,6 +93,7 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
 
 - 抽取自 `C:\Projects\lara`（lara 0.3.3，pygent-ai 0.3.33）。
 - 修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与 `cli/main.py`、
-  新增 `src/standard_agent/`、tests 与示例；`src/lara` 其余代码为原样副本。
+  新增 `src/standard_agent/`、tests 与示例；`src/lara` 其余代码为原样副本
+  （仅修正文档/注释）。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更（副本内避免就地魔改，
   保持"梳理副本 + 标准接口层"的分层）。

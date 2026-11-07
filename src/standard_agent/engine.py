@@ -1,6 +1,6 @@
 """standard_agent.engine — pygent 引擎适配层。
 
-把 lara/src/lara/agents/runner.py（``AgentRunner`` 调用缝）梳理为独立引擎：
+把 src/lara/agents/runner.py（``AgentRunner`` 调用缝）梳理为独立引擎：
 
 - :class:`ToolSurface` / :class:`ToolRegistry` / :class:`ToolkitToolSurface`:
   统一工具面（G4），工具定义与执行始终来自同一来源。
