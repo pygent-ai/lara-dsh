@@ -99,5 +99,6 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   `src/lara/runtime/fork_context.py`，以 `session_fork_window()` 统一实时
   fork-reply 的 live 上下文与 memory extractor 的 frozen 上下文；`service.py`
   实时路径与 extractor 改走该入口，`agents` 包仍不依赖 runtime。
-- 后续同步策略：以原仓为上游，按模块对照搬运变更（副本内避免就地魔改，
-  保持"梳理副本 + 标准接口层"的分层）。
+- 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
+  魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 标准接口层"
+  的分层。
