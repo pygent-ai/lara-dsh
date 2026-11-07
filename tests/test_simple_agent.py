@@ -69,14 +69,14 @@ class _ScriptedModel(Module[Message, AIMessage]):
 
 
 @tool(
-    tool_id="lara-agent.test.echo",
+    tool_id="lara.test.echo",
     version="1.0.0",
     side_effect=ToolSideEffect.PURE,
     idempotency=IdempotencyPolicy.INHERENT,
     name="echo",
     description="Echo the given text back.",
     timeout=30,
-    resource_key="lara-agent-test",
+    resource_key="lara-agents-test",
     required_permissions=(),
 )
 async def echo(text: str) -> str:

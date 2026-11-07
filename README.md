@@ -1,4 +1,4 @@
-# lara-agent
+# Lara
 
 这个仓里的 agent 叫 **Lara**。它的名字不是标签，而是原理：`src/lara` 就是
 Lara 的完整实现——主 agent harness、会话上下文、永续会话、实时对话、ReAct
@@ -36,7 +36,7 @@ lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent �
 `docs/design/...` 设计文档；这些能力/文档在本仓已裁剪或未包含。需要自动化
 或 API 能力时请使用原 lara 仓。
 
-**import 包名保持 `lara` 不变**——除上述瘦身与文档修正外，被复制的代码
+**发行名与 import 包名统一为 `lara`**——除上述瘦身与文档修正外，被复制的代码
 保持原样，以对齐原仓行为。
 注意：本仓与原 lara 仓不能装进同一个 Python 环境（包名冲突）。
 

@@ -1,4 +1,4 @@
-"""lara — 从 lara 项目抽取的完整 agent 实现（独立仓 lara-agent）。
+"""lara — 从 lara 项目抽取的完整 agent 实现（独立仓 lara）。
 
 本仓只保留 agent 运行时相关子系统：agents（ReAct 脚手架）、runtime（前台
 harness、管线、永续会话、实时对话）、sessions、orchestration、schema、

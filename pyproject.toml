@@ -1,5 +1,5 @@
 [project]
-name = "lara-agent"
+name = "lara"
 version = "0.1.0"
 description = "Lara — a standalone agent implementation: the complete agent runtime extracted from the lara project"
 readme = "README.md"

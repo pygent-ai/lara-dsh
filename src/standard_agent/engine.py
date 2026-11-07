@@ -196,7 +196,7 @@ class PygentEngine:
                 )
             surface = self._registry.resolve(profile)
         limits = request.limits if request.limits is not None else self._limits
-        label = request.label or "lara-agent"
+        label = request.label or "lara"
         definitions = surface.definitions if surface is not None else ()
         system_prompt = (
             prefix.system_prompt if prefix is not None else request.system_prompt
