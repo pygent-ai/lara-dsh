@@ -8,7 +8,7 @@ only as :class:`~lara.agents.runner.ToolProfile` references into a
 composition-root :class:`~lara.agents.runner.ToolRegistry` — no agent can
 submit executable tool modules.
 
-Eternal conversation will build on this scaffold; nothing in this package
+Eternal conversation builds on this scaffold; nothing in this package
 depends on the durable runtime.
 """
 
