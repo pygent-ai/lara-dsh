@@ -5,8 +5,9 @@ import hashlib
 import json
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from lara.core.io import validate_path_id
 from lara.dispatch import DispatchOperationView, DispatchStore
@@ -21,6 +22,23 @@ from lara.sessions import (
 )
 
 Item = AgentMessage | CollaborationOperation | DispatchOperationView
+_WaitItem = TypeVar("_WaitItem", bound=Item)
+
+
+async def _wait_until_done(
+    fetch: Callable[[], Awaitable[_WaitItem]],
+    *,
+    poll_interval: float,
+    timeout: float | None,
+) -> _WaitItem:
+    async def _wait() -> _WaitItem:
+        while True:
+            item = await fetch()
+            if item.done:
+                return item
+            await asyncio.sleep(poll_interval)
+
+    return await _wait() if timeout is None else await asyncio.wait_for(_wait(), timeout)
 
 
 class SessionCollaborationService:
@@ -185,19 +203,11 @@ class SessionCollaborationService:
         message_id: str,
         timeout: float | None = None,
     ) -> AgentMessage:
-        async def _wait() -> AgentMessage:
-            while True:
-                message = await self.message_status(
-                    config=config, message_id=message_id
-                )
-                if message.done:
-                    return message
-                await asyncio.sleep(self.poll_interval)
+        async def fetch() -> AgentMessage:
+            return await self.message_status(config=config, message_id=message_id)
 
-        return (
-            await _wait()
-            if timeout is None
-            else await asyncio.wait_for(_wait(), timeout)
+        return await _wait_until_done(
+            fetch, poll_interval=self.poll_interval, timeout=timeout
         )
 
     async def item_status(
@@ -270,17 +280,11 @@ class SessionCollaborationService:
         operation_id: str,
         timeout: float | None = None,
     ) -> CollaborationOperation | DispatchOperationView:
-        async def _wait() -> CollaborationOperation | DispatchOperationView:
-            while True:
-                operation = await self.status(config=config, operation_id=operation_id)
-                if operation.done:
-                    return operation
-                await asyncio.sleep(self.poll_interval)
+        async def fetch() -> CollaborationOperation | DispatchOperationView:
+            return await self.status(config=config, operation_id=operation_id)
 
-        return (
-            await _wait()
-            if timeout is None
-            else await asyncio.wait_for(_wait(), timeout)
+        return await _wait_until_done(
+            fetch, poll_interval=self.poll_interval, timeout=timeout
         )
 
     async def aclose(self) -> None:
