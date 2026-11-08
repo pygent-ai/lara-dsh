@@ -105,10 +105,6 @@ class DeferredFileEffectBatch:
             turn_id=turn_id,
         )
 
-    @property
-    def tool_call_ids(self) -> list[str]:
-        return [job.tool_call_id for job in self.jobs]
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "batch_id": self.batch_id,

@@ -623,13 +623,6 @@ def _normalize_user_path(path: str | Path) -> str | Path:
     return f"{drive.upper()}:/{suffix}" if suffix else f"{drive.upper()}:/"
 
 
-def _hash_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
 
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
