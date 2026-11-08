@@ -393,7 +393,9 @@ class LaraAgent(Agent[UserMessage, AIMessage]):
                     reminders=RuntimeReminderModule(self.reminders),
                     persisted_diff=PersistedDiffModule(self.workspace_root, diff_tasks),
                     realtime_nudge=(
-                        RealtimeNudgeModule()
+                        RealtimeNudgeModule(
+                            interval=self.config.realtime_interaction.nudge_interval
+                        )
                         if self.realtime_interaction_enabled
                         else None
                     ),
