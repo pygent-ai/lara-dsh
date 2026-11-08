@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import time
 import warnings
@@ -146,14 +145,10 @@ PROJECTION_READY_INPUT_ID_METADATA_KEY = "projection_replacement_ready_input_id"
 
 
 def _config_fingerprint(config: RunConfig) -> str:
-    payload = config.to_dict()
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    # Imported lazily: lara.orchestration imports runtime.service at package load.
+    from lara.orchestration.runtime_keys import RuntimeGenerationKey
+
+    return RuntimeGenerationKey.from_config(config).config_fingerprint
 
 
 def _uncovered_conversation_messages(
