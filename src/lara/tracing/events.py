@@ -380,8 +380,23 @@ def _find_session_dir(run_dir: Path) -> Path | None:
     return None
 
 
+_INVALID_FILE_NAME_CHARS = frozenset('<>:"/\\|?*')
+
+
 def _turn_file_name(turn_id: str | None) -> str:
-    return str(turn_id or "turn-unknown")
+    """Sanitize a turn id for prompt files while metadata keeps the original.
+
+    Realtime supersede turns are named ``fork:<input>:g<generation>``; colons
+    are invalid in Windows file names, so the persisted prompt path must not
+    embed the raw turn id.
+    """
+
+    raw = str(turn_id or "turn-unknown")
+    sanitized = "".join(
+        "-" if char in _INVALID_FILE_NAME_CHARS or ord(char) < 32 else char
+        for char in raw
+    ).strip(" .")
+    return sanitized or "turn-unknown"
 
 
 def _next_jsonl_seq(path: Path) -> int:
