@@ -192,12 +192,7 @@ class EventStore:
         run_text_path = run_prompt_dir / f"{prompt_file_name}.txt"
         run_metadata_path = run_prompt_dir / f"{prompt_file_name}.json"
         prompt_metadata = {
-            "event_id": event.id,
-            "session_id": event.session_id,
-            "case_id": event.case_id,
-            "case_run_id": event.case_run_id,
-            "turn_id": event.turn_id,
-            "created_at": event.timestamp,
+            **_event_envelope(event),
             "prompt_hash": event.payload.get("prompt_hash"),
             "module_ids": event.payload.get("module_ids", []),
             "static_module_ids": event.payload.get("static_module_ids", []),
@@ -267,16 +262,22 @@ class EventStore:
         if event_type not in LARA_EVENT_TYPES:
             raise ValueError(f"Unsupported event type: {event_type}")
 
-def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
-    record = {
+def _event_envelope(event: ContextEvent) -> dict[str, Any]:
+    return {
         "event_id": event.id,
         "session_id": event.session_id,
         "case_id": event.case_id,
         "case_run_id": event.case_run_id,
         "turn_id": event.turn_id,
+        "created_at": event.timestamp,
+    }
+
+
+def _tool_call_record(event: ContextEvent) -> dict[str, Any]:
+    record = {
+        **_event_envelope(event),
         "tool_name": event.payload.get("tool_name"),
         "args": event.payload.get("args", {}),
-        "created_at": event.timestamp,
     }
     if event.payload.get("model_tool_call_id") is not None:
         record["model_tool_call_id"] = event.payload.get("model_tool_call_id")
@@ -290,28 +291,18 @@ def _clone_event(event: ContextEvent) -> ContextEvent:
 def _message_record(event: ContextEvent) -> dict[str, Any]:
     return {
         **event.payload,
-        "event_id": event.id,
-        "session_id": event.session_id,
-        "case_id": event.case_id,
-        "case_run_id": event.case_run_id,
-        "turn_id": event.turn_id,
+        **_event_envelope(event),
         "role": event.payload.get("role", event.actor),
         "content": event.payload.get("content", ""),
-        "created_at": event.timestamp,
     }
 
 
 def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
     record = {
-        "event_id": event.id,
-        "session_id": event.session_id,
-        "case_id": event.case_id,
-        "case_run_id": event.case_run_id,
-        "turn_id": event.turn_id,
+        **_event_envelope(event),
         "tool_call_id": event.payload.get("tool_call_id"),
         "status": event.payload.get("status", "success"),
         "result": event.payload.get("result"),
-        "created_at": event.timestamp,
     }
     if event.payload.get("error") is not None:
         record["error"] = event.payload.get("error")
@@ -329,15 +320,10 @@ def _tool_result_record(event: ContextEvent) -> dict[str, Any]:
 
 def _file_event_record(event: ContextEvent) -> dict[str, Any]:
     return {
-        "event_id": event.id,
-        "session_id": event.session_id,
-        "case_id": event.case_id,
-        "case_run_id": event.case_run_id,
-        "turn_id": event.turn_id,
+        **_event_envelope(event),
         "type": event.type,
         "path": event.payload.get("path"),
         "content_hash": event.payload.get("content_hash"),
-        "created_at": event.timestamp,
         "payload": event.payload,
     }
 
@@ -345,11 +331,7 @@ def _file_event_record(event: ContextEvent) -> dict[str, Any]:
 def _diff_event_record(event: ContextEvent) -> dict[str, Any]:
     payload = event.payload
     return {
-        "event_id": event.id,
-        "session_id": event.session_id,
-        "case_id": event.case_id,
-        "case_run_id": event.case_run_id,
-        "turn_id": event.turn_id,
+        **_event_envelope(event),
         "diff_id": payload.get("diff_id"),
         "tool_call_id": payload.get("tool_call_id"),
         "tool_name": payload.get("tool_name"),
@@ -369,7 +351,6 @@ def _diff_event_record(event: ContextEvent) -> dict[str, Any]:
         "additions": payload.get("additions"),
         "deletions": payload.get("deletions"),
         "patch_unavailable_reason": payload.get("patch_unavailable_reason"),
-        "created_at": event.timestamp,
     }
 
 
