@@ -1,24 +1,16 @@
 """lara_sdk — lara 的对外使用契约与入口。
 
-分层：
+``lara`` 是完整实现（agent 构造、runner、运行时）；``lara_sdk`` 只描述调用方
+如何**使用** agent：
 
-- ``interfaces``: 框架无关的标准接口（Agent 协议、AgentInput/AgentResult、
-  ToolProfile、AgentLimits）。
-- ``engine``: pygent 引擎适配（ToolSurface/ToolRegistry、ContextWindow、
-  PygentEngine、生产模型层工厂）。
-- ``simple_agent``: 试点实现（SimpleAgent，独立 agent 语义，对应 lara ChildAgent）。
-- ``lara_rt``: 真实 lara 运行时适配（LaraSessionAgent、永续会话与实时对话开关）。
+- ``interfaces``: 框架无关的标准协议与数据契约（Agent 协议、
+  AgentInput/AgentResult、ToolProfile、AgentLimits）。
+- ``lara_rt``: 真实 lara 运行时适配器（LaraSessionAgent、永续会话与实时对话）。
+
+本层不提供 agent 构造或试点实现；需要构造 agent 时使用 ``lara`` 的实现层
+（如 ``lara.agents.runner.AgentRunner`` / ``lara.agents.ChildAgent``）。
 """
 
-from .engine import (
-    ContextWindow,
-    ModelFactory,
-    PygentEngine,
-    ToolRegistry,
-    ToolSurface,
-    ToolkitToolSurface,
-    build_model_layer_factory,
-)
 from .interfaces import (
     Agent,
     AgentInput,
@@ -27,22 +19,15 @@ from .interfaces import (
     DISABLED_COMPRESSION_WINDOW_TOKENS,
     ToolProfile,
 )
-from .simple_agent import SimpleAgent, SimpleAgentSpec
+from .lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
 
 __all__ = [
     "DISABLED_COMPRESSION_WINDOW_TOKENS",
+    "REALTIME_SESSION_MODE",
     "Agent",
     "AgentInput",
     "AgentLimits",
     "AgentResult",
-    "ContextWindow",
-    "ModelFactory",
-    "PygentEngine",
-    "SimpleAgent",
-    "SimpleAgentSpec",
+    "LaraSessionAgent",
     "ToolProfile",
-    "ToolRegistry",
-    "ToolSurface",
-    "ToolkitToolSurface",
-    "build_model_layer_factory",
 ]

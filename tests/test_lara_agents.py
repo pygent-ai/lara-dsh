@@ -231,6 +231,22 @@ async def test_main_agent_turn_continues_fork_prefix() -> None:
     assert message.content == "hello"
 
 
+@pytest.mark.asyncio
+async def test_runner_requires_exactly_one_context_origin() -> None:
+    runner, model = _runner([AIMessage(content="never")])
+
+    with pytest.raises(ValueError, match="exactly one"):
+        await runner.run(message="hello")
+    with pytest.raises(ValueError, match="exactly one"):
+        await runner.run(
+            message="hello",
+            system_prompt="fresh",
+            prefix=ContextWindow(system_prompt="forked"),
+        )
+
+    assert model.state.seen == []
+
+
 def test_model_factory_receives_resolved_surface_definitions() -> None:
     registry = _echo_registry()
     received: list[tuple[ToolDefinition, ...]] = []

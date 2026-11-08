@@ -238,9 +238,6 @@ class AgentRunner:
         ``message`` is the steering user message (fork block 2, the turn's
         user input, or a child's directive); the multi-turn ReAct loop that
         follows is block 3.
-
-        Mirror implementation of ``lara_sdk.engine.PygentEngine.run``
-        (different inputs and return type); changes must be made to both.
         """
 
         if (prefix is None) == (system_prompt is None):

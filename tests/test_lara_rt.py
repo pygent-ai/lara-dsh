@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from lara_sdk.lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
+from lara_sdk import Agent, REALTIME_SESSION_MODE, LaraSessionAgent
 
 
 @pytest.fixture()
@@ -53,6 +53,12 @@ async def test_realtime_mode_session(isolated_root) -> None:
         workspace_root=isolated_root, mode=REALTIME_SESSION_MODE
     ) as agent:
         assert agent.realtime_enabled is True
+
+
+async def test_lara_session_agent_satisfies_standard_protocol(isolated_root) -> None:
+    agent = LaraSessionAgent(workspace_root=isolated_root)
+
+    assert isinstance(agent, Agent)
 
 
 async def test_run_requires_started_agent(isolated_root) -> None:

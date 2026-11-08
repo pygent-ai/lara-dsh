@@ -16,36 +16,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from lara.agents.runner import ToolProfile
+from lara.agents.runner import (
+    DISABLED_COMPRESSION_WINDOW_TOKENS,
+    AgentLimits,
+    ToolProfile,
+)
 
-# 压缩窗口禁用哨兵：远超任何真实模型的上下文窗口。
-DISABLED_COMPRESSION_WINDOW_TOKENS = 1 << 60
-
-
-@dataclass(frozen=True)
-class AgentLimits:
-    """单次运行的预算上限（默认值沿用 lara ``AgentRunner`` 的后台任务实践）。
-
-    压缩三参数（``context_window_tokens`` / ``compression_trigger_ratio`` /
-    ``max_compressions``）是上下文压缩预算，由引擎解释；预算始终留在
-    引擎侧，不跟随 agent 定义（G5）。
-    """
-
-    max_steps: int = 16
-    max_model_calls: int = 16
-    max_tool_calls: int = 64
-    context_window_tokens: int = DISABLED_COMPRESSION_WINDOW_TOKENS
-    compression_trigger_ratio: float = 0.9
-    max_compressions: int = 1
+# 数据契约复用实现层的类型：调用方拿到的 AgentLimits / ToolProfile 与
+# lara.agents.runner 是同一类型，可直接传给实现层，避免双份定义漂移。
 
 
 @dataclass(frozen=True)
 class AgentInput:
     """一次 agent 调用的标准输入。
 
-    ``system_prompt`` 用于全新会话；延续既有上下文走引擎层的 ``prefix``
-    （见 engine.ContextWindow），两者互斥。``tools`` / ``limits`` 省略时
-    分别回退到引擎默认工具面与默认预算。
+    ``system_prompt`` 用于全新会话；延续既有上下文走实现层的 ``prefix``
+    （``lara.agents.context.ContextWindow``），两者互斥。``tools`` / ``limits``
+    省略时分别回退到实现层的默认工具面与默认预算。
     """
 
     message: str

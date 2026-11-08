@@ -49,9 +49,11 @@ runner、运行时），`lara_sdk` 只描述调用方如何**使用** agent—�
 | 模块 | 说明 |
 | --- | --- |
 | `interfaces.py` | 框架无关标准协议：`Agent` / `AgentInput` / `AgentResult` / `ToolProfile` / `AgentLimits` |
-| `engine.py` | pygent 引擎适配（独立可用）：`PygentEngine`、`ToolRegistry`、`ContextWindow` |
-| `simple_agent.py` | 试点实现：`SimpleAgent`（独立 agent 语义） |
 | `lara_rt.py` | **lara 真实运行时适配**：主 harness + 上下文 + 永续会话 + 实时对话 → 标准接口 |
+
+agent 构造留在 `lara` 实现层（`lara.agents.runner.AgentRunner`、
+`lara.agents.ChildAgent` 等）；`lara_sdk` 不再提供 `PygentEngine` /
+`SimpleAgent` 之类的构造或试点实现。
 
 ### 三大能力的 lara 原生机制
 
@@ -119,9 +121,11 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   realtime nudge interval 改为读取 `nudge_interval` 配置；turn 切换时重置
   silent-round 计数。验证：137 passed、pyright 0；CLI 两轮 E2E 均
   `status=passed` 且 `final_answer=first-ok`。
-- 重构（去重 X2）：`src/lara_sdk` 的工具面、上下文窗口与模型层工厂
-  改为从 `lara.agents` 直接导入并保持同名导出（仅 import 依赖，不反向修改
-  lara 分层）；标准层只保留自己的授权 `reason_code` 常量与 `PygentEngine`。
+- 重构（去重 X2 + SDK 瘦身）：`src/lara_sdk` 的工具面、上下文窗口与模型层工厂
+  改为从 `lara.agents` 直接导入（仅 import 依赖，不反向修改 lara 分层）；随后
+  按"只负责使用、不负责构造"删除 `engine.py`（`PygentEngine` 与 `AgentRunner`
+  完全镜像）与 `simple_agent.py`（试点实现），构造职责归 `lara`，SDK 仅保留
+  `interfaces` 契约与 `lara_rt` 运行时适配器。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
-  魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 标准接口层"
+  魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 对外使用层"
   的分层。
