@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Protocol, cast, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from pygent import (
     AIMessage,
@@ -233,17 +233,6 @@ class PygentEngine:
         return AgentResult(
             label=label, text=answer.content, answer=answer, context=final_context
         )
-
-
-def result_window(result: AgentResult) -> ContextWindow:
-    """把一次运行的结果上下文转成可延续窗口（fork 链式派生的素材）。"""
-
-    context = cast("Context", result.context)
-    return ContextWindow(
-        system_prompt=context.system_prompt,
-        messages=tuple(context.messages),
-        metadata=cast("Mapping[str, JsonValue]", context.metadata),
-    )
 
 
 def build_model_layer_factory(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import inspect
 import json
 import os
@@ -80,27 +79,10 @@ def append_jsonl(path: str | Path, data: dict[str, Any], *, durable: bool = Fals
                 os.fsync(handle.fileno())
 
 
-def read_jsonl_snapshot(path: str | Path) -> str:
-    """Read a JSONL file while excluding in-process appenders."""
-
-    jsonl_path = Path(path)
-    with jsonl_path_lock(jsonl_path):
-        if not jsonl_path.exists():
-            return ""
-        return jsonl_path.read_text(encoding="utf-8")
-
-
 def validate_path_id(value: str, field_name: str) -> None:
     path = Path(value)
     if path.is_absolute() or ".." in path.parts or "/" in value or "\\" in value:
         raise ValueError(f"{field_name} must not contain path traversal")
-
-
-def file_snapshot(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"exists": False, "content_hash": None, "size": None}
-    data = path.read_bytes()
-    return {"exists": True, "content_hash": hashlib.sha256(data).hexdigest(), "size": len(data)}
 
 
 def load_env_file(path: Path) -> None:

@@ -18,7 +18,6 @@ from .engine import (
     ToolSurface,
     ToolkitToolSurface,
     build_model_layer_factory,
-    result_window,
 )
 from .interfaces import (
     Agent,
@@ -46,5 +45,4 @@ __all__ = [
     "ToolSurface",
     "ToolkitToolSurface",
     "build_model_layer_factory",
-    "result_window",
 ]

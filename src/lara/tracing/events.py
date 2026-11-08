@@ -87,11 +87,6 @@ class EventStore:
         self._append_event(context_event)
         return context_event.id
 
-    def append_event(self, event: ContextEvent) -> str:
-        context_event = self._coerce_event(event)
-        self._append_event(context_event)
-        return context_event.id
-
     def append_error(
         self,
         error: BaseException | str,
@@ -120,17 +115,6 @@ class EventStore:
             for event in self.list_events()
             if event.session_id == target_session_id and event.case_run_id == target_case_run_id
         ]
-
-    def list_by_session(self, session_id: str | None = None) -> list[ContextEvent]:
-        target_session_id = session_id or self.case_run_ref.session_id
-        return [event for event in self.list_events() if event.session_id == target_session_id]
-
-    def list_by_case(self, case_id: str | None = None) -> list[ContextEvent]:
-        target_case_id = case_id or self.case_run_ref.case_id
-        return [event for event in self.list_events() if event.case_id == target_case_id]
-
-    def list_by_turn(self, turn_id: str) -> list[ContextEvent]:
-        return [event for event in self.list_events() if event.turn_id == turn_id]
 
     def list_events(self) -> list[ContextEvent]:
         return [ContextEvent.from_dict(row) for row in self.iter_jsonl(self.events_path)]

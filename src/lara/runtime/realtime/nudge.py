@@ -19,16 +19,6 @@ NUDGE_REMINDER = (
 )
 
 
-def should_nudge(
-    *, rounds_since_speak: int, interval: int = DEFAULT_NUDGE_INTERVAL
-) -> bool:
-    """True when the agent has been silent for at least ``interval`` rounds."""
-
-    if interval <= 0:
-        raise ValueError("interval must be positive")
-    return rounds_since_speak >= interval
-
-
 def nudge_reminder(*, rounds_since_speak: int) -> str:
     """Build the reminder text with the actual silent-round count."""
 
@@ -39,5 +29,4 @@ __all__ = [
     "DEFAULT_NUDGE_INTERVAL",
     "NUDGE_REMINDER",
     "nudge_reminder",
-    "should_nudge",
 ]

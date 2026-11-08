@@ -29,7 +29,7 @@ from lara.config import load_run_config
 from lara.core.io import plain_object
 from lara.orchestration import LocalExecutionHost
 from lara.runtime.eternal_conversation import eternal_enabled_for, load_projection
-from lara.schema import AgentSession, RunConfig
+from lara.schema import AgentSession
 from lara.sessions import SessionManager, realtime_enabled_for
 from lara.sessions.manager import LARA_SAYS_SESSION_MODE
 
@@ -198,31 +198,7 @@ class LaraSessionAgent:
             raise RuntimeError("LaraSessionAgent has no session; start it first")
 
 
-async def run_lara_turn(
-    message: str,
-    *,
-    workspace_root: str | None = None,
-    session_id: str | None = None,
-    mode: str = "chat",
-    interactive_approvals: bool = False,
-    eternal_memory: bool | None = None,
-) -> AgentResult:
-    """一次性 lara 会话轮次（lara CLI 单轮路径的同款组合）。"""
-
-    agent = LaraSessionAgent(
-        workspace_root=workspace_root,
-        session_id=session_id,
-        mode=mode,
-        interactive_approvals=interactive_approvals,
-        eternal_memory=eternal_memory,
-    )
-    async with agent:
-        return await agent.run(message)
-
-
 __all__ = [
     "REALTIME_SESSION_MODE",
     "LaraSessionAgent",
-    "RunConfig",
-    "run_lara_turn",
 ]
