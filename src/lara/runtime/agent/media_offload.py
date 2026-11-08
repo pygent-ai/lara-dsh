@@ -21,7 +21,7 @@ import os
 import re
 import urllib.request
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -73,8 +73,12 @@ def offload_inline_media(
 
     if not str(workspace_root or "").strip():
         return payload
+    root = Path(workspace_root)
     try:
-        return _offload(copy.deepcopy(payload), Path(workspace_root))
+        return _walk_media(
+            copy.deepcopy(payload),
+            lambda node: _offload_inline_node(node, root),
+        )
     except OSError:
         return payload
 
@@ -104,78 +108,90 @@ async def offload_remote_media(
 
     if fetch_url is None or not str(workspace_root or "").strip():
         return payload
+    root = Path(workspace_root)
+    fetcher = fetch_url
+
+    def handle(node: dict[str, Any]) -> Awaitable[None]:
+        return _offload_remote_node(node, root, fetcher, {})
+
     try:
-        return await _offload_remote(
-            copy.deepcopy(payload), Path(workspace_root), fetch_url, {}
-        )
+        return await _walk_media_async(copy.deepcopy(payload), handle)
     except OSError:
         return payload
 
 
-async def _offload_remote(
-    node: Any,
+def _iter_media_nodes(node: Any) -> Iterator[dict[str, Any]]:
+    """Yield every dict node of a media tree in document order."""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _iter_media_nodes(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_media_nodes(item)
+
+
+def _walk_media(
+    node: Any, handler: Callable[[dict[str, Any]], None]
+) -> Any:
+    for item in _iter_media_nodes(node):
+        handler(item)
+    return node
+
+
+async def _walk_media_async(
+    node: Any, handler: Callable[[dict[str, Any]], Awaitable[None]]
+) -> Any:
+    for item in _iter_media_nodes(node):
+        await handler(item)
+    return node
+
+
+def _offload_inline_node(node: dict[str, Any], workspace_root: Path) -> None:
+    source = node.get("source")
+    if (
+        node.get("type") == "media"
+        and isinstance(source, dict)
+        and source.get("kind") == "inline"
+    ):
+        replacement = _resource_source(
+            source.get("base64_data"),
+            node.get("mime_type"),
+            workspace_root,
+        )
+        if replacement is not None:
+            node["source"] = replacement
+    content = node.get("content")
+    if isinstance(content, str):
+        node["content"] = _offload_content_data_uris(content, workspace_root)
+
+
+async def _offload_remote_node(
+    node: dict[str, Any],
     workspace_root: Path,
     fetch_url: RemoteMediaFetcher,
     fetched: dict[str, bytes | None],
-) -> Any:
-    if isinstance(node, dict):
-        source = node.get("source")
-        if (
-            node.get("type") == "media"
-            and isinstance(source, dict)
-            and source.get("kind") == "url"
-        ):
-            replacement = await _remote_resource_source(
-                source.get("url"),
-                node.get("mime_type"),
-                workspace_root,
-                fetch_url,
-                fetched,
-            )
-            if replacement is not None:
-                node["source"] = replacement
-        for key, value in node.items():
-            if key == "content" and isinstance(value, str):
-                node[key] = await _offload_remote_content(
-                    value, workspace_root, fetch_url, fetched
-                )
-            else:
-                node[key] = await _offload_remote(
-                    value, workspace_root, fetch_url, fetched
-                )
-        return node
-    if isinstance(node, list):
-        return [
-            await _offload_remote(item, workspace_root, fetch_url, fetched)
-            for item in node
-        ]
-    return node
-
-
-def _offload(node: Any, workspace_root: Path) -> Any:
-    if isinstance(node, dict):
-        source = node.get("source")
-        if (
-            node.get("type") == "media"
-            and isinstance(source, dict)
-            and source.get("kind") == "inline"
-        ):
-            replacement = _resource_source(
-                source.get("base64_data"),
-                node.get("mime_type"),
-                workspace_root,
-            )
-            if replacement is not None:
-                node["source"] = replacement
-        for key, value in node.items():
-            if key == "content" and isinstance(value, str):
-                node[key] = _offload_content_data_uris(value, workspace_root)
-            else:
-                node[key] = _offload(value, workspace_root)
-        return node
-    if isinstance(node, list):
-        return [_offload(item, workspace_root) for item in node]
-    return node
+) -> None:
+    source = node.get("source")
+    if (
+        node.get("type") == "media"
+        and isinstance(source, dict)
+        and source.get("kind") == "url"
+    ):
+        replacement = await _remote_resource_source(
+            source.get("url"),
+            node.get("mime_type"),
+            workspace_root,
+            fetch_url,
+            fetched,
+        )
+        if replacement is not None:
+            node["source"] = replacement
+    content = node.get("content")
+    if isinstance(content, str):
+        node["content"] = await _offload_remote_content(
+            content, workspace_root, fetch_url, fetched
+        )
 
 
 def _offload_content_data_uris(content: str, workspace_root: Path) -> str:
