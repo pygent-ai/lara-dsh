@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from pygent.llm import ModelConfig
 
@@ -650,15 +651,27 @@ def _bool_config(*values: Any, default: bool) -> bool:
     return default
 
 
-def _int_config(*values: Any, default: int) -> int:
+_ConfigValue = TypeVar("_ConfigValue", int, float)
+
+
+def _number_config(
+    *values: Any,
+    default: _ConfigValue,
+    converter: Callable[[Any], _ConfigValue],
+    expected: str,
+) -> _ConfigValue:
     for value in values:
         if value is None:
             continue
         try:
-            return int(value)
+            return converter(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Expected integer config value, got {value!r}") from exc
+            raise ValueError(f"Expected {expected} config value, got {value!r}") from exc
     return default
+
+
+def _int_config(*values: Any, default: int) -> int:
+    return _number_config(*values, default=default, converter=int, expected="integer")
 
 
 def _optional_int_config(*values: Any) -> int | None:
@@ -669,14 +682,7 @@ def _optional_int_config(*values: Any) -> int | None:
 
 
 def _float_config(*values: Any, default: float) -> float:
-    for value in values:
-        if value is None:
-            continue
-        try:
-            return float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Expected float config value, got {value!r}") from exc
-    return default
+    return _number_config(*values, default=default, converter=float, expected="float")
 
 
 _parse_yaml_subset = parse_yaml_subset
