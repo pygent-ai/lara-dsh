@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from lara.core.prompt import Prompt
+
 from .models import ReminderSection
 
 
@@ -19,14 +21,10 @@ def render_context_body(
     timestamp = rendered_at or datetime.now().astimezone()
     lines: list[str] = []
     if any(section.include_time for section in active):
-        lines.extend(
-            [
-                "<time>",
-                f"  Current system time: {timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}",
-                "</time>",
-                "",
-            ]
-        )
+        time_block = Prompt(
+            f"  Current system time: {timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        ).wrap("time")
+        lines.extend([*str(time_block).splitlines(), ""])
     for index, section in enumerate(active):
         if index:
             lines.append("")

@@ -17,6 +17,7 @@ from typing import Protocol, runtime_checkable
 from pygent import AIMessage, Message, ToolMessage, UserMessage
 from pygent.core import JsonValue
 
+from lara.core.prompt import Prompt
 from lara.runtime.agent.common import _to_pygent_message
 
 
@@ -37,7 +38,7 @@ def system_reminder(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         raise ValueError("system reminder text must be non-empty")
-    return f"<system-reminder>\n{stripped}\n</system-reminder>"
+    return Prompt(stripped).wrap("system-reminder")
 
 
 def messages_from_history(

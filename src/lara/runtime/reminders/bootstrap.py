@@ -4,6 +4,7 @@ import hashlib
 from datetime import datetime
 from html import escape
 
+from lara.core.prompt import Prompt
 from lara.runtime.agent.common import _now
 
 from .cli_context import collect_initial_cli
@@ -25,15 +26,16 @@ def build_initial_snapshot(
         if git_snapshot is not None
         else None
     )
+    environment_body = "\n".join(
+        (
+            f'  <session id="{escape(scope.session_id, quote=True)}" />',
+            f"  <workspace-root>{escape(str(scope.workspace_root), quote=False)}</workspace-root>",
+        )
+    )
     environment_section = ReminderSection(
         source="runtime.context",
         order=0,
-        lines=(
-            "<runtime-context>",
-            f'  <session id="{escape(scope.session_id, quote=True)}" />',
-            f"  <workspace-root>{escape(str(scope.workspace_root), quote=False)}</workspace-root>",
-            "</runtime-context>",
-        ),
+        lines=tuple(str(Prompt(environment_body).wrap("runtime-context")).splitlines()),
         include_time=True,
     )
     sections = [

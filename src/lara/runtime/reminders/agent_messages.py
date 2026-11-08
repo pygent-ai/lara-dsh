@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html import escape
 
+from lara.core.prompt import Prompt
 from lara.sessions import AgentMessage
 
 
@@ -17,15 +18,14 @@ def render_agent_message(message: AgentMessage) -> str:
         )
     content = escape(message.content, quote=False)
     content_lines = content.splitlines() or [""]
-    return "\n".join(
+    body = "\n".join(
         [
-            "<runtime-context>",
             f"  <agent-message {' '.join(attributes)}>",
             *[f"    {line}" for line in content_lines],
             "  </agent-message>",
-            "</runtime-context>",
         ]
     )
+    return Prompt(body).wrap("runtime-context")
 
 
 __all__ = ["render_agent_message"]

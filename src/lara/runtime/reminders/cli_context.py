@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from html import escape
 from typing import Any
 
+from lara.core.prompt import Prompt
 from lara.runtime.agent.common import _now
 from lara.runtime.agent.skill_catalog import infer_installed_cli_names
 from lara.schema import BashCliPreset
@@ -18,7 +19,7 @@ def collect_initial_cli(
     known = {preset.name: _record(preset) for preset in presets}
     lines = _render_entries(list(presets), tag="available-bash-cli")
     if lines:
-        lines = ["<cli-context>", *[f"  {line}" for line in lines], "</cli-context>"]
+        lines = list(_wrap_cli(lines))
     section = ReminderSection("cli.context", 10, tuple(lines), True) if lines else None
     return section, {"known": known}
 
@@ -54,8 +55,14 @@ def detect_cli_changes(
     state["known"] = known
     lines = _render_entries(new_entries, tag="new-bash-cli")
     if lines:
-        lines = ["<cli-context>", *[f"  {line}" for line in lines], "</cli-context>"]
+        lines = list(_wrap_cli(lines))
     return ReminderSection("cli.context", 10, tuple(lines), True) if lines else None
+
+
+def _wrap_cli(lines: list[str]) -> tuple[str, ...]:
+    return tuple(
+        str(Prompt("\n".join(lines)).wrap("cli-context", indent="  ")).splitlines()
+    )
 
 
 def _record(preset: BashCliPreset) -> dict[str, Any]:

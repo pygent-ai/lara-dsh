@@ -8,6 +8,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from lara.core.prompt import Prompt
 from lara.runtime.agent.common import _now
 
 from .models import ReminderSection
@@ -135,12 +136,8 @@ def render_git_section(
 ) -> ReminderSection:
     delta_lines, delta_truncated = _delta_lines(previous_snapshot or {}, snapshot)
     is_delta = previous_snapshot is not None
-    lines = [
-        f'<git-context repository-root="{escape(str(snapshot["repository_root"]), quote=True)}" '
-        f'captured-at="{escape(str(snapshot["captured_at"]), quote=True)}" '
-        f'reason="{escape(reason, quote=True)}" mode="{"delta" if is_delta else "baseline"}" '
-        f'truncated="{str(bool(snapshot.get("truncated")) or delta_truncated).lower()}">'
-    ]
+    truncated = str(bool(snapshot.get("truncated")) or delta_truncated).lower()
+    lines: list[str] = []
     if is_delta:
         lines.append("  <changes>")
         lines.extend(delta_lines or ['    <change kind="metadata-only" />'])
@@ -157,14 +154,24 @@ def render_git_section(
             for line in status_lines or ["clean"]
         )
         lines.append("  </status>")
-    lines.extend(
-        [
-            "  <notice>This is a point-in-time snapshot. Run git status before staging, committing, or reporting the current repository state.</notice>",
-            "</git-context>",
-        ]
+    lines.append(
+        "  <notice>This is a point-in-time snapshot. Run git status before staging, committing, or reporting the current repository state.</notice>"
+    )
+    wrapped = Prompt("\n".join(lines)).wrap(
+        "git-context",
+        **{
+            "repository-root": str(snapshot["repository_root"]),
+            "captured-at": str(snapshot["captured_at"]),
+            "reason": reason,
+            "mode": "delta" if is_delta else "baseline",
+            "truncated": truncated,
+        },
     )
     return ReminderSection(
-        source="git.context", order=30, lines=tuple(lines), include_time=True
+        source="git.context",
+        order=30,
+        lines=tuple(str(wrapped).splitlines()),
+        include_time=True,
     )
 
 
