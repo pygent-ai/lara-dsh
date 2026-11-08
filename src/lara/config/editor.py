@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import os
-import uuid
 from pathlib import Path
 from typing import Any
 
 from pygent.llm import ModelConfig
+
+from lara.core.io import write_atomic
 
 from .loader import USER_CONFIG_FILENAME
 from .yaml_subset import dump_yaml_subset, parse_yaml_subset
@@ -89,16 +89,7 @@ def update_user_approvals(user_lara_root: str | Path, *, enabled: bool) -> Path:
 
 
 def _write_config(path: Path, data: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(dump_yaml_subset(data))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_atomic(path, data, serialize=dump_yaml_subset)
     return path
 
 

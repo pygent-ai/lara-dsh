@@ -5,7 +5,7 @@ import json
 import os
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,10 +41,14 @@ def read_json(path: str | Path, default: dict[str, Any] | None = None) -> dict[s
     return json.loads(json_path.read_text(encoding="utf-8"))
 
 
+def _json_text(data: Any) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
 def write_json(path: str | Path, data: dict[str, Any]) -> None:
     json_path = Path(path)
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    json_path.write_text(_json_text(data), encoding="utf-8")
 
 
 def write_text(path: str | Path, content: str) -> None:
@@ -53,18 +57,27 @@ def write_text(path: str | Path, content: str) -> None:
     text_path.write_text(content, encoding="utf-8")
 
 
-def write_json_atomic(path: str | Path, data: dict[str, Any]) -> None:
-    json_path = Path(path)
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = json_path.with_name(f".{json_path.name}.{uuid.uuid4().hex}.tmp")
+def write_atomic(
+    path: str | Path,
+    data: Any,
+    *,
+    serialize: Callable[[Any], str],
+) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
     try:
         with temporary.open("w", encoding="utf-8") as handle:
-            handle.write(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            handle.write(serialize(data))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, json_path)
+        os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def write_json_atomic(path: str | Path, data: dict[str, Any]) -> None:
+    write_atomic(path, data, serialize=_json_text)
 
 
 def append_jsonl(path: str | Path, data: dict[str, Any], *, durable: bool = False) -> None:
