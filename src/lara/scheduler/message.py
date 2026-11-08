@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from lara.core.prompt import Prompt
+from lara.core.timefmt import format_current_time_line
 
 SCHEDULER_GUIDANCE = (
     "You are executing a scheduled Lara task in an isolated session. "
@@ -35,9 +36,7 @@ def build_task_message(
     instruction_body = SCHEDULER_GUIDANCE
     if instructions.strip():
         instruction_body = f"{instruction_body}\n\n{instructions}"
-    time_block = Prompt(
-        f"  Current system time: {timestamp.strftime('%Y-%m-%d %H:%M:%S %Z')}"
-    ).wrap("time")
+    time_block = Prompt(f"  {format_current_time_line(timestamp)}").wrap("time")
     instructions_block = Prompt(instruction_body).wrap("instructions", indent="  ")
     body = "\n".join(
         (
