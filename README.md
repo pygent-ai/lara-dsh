@@ -108,6 +108,9 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   才晋升 tasks/runs；支持 every/at/daily/on、租约防重、补跑标 missed、
   HMAC 来源分离、Windows 登录自启与失败重启。任务执行通过
   `<task-context>` 信封（含 instructions）交给子进程会话。
+- 功能演进（realtime supersede）：实时 fork-reply 采用每会话
+  `SessionForkState`，in-flight 连发会取消旧 handle 并以编号合并消息重发；
+  generation 守卫阻止迟到结果写入孤儿信封。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
   魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 标准接口层"
   的分层。

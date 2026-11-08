@@ -10,6 +10,7 @@ context-schema change are needed for the envelope itself.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 
 from lara.sessions import AgentMessage, SessionCollaborationStore
 
@@ -23,7 +24,7 @@ def queue_exchange_envelope(
     *,
     session_id: str,
     submission_id: str,
-    user_asked: str,
+    user_asked: str | Sequence[str],
     response: str,
     source_agent_alias: str | None = None,
 ) -> AgentMessage:

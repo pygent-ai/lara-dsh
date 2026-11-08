@@ -104,6 +104,8 @@ from .agent.core import (
 from .agent.pipeline import checkpoint_conversation_message
 from .realtime.fork_agent import ForkReplyModule, outcome_from_result
 from .realtime.fork_reply import build_fork_context
+from .realtime.fork_state import SessionForkState
+from .realtime.envelope import format_user_asked
 from .realtime.posting import queue_exchange_envelope
 from .realtime.feishu import load_feishu_channels
 from .realtime.speak import SILENT_ACKNOWLEDGEMENT, SPEAK_TOOL_SPEC, parse_speak_args
@@ -416,6 +418,7 @@ class LaraRuntimeService:
         )
         self._turn_contexts: dict[str, LaraContext] = {}
         self._fork_agents: dict[tuple, ForkReplyModule] = {}
+        self._fork_states: dict[str, SessionForkState] = {}
         self.warnings: list[str] = []
         self._initialized = False
         self._initializing_task: asyncio.Task[None] | None = None
@@ -1154,14 +1157,11 @@ class LaraRuntimeService:
     ) -> Any:
         """Fork-reply path for a user message arriving mid-turn (D-RT2/3).
 
-        Copies the request state up to the last checkpoint (the session's
-        committed history), renders the same system prompt as the main turn,
-        and runs ONE model call as a pygent managed execution
-        (``ForkReplyModule`` — admission, capacity coordination, journaling
-        and idempotent recovery included; the session transcript stays
-        untouched). Delivery of the reply to the user's chat stays with the
-        API layer; the runtime queues the exchange envelope so the main agent
-        learns what happened at its next tool-result boundary.
+        A session-level :class:`SessionForkState` supersedes an in-flight
+        fork when another interrupt arrives: the old handle is cancelled, the
+        messages are merged into a numbered batch, and a new generation starts
+        with a fresh deadline. A late result from an older generation is
+        discarded before it can queue an exchange envelope.
         """
 
         await self.initialize()
@@ -1169,6 +1169,84 @@ class LaraRuntimeService:
         session = manager.load(session_id)
         if not realtime_enabled_for(session):
             raise RuntimeError("realtime interaction is not enabled for this session")
+        state = self._fork_states.setdefault(session_id, SessionForkState())
+        async with state.lock:
+            if state.handle is not None and not state.finished:
+                state.pending.append(message)
+                state.generation += 1
+                generation = state.generation
+                fork_messages = list(state.pending)
+                await state.handle.cancel()
+                fork_input_id = f"{input_id}:g{generation}"
+                request_message = format_user_asked(fork_messages)
+            else:
+                was_idle = state.handle is None
+                state.generation += 1
+                generation = state.generation
+                state.pending = [message]
+                fork_messages = [message]
+                fork_input_id = (
+                    input_id
+                    if was_idle and generation == 1
+                    else f"{input_id}:g{generation}"
+                )
+                request_message = message
+            state.finished = False
+            handle = await self._start_fork_reply(
+                session=session,
+                run_ref=run_ref,
+                config=config,
+                input_id=fork_input_id,
+                message=request_message,
+            )
+            state.handle = handle
+
+        try:
+            output, _ = await handle.result()
+        except asyncio.CancelledError:
+            output = None
+        except BaseException:
+            async with state.lock:
+                if state.generation == generation:
+                    state.handle = None
+                    state.finished = False
+                    state.pending = []
+            raise
+        if output is None:
+            return None
+        assert isinstance(output, AIMessage)
+        outcome = outcome_from_result(output)
+        async with state.lock:
+            if state.generation != generation:
+                return None
+            state.finished = True
+            if outcome.speak_args is not None and outcome.speak_args.say_nothing:
+                response_text = "(decided not to speak)"
+            elif outcome.speak_args is not None:
+                response_text = outcome.speak_args.text or ""
+            else:
+                response_text = outcome.text or ""
+            queue_exchange_envelope(
+                self.reminders.message_store,
+                session_id=session_id,
+                submission_id=f"realtime-exchange:{fork_input_id}",
+                user_asked=tuple(fork_messages),
+                response=response_text or "(no verbal reply)",
+            )
+            state.handle = None
+            state.finished = False
+            state.pending = []
+        return outcome
+
+    async def _start_fork_reply(
+        self,
+        *,
+        session: AgentSession,
+        run_ref: CaseRunRef,
+        config: RunConfig,
+        input_id: str,
+        message: str,
+    ) -> Any:
         main_agent = self.new_agent(
             interactive_approvals=False,
             model_group_name=session.model_group_name,
@@ -1200,7 +1278,7 @@ class LaraRuntimeService:
             if main_agent.llm is not None
             else {}
         )
-        handle = await bound.start(
+        return await bound.start(
             UserMessage(content=message, kind="lara.user.interrupt"),
             request,
             execution=ExecutionOptions(
@@ -1212,23 +1290,6 @@ class LaraRuntimeService:
                 + config.realtime_interaction.fork_deadline_seconds,
             ),
         )
-        output, _ = await handle.result()
-        assert isinstance(output, AIMessage)
-        outcome = outcome_from_result(output)
-        if outcome.speak_args is not None and outcome.speak_args.say_nothing:
-            response_text = "(decided not to speak)"
-        elif outcome.speak_args is not None:
-            response_text = outcome.speak_args.text or ""
-        else:
-            response_text = outcome.text or ""
-        queue_exchange_envelope(
-            self.reminders.message_store,
-            session_id=session_id,
-            submission_id=f"realtime-exchange:{input_id}",
-            user_asked=message,
-            response=response_text or "(no verbal reply)",
-        )
-        return outcome
 
     def _fork_agent(
         self,
