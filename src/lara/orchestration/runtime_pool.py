@@ -147,20 +147,6 @@ class WorkspaceRuntimePool:
         if runtime_to_close is not None:
             await runtime_to_close.close(cancel=False)
 
-    async def retire_scope(self, scope: RuntimeScopeKey) -> None:
-        runtime_to_close: Any | None = None
-        async with self._lock:
-            entry_id = self._active.pop(scope, None)
-            entry = None if entry_id is None else self._entries.get(entry_id)
-            if entry is not None:
-                entry.retiring = True
-                if entry.references == 0:
-                    assert entry_id is not None
-                    del self._entries[entry_id]
-                    runtime_to_close = entry.runtime.runtime_service
-        if runtime_to_close is not None:
-            await runtime_to_close.close(cancel=False)
-
     async def stop_accepting(self) -> None:
         async with self._lock:
             self._accepting = False

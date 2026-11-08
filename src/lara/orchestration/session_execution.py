@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 from lara.core.io import plain_object
-from lara.schema import CaseRunRef
 from lara.sessions import realtime_enabled_for
 from lara.agents.context import system_reminder
 from lara.runtime.realtime.turn_finalizer import decide_turn_finalization
@@ -42,8 +41,6 @@ class SessionExecutionCoordinator:
     """Own submission, lifecycle, lookup, and shutdown for session turns."""
 
     def __init__(self) -> None:
-        self._runs: dict[str, ManagedSessionTurn] = {}
-        self._case_runs: dict[str, ManagedSessionTurn] = {}
         self._managed_runs: dict[int, ManagedSessionTurn] = {}
         self._session_lanes: dict[SessionExecutionKey, _SessionLane] = {}
         self._lock = asyncio.Lock()
@@ -64,43 +61,6 @@ class SessionExecutionCoordinator:
         )
         await self._admit(turn)
         return turn
-
-    async def recover_turn(
-        self,
-        *,
-        lease: Any,
-        run_ref: CaseRunRef,
-        execution_id: str,
-    ) -> ManagedSessionTurn:
-        """Recover a durable execution exactly once across concurrent callers."""
-
-        existing: ManagedSessionTurn | None = None
-        async with self._lock:
-            existing = self._runs.get(execution_id)
-            if existing is None and self._closing:
-                raise RuntimeError("session execution coordinator is closing")
-            if existing is None:
-                turn = ManagedSessionTurn(
-                    lease=lease,
-                    command=TurnCommand(
-                        session_id=run_ref.session_id,
-                        message="recovered execution",
-                        case_id=run_ref.case_id,
-                    ),
-                    run_ref=run_ref,
-                    recovery_execution_id=execution_id,
-                )
-                self._managed_runs[id(turn)] = turn
-                self._runs[execution_id] = turn
-                self._case_runs[run_ref.case_run_id] = turn
-                turn.task = asyncio.create_task(
-                    self._drive_turn(turn),
-                    name=f"session-turn-recovery:{run_ref.case_run_id}",
-                )
-                return turn
-        await lease.release()
-        assert existing is not None
-        return existing
 
     async def _admit(self, turn: ManagedSessionTurn) -> None:
         async with self._lock:
@@ -146,7 +106,6 @@ class SessionExecutionCoordinator:
                 )
             run_ref = turn.run_ref
             assert run_ref is not None
-            await self._register_case_run(turn)
             if turn.recovery_execution_id is None:
                 turn.execution_handle = await turn.runtime_service.start_turn(
                     manager=turn.manager,
@@ -166,7 +125,6 @@ class SessionExecutionCoordinator:
                 )
             execution_handle = turn.execution_handle
             assert execution_handle is not None
-            await self._attach_execution(turn)
             turn.state = TurnState.RUNNING
             turn.ready.set()
             turn.output, turn.output_context = await execution_handle.result()
@@ -270,51 +228,9 @@ class SessionExecutionCoordinator:
                 if lane.users == 0 and self._session_lanes.get(key) is lane:
                     del self._session_lanes[key]
 
-    async def find_execution(self, execution_id: str) -> ManagedSessionTurn | None:
-        async with self._lock:
-            return self._runs.get(execution_id)
-
-    async def find_case_run(self, case_run_id: str) -> ManagedSessionTurn | None:
-        async with self._lock:
-            return self._case_runs.get(case_run_id)
-
-    async def session_busy(self, manager: Any, session_id: str) -> bool:
-        key = SessionExecutionKey.from_manager(manager, session_id)
-        async with self._lock:
-            return any(
-                not turn.state.terminal
-                and SessionExecutionKey.from_manager(
-                    turn.manager, turn.command.session_id
-                )
-                == key
-                for turn in self._managed_runs.values()
-            )
-
-    async def _register_case_run(self, turn: ManagedSessionTurn) -> None:
-        if turn.run_ref is None:
-            raise RuntimeError("cannot register a turn before its case run exists")
-        async with self._lock:
-            self._case_runs[turn.run_ref.case_run_id] = turn
-
-    async def _attach_execution(self, turn: ManagedSessionTurn) -> None:
-        if turn.execution_id is None:
-            return
-        async with self._lock:
-            self._runs[turn.execution_id] = turn
-
     async def _remove(self, turn: ManagedSessionTurn) -> None:
         async with self._lock:
             self._managed_runs.pop(id(turn), None)
-            if (
-                turn.execution_id is not None
-                and self._runs.get(turn.execution_id) is turn
-            ):
-                del self._runs[turn.execution_id]
-            if (
-                turn.run_ref is not None
-                and self._case_runs.get(turn.run_ref.case_run_id) is turn
-            ):
-                del self._case_runs[turn.run_ref.case_run_id]
         await turn.lease.release()
 
     async def close(self) -> None:
@@ -328,7 +244,7 @@ class SessionExecutionCoordinator:
             )
             # A task cancelled before its coroutine receives its first timeslice
             # cannot execute _drive_turn's finally block. Seal those handles and
-            # clear every index explicitly so shutdown remains observable.
+            # clear the index explicitly so shutdown remains observable.
             for turn in turns:
                 if not turn.finalized.is_set():
                     turn.state = TurnState.SKIPPED
@@ -337,16 +253,6 @@ class SessionExecutionCoordinator:
             async with self._lock:
                 for turn in turns:
                     self._managed_runs.pop(id(turn), None)
-                    if (
-                        turn.execution_id is not None
-                        and self._runs.get(turn.execution_id) is turn
-                    ):
-                        del self._runs[turn.execution_id]
-                    if (
-                        turn.run_ref is not None
-                        and self._case_runs.get(turn.run_ref.case_run_id) is turn
-                    ):
-                        del self._case_runs[turn.run_ref.case_run_id]
             await asyncio.gather(
                 *(turn.lease.release() for turn in turns),
                 return_exceptions=True,
