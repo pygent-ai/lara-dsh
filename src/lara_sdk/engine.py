@@ -1,4 +1,4 @@
-"""standard_agent.engine — pygent 引擎适配层。
+"""lara_sdk.engine — pygent 引擎适配层。
 
 把 src/lara/agents/runner.py（``AgentRunner`` 调用缝）梳理为独立引擎：
 
@@ -9,7 +9,7 @@
   新建 agent，并发运行之间不共享可变状态。
 - :func:`build_model_layer_factory`: 生产用模型层工厂，重试策略对齐 lara。
 
-框架无关的接口在 :mod:`standard_agent.interfaces`；本模块是 pygent 绑定。
+框架无关的接口在 :mod:`lara_sdk.interfaces`；本模块是 pygent 绑定。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from dataclasses import replace
 from pygent import PygentAgent, UserMessage
 from pygent.core import JsonValue
 
-# 工具面/上下文/模型层与 lara agent 脚手架共用同一实现；standard_agent
+# 工具面/上下文/模型层与 lara agent 脚手架共用同一实现；lara_sdk
 # 只按本层授权 reason_code 派生 ToolkitToolSurface（见下）。
 from lara.agents.runner import (
     MODEL_RETRYABLE_ERROR_KINDS,

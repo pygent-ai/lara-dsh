@@ -1,8 +1,8 @@
-"""standard_agent.simple_agent — 试点：符合标准接口的独立 agent。
+"""lara_sdk.simple_agent — 试点：符合标准接口的独立 agent。
 
 对应 lara 的 ``ChildAgent`` 语义（G2 独立背景 agent）：自己的系统提示词、
-全新上下文、工具一律通过 :class:`~standard_agent.interfaces.ToolProfile`
-引用注册的工具面；执行由 :class:`~standard_agent.engine.PygentEngine` 驱动。
+全新上下文、工具一律通过 :class:`~lara_sdk.interfaces.ToolProfile`
+引用注册的工具面；执行由 :class:`~lara_sdk.engine.PygentEngine` 驱动。
 
 选它作为第一个标准化对象，因为它不依赖会话历史与 fork 机制，是最小的
 完整 agent。fork / main 的标准化复用同一引擎与接口即可。

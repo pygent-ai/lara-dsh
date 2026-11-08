@@ -19,7 +19,7 @@ from lara.core.prompt import KNOWN_ENVELOPES
 
 SOURCE_ROOTS = (
     Path(__file__).resolve().parents[1] / "src" / "lara",
-    Path(__file__).resolve().parents[1] / "src" / "standard_agent",
+    Path(__file__).resolve().parents[1] / "src" / "lara_sdk",
 )
 _TAG_START = re.compile(r"(?m)^\s*(</?)([a-z][a-z-]*)")
 _PROMPT_METHODS = {"wrap", "wrap_escaped", "self_closing"}

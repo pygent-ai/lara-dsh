@@ -29,10 +29,10 @@ def test_every_lara_module_imports() -> None:
     assert not failures, f"dangling imports after extraction: {failures}"
 
 
-def test_standard_agent_modules_import() -> None:
-    from standard_agent import engine, interfaces, simple_agent  # noqa: F401
+def test_lara_sdk_modules_import() -> None:
+    from lara_sdk import engine, interfaces, simple_agent  # noqa: F401
 
-    from standard_agent import lara_rt  # noqa: F401
+    from lara_sdk import lara_rt  # noqa: F401
 
 
 def test_pruned_subsystems_absent() -> None:

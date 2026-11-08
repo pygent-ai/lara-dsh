@@ -1,11 +1,11 @@
-"""standard_agent.lara_rt — lara 真实运行时的标准 Agent 适配层。
+"""lara_sdk.lara_rt — lara 真实运行时的标准 Agent 适配层。
 
 只 import lara 的代码、不复制实现：主 agent harness（``LaraAgent``）、会话
 上下文（``SessionManager`` / ``LaraContext`` / 持久历史）、永续会话
 （``EternalConversationHarness``）与实时对话（``lara-says`` 会话模式 +
 speak/fork/nudge）全部由 lara 自己的组装根完成——本模块通过
 ``LocalExecutionHost``（lara orchestration 层，CLI 同款驱动）提交会话轮次，
-并把结果映射到 :mod:`standard_agent.interfaces` 的标准协议。
+并把结果映射到 :mod:`lara_sdk.interfaces` 的标准协议。
 
 lara 侧的功能开关（均为原生机制）：
 

@@ -1,4 +1,4 @@
-"""standard_agent.interfaces — 标准 Agent 接口层。
+"""lara_sdk.interfaces — 标准 Agent 接口层。
 
 从 src/lara/agents（runner.py / main.py / fork.py / child.py / context.py）
 梳理出的框架无关接口：任何 agent 实现（pygent 引擎或其他引擎）只要满足这里的

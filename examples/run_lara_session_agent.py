@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import asyncio
 
-from standard_agent.lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
+from lara_sdk.lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
 
 
 async def main() -> None:

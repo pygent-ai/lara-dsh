@@ -1,4 +1,4 @@
-"""standard_agent — 从 lara agent 脚手架梳理出的标准接口与试点实现。
+"""lara_sdk — lara 的对外使用契约与入口。
 
 分层：
 

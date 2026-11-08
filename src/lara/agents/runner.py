@@ -239,7 +239,7 @@ class AgentRunner:
         user input, or a child's directive); the multi-turn ReAct loop that
         follows is block 3.
 
-        Mirror implementation of ``standard_agent.engine.PygentEngine.run``
+        Mirror implementation of ``lara_sdk.engine.PygentEngine.run``
         (different inputs and return type); changes must be made to both.
         """
 

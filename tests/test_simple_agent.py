@@ -1,4 +1,4 @@
-"""standard_agent 试点实现的单元测试。
+"""lara_sdk 试点实现的单元测试。
 
 沿用 tests/test_lara_agents.py 的假模型手法：脚本化 ``Module``
 驱动 pygent ReAct 循环，不访问网络。
@@ -24,7 +24,7 @@ from pygent import (
     tool,
 )
 
-from standard_agent import (
+from lara_sdk import (
     Agent,
     AgentInput,
     AgentResult,

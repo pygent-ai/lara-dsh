@@ -7,7 +7,7 @@
 接入真实模型时，把 ``model_factory`` 换成
 ``build_model_layer_factory(invoker, model_group_name=..., models=...)``
 的产物即可，其余接线完全不变（见
-``standard_agent.engine.build_model_layer_factory``）。
+``lara_sdk.engine.build_model_layer_factory``）。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from pygent import (
     tool,
 )
 
-from standard_agent import (
+from lara_sdk import (
     PygentEngine,
     SimpleAgent,
     SimpleAgentSpec,

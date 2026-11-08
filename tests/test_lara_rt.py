@@ -1,4 +1,4 @@
-"""standard_agent.lara_rt 的单元测试。
+"""lara_sdk.lara_rt 的单元测试。
 
 隔离策略：monkeypatch ``lara.config.loader.user_lara_root`` 指向临时目录，
 会话存储、运行时 SQLite、凭据读取全部落在临时目录；凭据缺失时
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from standard_agent.lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
+from lara_sdk.lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
 
 
 @pytest.fixture()

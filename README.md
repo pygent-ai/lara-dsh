@@ -8,7 +8,7 @@ Lara 的完整实现——主 agent harness、会话上下文、永续会话、�
 
 从 lara 项目**完整抽取的独立 agent 实现仓**。本仓运行时自包含：不依赖原
 lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent 运行时的完整代码
-梳理副本，`src/standard_agent` 是其上的标准接口层。统一 src 布局。
+梳理副本，`src/lara_sdk` 是其上的对外使用层（契约与入口）。统一 src 布局。
 
 ## 抽取范围
 
@@ -40,7 +40,11 @@ lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent �
 保持原样，以对齐原仓行为。
 注意：本仓与原 lara 仓不能装进同一个 Python 环境（包名冲突）。
 
-## 标准接口层（`standard_agent`）
+## 对外使用层（`lara_sdk`）
+
+`lara_sdk` 是 lara 的**对外使用契约与入口**：`lara` 是完整实现（agent 构造、
+runner、运行时），`lara_sdk` 只描述调用方如何**使用** agent——标准协议与数据
+契约在 `interfaces.py`，真实运行时入口在 `lara_rt.py`。
 
 | 模块 | 说明 |
 | --- | --- |
@@ -56,7 +60,7 @@ lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent �
 - **实时对话**：`lara-says` 会话模式 + `speak` 工具 + fork 回复 + nudge
 
 ```python
-from standard_agent.lara_rt import LaraSessionAgent, REALTIME_SESSION_MODE
+from lara_sdk.lara_rt import LaraSessionAgent, REALTIME_SESSION_MODE
 
 # 主 harness + 永续会话
 async with LaraSessionAgent(eternal_memory=True) as agent:
@@ -93,7 +97,7 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
 
 - 抽取自 `C:\Projects\lara`（lara 0.3.3，pygent-ai 0.3.33）。
 - 抽取时修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与 `cli/main.py`、
-  新增 `src/standard_agent/`、tests 与示例；`src/lara` 其余代码为抽取时的
+  新增 `src/lara_sdk/`、tests 与示例；`src/lara` 其余代码为抽取时的
   原样副本。
 - 功能演进（有意偏离上游忠实副本）：新增
   `src/lara/runtime/fork_context.py`，以 `session_fork_window()` 统一实时
@@ -115,7 +119,7 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   realtime nudge interval 改为读取 `nudge_interval` 配置；turn 切换时重置
   silent-round 计数。验证：137 passed、pyright 0；CLI 两轮 E2E 均
   `status=passed` 且 `final_answer=first-ok`。
-- 重构（去重 X2）：`src/standard_agent` 的工具面、上下文窗口与模型层工厂
+- 重构（去重 X2）：`src/lara_sdk` 的工具面、上下文窗口与模型层工厂
   改为从 `lara.agents` 直接导入并保持同名导出（仅 import 依赖，不反向修改
   lara 分层）；标准层只保留自己的授权 `reason_code` 常量与 `PygentEngine`。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
