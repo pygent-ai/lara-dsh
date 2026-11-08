@@ -10,6 +10,7 @@ from typing import Any
 from lara.core.io import plain_object
 from lara.sessions import realtime_enabled_for
 from lara.agents.context import system_reminder
+from lara.runtime.realtime.speak import SPEAK_TOOL_NAME
 from lara.runtime.realtime.turn_finalizer import decide_turn_finalization
 
 from .managed_turn import ManagedSessionTurn
@@ -188,7 +189,9 @@ class SessionExecutionCoordinator:
         ):
             return
         decision = decide_turn_finalization(
-            final_text=str(last.get("content") or ""), nudge_used=False
+            final_text=str(last.get("content") or ""),
+            nudge_used=False,
+            spoke=_turn_spoke(session.history),
         )
         if decision.action != "nudge" or decision.reminder is None:
             return
@@ -257,6 +260,29 @@ class SessionExecutionCoordinator:
                 *(turn.lease.release() for turn in turns),
                 return_exceptions=True,
             )
+
+
+def _turn_spoke(history: list[dict[str, Any]]) -> bool:
+    """Whether the current turn already delivered a successful speak call.
+
+    The scan stops at the turn's opening user message so a speak from an
+    earlier turn cannot suppress this turn's bottom-line decision.
+    """
+
+    for item in reversed(history):
+        role = item.get("role")
+        if role == "user":
+            return False
+        if role != "tool":
+            continue
+        for result in item.get("results") or ():
+            if (
+                isinstance(result, dict)
+                and result.get("name") == SPEAK_TOOL_NAME
+                and result.get("status") == "succeeded"
+            ):
+                return True
+    return False
 
 
 def _terminal_state(status: str) -> TurnState:
