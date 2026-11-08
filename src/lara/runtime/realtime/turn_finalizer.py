@@ -36,7 +36,7 @@ class FinalizationDecision:
 
 
 def decide_turn_finalization(
-    *, final_text: str, nudge_used: bool
+    *, final_text: str, nudge_used: bool, spoke: bool = False
 ) -> FinalizationDecision:
     """Decide whether a pure-text turn ending needs the bottom-line nudge.
 
@@ -44,9 +44,13 @@ def decide_turn_finalization(
     most once per turn (D-RT11); a second pure-text ending after the nudge is
     accepted as a deliberate silent finish, guarding against loops. An empty
     final text still nudges once — the model must decide explicitly.
+
+    ``spoke`` reports whether the turn already delivered a successful
+    ``speak`` call. The user has then seen the agent's output, so the trailing
+    invisible draft needs no bottom-line decision.
     """
 
-    if nudge_used:
+    if spoke or nudge_used:
         return FinalizationDecision(action="end", reminder=None)
     return FinalizationDecision(action="nudge", reminder=TURN_FINALIZER_REMINDER)
 
