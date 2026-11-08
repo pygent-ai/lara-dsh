@@ -228,7 +228,6 @@ def render_memory_snapshot(projection: dict[str, Any]) -> str:
     )
 
 
-
 def estimate_context_tokens(
     history: list[dict[str, Any]], projection: dict[str, Any]
 ) -> int:

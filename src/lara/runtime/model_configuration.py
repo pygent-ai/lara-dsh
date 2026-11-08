@@ -225,8 +225,6 @@ def _create_client(
     return _OwnedProviderClient(inner, http_client)
 
 
-
-
 __all__ = [
     "CLIENT_FACTORIES",
     "CredentialEnvironment",

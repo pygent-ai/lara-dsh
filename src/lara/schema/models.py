@@ -549,9 +549,6 @@ class CaseRunStatus(StrEnum):
             return None
 
 
-
-
-
 @dataclass(slots=True)
 class ContextEvent:
     id: str
@@ -580,7 +577,6 @@ class ContextEvent:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ContextEvent":
         return cls(**data)
-
 
 
 @dataclass(slots=True)

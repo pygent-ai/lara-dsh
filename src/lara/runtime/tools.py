@@ -623,7 +623,6 @@ def _normalize_user_path(path: str | Path) -> str | Path:
     return f"{drive.upper()}:/{suffix}" if suffix else f"{drive.upper()}:/"
 
 
-
 def _is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)

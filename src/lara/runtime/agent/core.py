@@ -162,7 +162,6 @@ class LaraForegroundAgent(PygentAgent):
     )
 
 
-
 class LaraAgent(Agent[UserMessage, AIMessage]):
     execution_requirements = ExecutionRequirements(
         recovery_safety=RecoverySafety.MODULE_BOUNDARY_RETRY,
