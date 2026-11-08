@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import pytest
 from pygent import (
@@ -41,12 +42,10 @@ from lara.agents import (
     ChildSpec,
     ContextWindow,
     ForkAgent,
-    ForkProductSource,
     ForkSpec,
     MainAgent,
     MessageSlice,
     ReminderTransform,
-    StaticContextSource,
     SystemPromptTransform,
     ToolProfile,
     ToolRegistry,
@@ -55,6 +54,25 @@ from lara.agents import (
     messages_from_history,
     system_reminder,
 )
+
+
+@dataclass(frozen=True)
+class _WindowSource:
+    """Test-local ``ContextSource`` over an explicit context window."""
+
+    window: ContextWindow
+
+    @classmethod
+    def of(
+        cls, system_prompt: str, messages: tuple[Message, ...] = ()
+    ) -> _WindowSource:
+        return cls(ContextWindow(system_prompt=system_prompt, messages=messages))
+
+    def resolve(self) -> ContextWindow:
+        return self.window
+
+    def describe(self) -> str:
+        return f"static-messages:{len(self.window.messages)}"
 
 
 class _ScriptState:
@@ -247,10 +265,7 @@ async def test_fork_agent_sees_prefix_and_directive_with_uniform_tools() -> None
     fork = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(
-                system_prompt="foreground prompt",
-                messages=prefix_messages,
-            )
+            source=_WindowSource.of("foreground prompt", prefix_messages)
         ),
         label="lara-fork.extractor",
     )
@@ -276,9 +291,9 @@ async def test_fork_agent_sees_prefix_and_directive_with_uniform_tools() -> None
 
 def test_fork_plan_applies_slice_and_transforms_without_model_calls() -> None:
     runner, model = _runner([AIMessage(content="unused")])
-    source = StaticContextSource(
-        system_prompt="foreground prompt",
-        messages=(
+    source = _WindowSource.of(
+        "foreground prompt",
+        (
             UserMessage(content="one"),
             UserMessage(content="two"),
             UserMessage(content="three"),
@@ -333,7 +348,7 @@ def test_slice_completes_interaction_frames() -> None:
     fork = ForkAgent(
         _runner([AIMessage(content="unused")])[0],
         ForkSpec(
-            source=StaticContextSource(system_prompt="p", messages=messages),
+            source=_WindowSource.of("p", messages),
             slice=MessageSlice(start=2),
         ),
     )
@@ -350,9 +365,7 @@ def test_fork_snapshot_records_freeze_point() -> None:
     fork = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(
-                system_prompt="foreground prompt", messages=source_messages
-            )
+            source=_WindowSource.of("foreground prompt", source_messages)
         ),
     )
 
@@ -368,9 +381,8 @@ def test_fork_snapshot_records_freeze_point() -> None:
     other = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(
-                system_prompt="foreground prompt",
-                messages=(*source_messages, AIMessage(content="more")),
+            source=_WindowSource.of(
+                "foreground prompt", (*source_messages, AIMessage(content="more"))
             )
         ),
     )
@@ -379,9 +391,7 @@ def test_fork_snapshot_records_freeze_point() -> None:
     transformed = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(
-                system_prompt="foreground prompt", messages=source_messages
-            ),
+            source=_WindowSource.of("foreground prompt", source_messages),
             transforms=(ReminderTransform(text="note"),),
         ),
     )
@@ -407,9 +417,8 @@ async def test_fork_run_attaches_snapshot_to_result_metadata() -> None:
     fork = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(
-                system_prompt="foreground prompt",
-                messages=(UserMessage(content="task"),),
+            source=_WindowSource.of(
+                "foreground prompt", (UserMessage(content="task"),)
             )
         ),
         label="lara-fork.snap",
@@ -436,7 +445,7 @@ async def test_fork_chains_on_a_previous_run_product() -> None:
     second_runner, second_model = _runner([AIMessage(content="second answer")])
     chained = ForkAgent(
         second_runner,
-        ForkSpec(source=ForkProductSource(window=first.window())),
+        ForkSpec(source=_WindowSource(first.window())),
         label="lara-fork.second",
     )
 
@@ -471,9 +480,8 @@ async def test_main_agent_collects_background_outcomes() -> None:
     main = MainAgent(runner, system_prompt="You are the main agent.")
     main.spawn_fork(
         ForkSpec(
-            source=StaticContextSource(
-                system_prompt="foreground prompt",
-                messages=(UserMessage(content="work"),),
+            source=_WindowSource.of(
+                "foreground prompt", (UserMessage(content="work"),)
             )
         ),
         directive=system_reminder("extract"),
@@ -503,7 +511,7 @@ async def test_spawn_fork_limits_are_enforced() -> None:
     completing_runner, _ = _runner([_tool_call_answer("t1"), AIMessage(content="done")])
     completing_main = MainAgent(completing_runner, system_prompt="p")
     completing_main.spawn_fork(
-        ForkSpec(source=StaticContextSource(system_prompt="p", messages=())),
+        ForkSpec(source=_WindowSource.of("p")),
         directive="go",
     )
     ok_outcomes = await completing_main.collect()
@@ -516,7 +524,7 @@ async def test_spawn_fork_limits_are_enforced() -> None:
     looping_runner, _ = _runner([_tool_call_answer("t1"), _tool_call_answer("t2")])
     looping_main = MainAgent(looping_runner, system_prompt="p")
     looping_main.spawn_fork(
-        ForkSpec(source=StaticContextSource(system_prompt="p", messages=())),
+        ForkSpec(source=_WindowSource.of("p")),
         directive="loop",
         limits=AgentLimits(max_steps=2, max_model_calls=8, max_tool_calls=8),
     )
@@ -583,7 +591,7 @@ async def test_background_failure_is_collected_as_outcome() -> None:
 async def test_spawn_rejects_duplicate_in_flight_labels() -> None:
     runner, _ = _runner([AIMessage(content="done")])
     main = MainAgent(runner, system_prompt="p")
-    spec = ForkSpec(source=StaticContextSource(system_prompt="p", messages=()))
+    spec = ForkSpec(source=_WindowSource.of("p"))
 
     main.spawn_fork(spec, directive="go", label="lara-fork.custom")
 
@@ -648,7 +656,7 @@ def test_fork_snapshot_metadata_does_not_leak_transform_content() -> None:
     fork = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(system_prompt="p", messages=()),
+            source=_WindowSource.of("p"),
             transforms=(
                 ReminderTransform(text=secret),
                 SystemPromptTransform(system_prompt=f"prompt holding {secret}"),
@@ -673,7 +681,7 @@ def test_fork_snapshot_metadata_does_not_leak_transform_content() -> None:
     same_content = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(system_prompt="p", messages=()),
+            source=_WindowSource.of("p"),
             transforms=(
                 ReminderTransform(text=secret),
                 SystemPromptTransform(system_prompt=f"prompt holding {secret}"),
@@ -684,7 +692,7 @@ def test_fork_snapshot_metadata_does_not_leak_transform_content() -> None:
     different_content = ForkAgent(
         runner,
         ForkSpec(
-            source=StaticContextSource(system_prompt="p", messages=()),
+            source=_WindowSource.of("p"),
             transforms=(ReminderTransform(text="other"),),
         ),
     )
@@ -700,7 +708,7 @@ def test_fork_snapshot_metadata_does_not_leak_transform_content() -> None:
 def test_spawn_outside_event_loop_does_not_leak_label() -> None:
     runner, _ = _runner([AIMessage(content="done")])
     main = MainAgent(runner, system_prompt="p")
-    spec = ForkSpec(source=StaticContextSource(system_prompt="p", messages=()))
+    spec = ForkSpec(source=_WindowSource.of("p"))
 
     with pytest.raises(RuntimeError, match="no running event loop"):
         main.spawn_fork(spec, directive="go", label="lara-fork.leak")
@@ -760,7 +768,7 @@ def test_reminder_transform_snaps_to_frame_boundaries() -> None:
     fork = ForkAgent(
         _runner([AIMessage(content="unused")])[0],
         ForkSpec(
-            source=StaticContextSource(system_prompt="p", messages=messages),
+            source=_WindowSource.of("p", messages),
             transforms=(ReminderTransform(text="mid-frame", position=2),),
         ),
     )
@@ -827,7 +835,7 @@ async def test_collect_cancellation_keeps_label_reserved_and_job_registered() ->
     )
     main = MainAgent(runner, system_prompt="p")
     handle = main.spawn_fork(
-        ForkSpec(source=StaticContextSource(system_prompt="p", messages=())),
+        ForkSpec(source=_WindowSource.of("p")),
         directive="go",
         label="lara-fork.same",
     )
@@ -842,7 +850,7 @@ async def test_collect_cancellation_keeps_label_reserved_and_job_registered() ->
     # job is not lost from the registry
     with pytest.raises(ValueError, match="already in flight"):
         main.spawn_fork(
-            ForkSpec(source=StaticContextSource(system_prompt="p", messages=())),
+            ForkSpec(source=_WindowSource.of("p")),
             directive="again",
             label="lara-fork.same",
         )
@@ -855,7 +863,7 @@ async def test_collect_cancellation_keeps_label_reserved_and_job_registered() ->
 
     # only after the outcome was delivered is the label free again
     released = main.spawn_fork(
-        ForkSpec(source=StaticContextSource(system_prompt="p", messages=())),
+        ForkSpec(source=_WindowSource.of("p")),
         directive="again",
         label="lara-fork.same",
     )
@@ -870,7 +878,7 @@ async def test_concurrent_collect_calls_are_serialized() -> None:
     expected_labels: set[str] = set()
     for index in range(2):
         main.spawn_fork(
-            ForkSpec(source=StaticContextSource(system_prompt="p", messages=())),
+            ForkSpec(source=_WindowSource.of("p")),
             directive=f"go-{index}",
             label=f"lara-fork.{index}",
         )
@@ -891,7 +899,7 @@ async def test_concurrent_collect_calls_are_serialized() -> None:
 async def test_job_ids_are_unique_across_reused_labels() -> None:
     runner, _ = _runner([AIMessage(content="done")])
     main = MainAgent(runner, system_prompt="p")
-    spec = ForkSpec(source=StaticContextSource(system_prompt="p", messages=()))
+    spec = ForkSpec(source=_WindowSource.of("p"))
 
     first = main.spawn_fork(spec, directive="go", label="lara-fork.same")
     first_outcomes = await main.collect()

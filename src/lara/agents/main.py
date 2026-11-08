@@ -38,12 +38,10 @@ class BackgroundJobHandle:
         *,
         job_id: str,
         label: str,
-        kind: str,
         task: asyncio.Task[AgentRunResult],
     ) -> None:
         self.job_id = job_id
         self.label = label
-        self.kind = kind
         self._task = task
 
     @property
@@ -150,7 +148,7 @@ class MainAgent:
         resolved = self._reserve_label(label)
         fork = ForkAgent(self._runner, spec, label=resolved)
         return self._register_job(
-            resolved=resolved, kind="fork", coro=fork.run(directive, limits=limits)
+            resolved=resolved, coro=fork.run(directive, limits=limits)
         )
 
     def spawn_child(
@@ -164,15 +162,12 @@ class MainAgent:
 
         resolved = self._reserve_label(label)
         child = ChildAgent(self._runner, spec, label=resolved)
-        return self._register_job(
-            resolved=resolved, kind="child", coro=child.run(directive)
-        )
+        return self._register_job(resolved=resolved, coro=child.run(directive))
 
     def _register_job(
         self,
         *,
         resolved: str,
-        kind: str,
         coro: Coroutine[Any, Any, AgentRunResult],
     ) -> BackgroundJobHandle:
         """Create the job task and register it under a fresh unique id.
@@ -189,9 +184,7 @@ class MainAgent:
             self._in_flight_labels.discard(resolved)
             coro.close()
             raise
-        handle = BackgroundJobHandle(
-            job_id=job_id, label=resolved, kind=kind, task=task
-        )
+        handle = BackgroundJobHandle(job_id=job_id, label=resolved, task=task)
         self._background[job_id] = handle
         return handle
 

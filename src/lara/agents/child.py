@@ -11,22 +11,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .runner import AgentLimits, AgentRunResult, AgentRunner, ToolProfile
+from .runner import AgentRunResult, AgentRunner
 
 
 @dataclass(frozen=True)
 class ChildSpec:
     """Declarative description of one independent background agent.
 
-    ``tools`` may override the runner's default profile, but the override is
-    still a :class:`ToolProfile` reference resolved through the registry —
-    custom tools enter through the uniform mechanism, never as modules.
+    A child runs against the runner's default tool profile and limits; tool
+    surfaces enter through the uniform :class:`ToolProfile` mechanism, never
+    as per-child tool modules.
     """
 
     name: str
     system_prompt: str
-    tools: ToolProfile | None = None
-    limits: AgentLimits | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -55,7 +53,5 @@ class ChildAgent:
         return await self._runner.run(
             message=directive,
             system_prompt=self._spec.system_prompt,
-            tools=self._spec.tools,
-            limits=self._spec.limits,
             label=self._label,
         )

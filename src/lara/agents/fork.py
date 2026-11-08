@@ -140,7 +140,6 @@ class ForkAgent:
         directive: str,
         *,
         limits: AgentLimits | None = None,
-        label: str | None = None,
     ) -> AgentRunResult:
         """Run the fork: block 1 prefix + directive steering (block 2)."""
 
@@ -150,5 +149,5 @@ class ForkAgent:
             message=directive,
             prefix=window,
             limits=limits,
-            label=label or self._label,
+            label=self._label,
         )

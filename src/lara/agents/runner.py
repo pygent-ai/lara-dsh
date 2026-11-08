@@ -209,17 +209,12 @@ class AgentRunner:
         registry: ToolRegistry | None = None,
         default_tools: ToolProfile | None = None,
         limits: AgentLimits | None = None,
-        compression_prompt: str = (
-            "Compress this agent run's transcript without losing tool errors "
-            "or tool results."
-        ),
         label: str = "lara-agent",
     ) -> None:
         self._model_factory = model_factory
         self._registry = registry
         self._default_tools = default_tools
         self._limits = limits or AgentLimits()
-        self._compression_prompt = compression_prompt
         self._label = label
 
     async def run(
@@ -262,7 +257,10 @@ class AgentRunner:
         model = self._model_factory(definitions)
         agent = PygentAgent(
             system_prompt=effective_system_prompt,
-            compression_prompt=self._compression_prompt,
+            compression_prompt=(
+                "Compress this agent run's transcript without losing tool errors "
+                "or tool results."
+            ),
             model=model,
             compressor=model,
             tools=surface.tool_module() if surface is not None else _NoToolLayer(),
