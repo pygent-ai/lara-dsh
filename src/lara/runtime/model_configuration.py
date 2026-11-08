@@ -11,24 +11,17 @@ from pygent.core import FrozenJsonObject
 from pygent.llm import (
     AnthropicMessagesAdapter,
     AnthropicMessagesClient,
-    CapabilityPresetCatalog,
     GeminiGenerateContentAdapter,
     GeminiGenerateContentClient,
-    ModelCapabilities,
-    ModelCapabilityCatalog,
     ModelConfig,
-    ConnectionConfig,
     MediaTransportCapabilities,
     ModelEntry,
-    ModelInfo,
-    ModelLimits,
     ModelProviderClient,
     ModelSpec,
     OpenAICompatibleClient,
     OpenAICompatibleAdapter,
     OpenAIResponsesAdapter,
     OpenAIResponsesClient,
-    ProviderCatalog,
     ResolvedModelConnection,
 )
 
@@ -232,87 +225,12 @@ def _create_client(
     return _OwnedProviderClient(inner, http_client)
 
 
-async def discover_models(
-    *,
-    connection_name: str,
-    protocol: str,
-    connection: ConnectionConfig,
-    credential_environ: Mapping[str, str],
-    timeout: float = 10.0,
-) -> tuple[ModelInfo, ...]:
-    client = _create_client(
-        connection=ResolvedModelConnection(
-            connection_key=connection_name,
-            provider=connection.provider,
-            protocol=protocol,
-            base_url=connection.protocols[protocol],
-            credential=connection.credential,
-            verify_ssl=connection.verify_ssl,
-            proxy=connection.proxy,
-        ),
-        credential_environ=credential_environ,
-    )
-    try:
-        catalog = getattr(client, "models", None)
-        if catalog is None:
-            raise ValueError(
-                f"protocol {protocol!r} does not provide native model discovery"
-            )
-        return await catalog.list(timeout=timeout)
-    finally:
-        await client.aclose()
-
-
-def builtin_model_catalogs() -> dict[str, Any]:
-    providers = {}
-    for key, provider in ProviderCatalog.builtin().providers.items():
-        providers[key] = {
-            "provider": provider.provider,
-            "display_name": provider.display_name,
-            "default_protocol": provider.default_protocol,
-            "protocols": {
-                protocol_key: {
-                    "protocol": protocol.protocol,
-                    "base_url": protocol.base_url,
-                    "authentication": protocol.authentication,
-                    "api_key_env": protocol.api_key_env,
-                    "provider_options_schema": protocol.provider_options_schema.to_dict(),
-                }
-                for protocol_key, protocol in provider.protocols.items()
-            },
-        }
-    capabilities = [
-        {
-            "provider": provider,
-            "model_id": model_id,
-            "protocol": protocol,
-            "capabilities": value.to_mapping(),
-        }
-        for (provider, model_id, protocol), value in ModelCapabilityCatalog.builtin().models.items()
-    ]
-    presets = {}
-    for key, preset in CapabilityPresetCatalog.builtin().presets.items():
-        presets[key] = ModelCapabilities(
-            modalities=preset.modalities,
-            streaming=preset.streaming,
-            tools=preset.tools,
-            structured_output=preset.structured_output,
-            reasoning=preset.reasoning,
-            limits=ModelLimits(context_tokens=None, max_output_tokens=None),
-        ).to_mapping()
-    return {
-        "providers": providers,
-        "model_capabilities": capabilities,
-        "capability_presets": presets,
-    }
 
 
 __all__ = [
     "CLIENT_FACTORIES",
     "CredentialEnvironment",
     "build_model_invoker",
-    "builtin_model_catalogs",
-    "discover_models",
     "preferred_models",
     "preferred_profile_name",
 ]
