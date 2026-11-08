@@ -16,6 +16,33 @@
 | E5 触发总线门禁 | `test_e5_trigger_bus_gate.py` | agent 来源提交进入 `needs_review`；用户 `approve` 后才可触发；agent 请求 `high` 归一为 `normal` 并留下审计说明 |
 | E6 事件触发 | `test_e6_event_trigger.py` | agent 签名 `emit_event` → daemon 消费事件 → 仅匹配的 `on <event>` 任务触发 |
 
+### 实时交互矩阵（R1-R13）
+
+`test_realtime_matrix.py` 复用 E3 的进程内骨架：真实 `LaraRuntimeService` +
+真实 managed turn，只把模型替换为可门控的脚本化 invoker。R2/R3 直接由 E3
+覆盖，不再重复实现。
+
+| 场景 | 测试 | 锚定的功能行为 |
+| --- | --- | --- |
+| R1 空闲时新消息 | `test_r1_idle_realtime_turn_replies_directly_through_speak` | 空闲 `lara-says` 会话走 `start_turn` 正常前台轮次，`lara.realtime.speak` 事件直达，不创建 fork |
+| R2 中途打断 | `test_e3_realtime_supersede.py` | `send_interrupt` 启动 fork-reply 执行并生成信封 |
+| R3 连发两条 | `test_e3_realtime_supersede.py` | 第二条插话取消第一条 fork，合并为编号批次 |
+| R4 结束没有 speak | `test_r4_pure_text_ending_injects_finalizer_reminder` | 纯文本结束触发 `turn_finalizer` 提醒；`speak(say_nothing=true)` 以 `SILENT_ACKNOWLEDGEMENT` 收尾 |
+| R5 开头没有 speak | `test_r5_first_tool_result_injects_speak_reminder_once` | `first_result_seen` 在首个工具结果注入一次首轮提醒，后续边界不重复 |
+| R6 中间多轮没有 speak | `test_r6_five_silent_tool_rounds_inject_periodic_nudge` | 默认 `nudge_interval=5` 在第 5 个工具边界注入循环 nudge，第 4 轮不注入 |
+| R7 连发三条 | `test_r7_three_interrupts_merge_into_one_fork_envelope` | 第三次插话取消前两条 fork，三条消息合并进一个 `<user-asked>` 信封 |
+| R8 插话回复被主 agent 消费 | `test_r8_main_agent_claims_envelope_at_next_tool_boundary` | 主 agent 在下一个工具边界 claim 信封，信封进入下一次模型请求的上下文 |
+| R9 `speak(say_nothing=true)` | `test_r9_say_nothing_acknowledges_silently_without_envelope` | 工具结果为 `SILENT_ACKNOWLEDGEMENT`，无 speak 事件、无信封、无 finalizer |
+| R10 结束时有 speak | `test_r10_speaking_turn_end_skips_finalizer_reminder` | 本轮已成功 speak 后，纯文本收尾不再排 `turn_finalizer` |
+| R11 非实时会话 | `test_r11_non_realtime_session_has_no_speak_or_reminders` | 普通 `chat` 会话无 `speak` 工具，三类实时提醒均不注入，也不排 finalizer |
+| R12 fork 超时 | `test_r12_fork_deadline_cancels_fork_without_envelope` | `fork_deadline_seconds` 到期取消 fork 模型调用，不产生信封，后续插话可重新开始 |
+| R13 插话到达时主轮即将结束 | `test_r13_pending_envelope_survives_into_next_turn_context` | 无后续工具边界时信封保持待领，下一轮 `start_turn` 通过 `claim_agent_messages` 拾取并进入开场上下文 |
+
+共享门控/记录工具在 `_realtime_support.py`：`ScriptedRealtimeInvoker` 记录每次
+主轮与 fork 模型调用，测试用 `asyncio.Event` 精确控制“主轮运行中”“fork 已
+完成”“主轮才结束”等时序；`assert_no_extra_main_call` 会等待被排队的后续轮
+次真正浮现后再断言其不存在，避免固定 sleep 漏掉回归。
+
 每个场景使用独立的 `tmp_path` 作为 workspace + user root；会话、SQLite、
 调度器 keys/runs 全部落在该临时目录，场景之间没有共享状态。
 
@@ -37,6 +64,7 @@ uv run pytest -m e2e -q
 
 ```bash
 uv run pytest tests/e2e/test_e3_realtime_supersede.py -q
+uv run pytest tests/e2e/test_realtime_matrix.py -q
 uv run pytest tests/e2e/test_e4_scheduler_daemon.py -q
 ```
 
@@ -71,6 +99,29 @@ E3 还顺带覆盖了 Windows 路径安全性：supersede 轮次 id 形如
 `fork:<input>:g<generation>`，其中冒号不能直接进入渲染 prompt 文件名。
 `lara/tracing/events.py` 的 `_turn_file_name` 会做文件名清洗，而事件元数据
 仍保留原始 `turn_id`。
+
+## 矩阵跑出的两个实现缺陷（已修复）
+
+这两个缺陷不是测试辅助代码的问题，而是真实运行时行为：
+
+1. **R10：已 speak 的轮次仍被追加 finalizer。**
+   `_maybe_start_finalizer` 原先只看最后一条 assistant 消息是否带工具调用，
+   没有检查本轮是否已经成功 speak。于是“先 `speak(text=...)`、再以纯文本
+   结束”的轮次会多排一个 bottom-line 轮次，重复要求模型决定是否说话。
+   修复：`decide_turn_finalization` 增加 `spoke` 条件，
+   `session_execution._turn_spoke` 从本轮工具结果中识别成功的 `speak`。
+   发现测试：`test_r10_speaking_turn_end_skips_finalizer_reminder`。
+
+2. **R13：主轮结束后到达的信封会一直待领。**
+   agent message 只在 `RuntimeReminderModule` 的工具边界 claim。插话 fork
+   在主轮没有后续工具边界时完成，信封虽已入队，但下一轮开场不会读取它，
+   可能长期滞留。注意 `collect_pending` 只负责 git observation，并不领取
+   agent message；真正缺的是开场 claim。修复：`start_turn` 在 realtime 用户
+   轮次组装开场上下文时 claim 待领信封，并在执行启动后确认送达；内部
+   `lara.realtime.finalizer` 轮次刻意不领取，留给下一轮用户消息。
+   发现测试：`test_r13_pending_envelope_survives_into_next_turn_context`。
+
+两条测试都做过反向验证：临时移除对应修复后，R10/R13 分别失败；恢复后全绿。
 
 ## 关于真实模型调用
 
