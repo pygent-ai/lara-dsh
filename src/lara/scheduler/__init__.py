@@ -2,6 +2,7 @@
 
 from .daemon import SchedulerDaemon, SubprocessTaskRunner, TaskResult, TaskRunner
 from .keys import canonical_payload, init_keys, load_secret, sign, verify
+from .message import SCHEDULER_GUIDANCE, build_task_message
 from .schedule import Schedule, advance, next_run, parse_schedule
 from .store import (
     Run,
@@ -22,6 +23,7 @@ from .tools import (
 __all__ = [
     "EMIT_EVENT_TOOL_SPEC",
     "Run",
+    "SCHEDULER_GUIDANCE",
     "SCHEDULER_TOOL_SPECS",
     "SCHEDULE_TASK_TOOL_SPEC",
     "Schedule",
@@ -34,6 +36,7 @@ __all__ = [
     "TaskResult",
     "TaskRunner",
     "advance",
+    "build_task_message",
     "canonical_payload",
     "init_keys",
     "load_secret",

@@ -52,6 +52,7 @@ _INNER_TAGS = {
     "path": "skills-context entry field",
     "user-identity": "user-context field",
     "user-message": "user-context field",
+    "task": "task-context metadata tag",
 }
 
 

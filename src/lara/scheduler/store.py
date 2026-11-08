@@ -113,6 +113,7 @@ class Task:
     next_run_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    instructions: str = ""
     lease_id: str | None = None
     lease_expires_at: datetime | None = None
 
@@ -129,6 +130,7 @@ class Task:
             "next_run_at": None if self.next_run_at is None else iso(self.next_run_at),
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
+            "instructions": self.instructions,
             "lease_id": self.lease_id,
             "lease_expires_at": (
                 None if self.lease_expires_at is None else iso(self.lease_expires_at)
@@ -190,6 +192,7 @@ def _task(row: sqlite3.Row) -> Task:
         next_run_at=parse_iso(row["next_run_at"]),
         created_at=parse_iso(str(row["created_at"])) or utc_now(),
         updated_at=parse_iso(str(row["updated_at"])) or utc_now(),
+        instructions=str(row["instructions"] or ""),
         lease_id=None if row["lease_id"] is None else str(row["lease_id"]),
         lease_expires_at=parse_iso(row["lease_expires_at"]),
     )
@@ -259,6 +262,7 @@ class SchedulerStore:
                 next_run_at TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                instructions TEXT NOT NULL DEFAULT '',
                 lease_id TEXT,
                 lease_expires_at TEXT
             );
@@ -279,6 +283,14 @@ class SchedulerStore:
                 ON runs(task_id, started_at);
             """
         )
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "instructions" not in columns:
+            connection.execute(
+                "ALTER TABLE tasks ADD COLUMN instructions TEXT NOT NULL DEFAULT ''"
+            )
 
     def migrate(self) -> None:
         """Create or upgrade the schema. Only the daemon calls this."""
@@ -374,6 +386,7 @@ class SchedulerStore:
         source: str,
         status: str,
         next_run_at: datetime | None,
+        instructions: str = "",
         created_at: datetime | None = None,
         task_id: str | None = None,
     ) -> Task:
@@ -385,8 +398,8 @@ class SchedulerStore:
             connection.execute(
                 "INSERT INTO tasks "
                 "(id, name, schedule, prompt, prompt_hash, session, source, status, "
-                "next_run_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "next_run_at, created_at, updated_at, instructions) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     identifier,
                     name,
@@ -399,6 +412,7 @@ class SchedulerStore:
                     None if next_run_at is None else iso(next_run_at),
                     iso(now),
                     iso(now),
+                    instructions,
                 ),
             )
             row = connection.execute(

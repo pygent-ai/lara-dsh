@@ -24,6 +24,7 @@ from lara.core.io import append_jsonl
 from lara.schema import RunConfig
 
 from .keys import load_secret, verify
+from .message import build_task_message
 from .schedule import advance, next_run, parse_schedule
 from .store import (
     SchedulerStore,
@@ -64,13 +65,23 @@ class SubprocessTaskRunner:
         *,
         command: tuple[str, ...] | None = None,
         timeout: float = 3600.0,
+        user_identity: str = "default",
     ) -> None:
         self.command = command or lara_command()
         self.timeout = timeout
+        self.user_identity = user_identity
 
     def run(self, task: Task) -> TaskResult:
         started = utc_now()
-        command = (*self.command, "session", "run", task.session, "-m", task.prompt)
+        message = build_task_message(
+            task_id=task.id,
+            name=task.name,
+            source=task.source,
+            instructions=task.instructions,
+            user_message=task.prompt,
+            user_identity=self.user_identity,
+        )
+        command = (*self.command, "session", "run", task.session, "-m", message)
         try:
             completed = subprocess.run(
                 command,
@@ -117,7 +128,9 @@ class SchedulerDaemon:
         self.config = config
         self.store = store or SchedulerStore(scheduler_db_path(config.lara_root))
         self.user_lara_root = config.user_lara_root
-        self.runner = runner or SubprocessTaskRunner()
+        self.runner = runner or SubprocessTaskRunner(
+            user_identity=config.user_identity
+        )
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.sleeper = sleeper or time.sleep
         self.alert_callback = alert
@@ -241,6 +254,7 @@ class SchedulerDaemon:
             source=source,
             status=status,
             next_run_at=next_at,
+            instructions=str(payload.get("instructions") or ""),
             created_at=now,
         )
 

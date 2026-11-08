@@ -57,6 +57,10 @@ SCHEDULE_TASK_TOOL_SPEC = _spec(
                 "description": "every <n>[smhd], at <ISO>, daily HH:MM, or on <event>.",
             },
             "prompt": {"type": "string", "minLength": 1},
+            "instructions": {
+                "type": "string",
+                "description": "Optional task-specific instructions.",
+            },
             "session": {
                 "type": "string",
                 "description": "Optional scheduler session name override.",
@@ -120,6 +124,7 @@ class SchedulerToolExecutor:
                 "name": str(arguments.get("name") or ""),
                 "schedule": str(arguments.get("schedule") or ""),
                 "prompt": str(arguments.get("prompt") or ""),
+                "instructions": str(arguments.get("instructions") or ""),
                 "session": str(
                     arguments.get("session") or self.config.scheduler.session
                 ),

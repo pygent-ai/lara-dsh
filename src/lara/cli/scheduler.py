@@ -45,6 +45,7 @@ def register_scheduler_parser(subparsers: Any) -> None:
     add.add_argument("--name", required=True)
     add.add_argument("--schedule", required=True)
     add.add_argument("--prompt", required=True)
+    add.add_argument("--instructions", default="")
     add.add_argument("--session", default=None)
     add.set_defaults(handler=_scheduler_add)
 
@@ -102,6 +103,7 @@ def _scheduler_add(args: argparse.Namespace) -> dict[str, Any]:
         "name": args.name,
         "schedule": args.schedule.strip(),
         "prompt": args.prompt,
+        "instructions": args.instructions or "",
         "session": args.session or config.scheduler.session,
     }
     parse_schedule(payload["schedule"])

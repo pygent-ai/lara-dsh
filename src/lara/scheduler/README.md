@@ -15,6 +15,8 @@ invokes `lara session run <scheduler-session> -m <prompt>` as a child process.
   two-key format is intentionally replaceable by Ed25519 later.
 - `daemon.py`: verification, promotion, `needs_review`/approval gates, due and
   missed execution, prompt-hash rechecks, audit runs, and failure alerts.
+- `message.py`: builds the `<task-context>` execution message with the core
+  Prompt API and task-specific instructions.
 - `tools.py`: `schedule_task` / `emit_event`; they sign and append submissions,
   never write tasks directly.
 - `../cli/scheduler.py`: `run`, `add`, `list`, `show`, approval/control,

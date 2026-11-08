@@ -28,6 +28,7 @@ def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "name": "task",
         "schedule": "every 1h",
         "prompt": "do it",
+        "instructions": "",
         "session": None,
         "task_id": "task-1",
         "force": False,
