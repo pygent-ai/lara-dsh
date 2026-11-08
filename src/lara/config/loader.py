@@ -21,6 +21,7 @@ from lara.schema import (
     RuntimeCapacityConfig,
     RuntimeDurabilityConfig,
     RuntimeSteeringConfig,
+    SchedulerConfig,
     default_cli_bash_presets,
     native_model_config_complete,
 )
@@ -148,6 +149,7 @@ def load_run_config(
         eternal_conversation=_resolve_eternal_conversation(
             config_data, alias, root
         ),
+        scheduler=SchedulerConfig(**(config_data.get("scheduler") or {})),
     )
 
 
@@ -217,6 +219,12 @@ def _default_config() -> dict[str, Any]:
             "builder_agent_alias": None,
             "dynamic_memory_cli_path": None,
         },
+        "scheduler": {
+            "agent_create_enabled": False,
+            "session": "scheduler",
+            "max_concurrent": 2,
+            "poll_seconds": 10.0,
+        },
     }
 
 
@@ -256,6 +264,7 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
             "mcp",
             "delegation",
             "eternal_conversation",
+            "scheduler",
             "connections",
             "models",
             "model_groups",
@@ -340,6 +349,11 @@ def _validate_config_shape(data: dict[str, Any]) -> None:
             "extraction_trigger_ratio",
         },
         "eternal_conversation",
+    )
+    _validate_mapping(
+        data.get("scheduler"),
+        {"agent_create_enabled", "session", "max_concurrent", "poll_seconds"},
+        "scheduler",
     )
     agents = data.get("agents")
     if agents is not None and not isinstance(agents, list):

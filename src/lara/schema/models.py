@@ -200,6 +200,33 @@ class RealtimeInteractionConfig:
 
 
 @dataclass(slots=True)
+class SchedulerConfig:
+    """Settings for the independent `lara scheduler` daemon."""
+
+    agent_create_enabled: bool = False
+    session: str = "scheduler"
+    max_concurrent: int = 2
+    poll_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        self.agent_create_enabled = bool(self.agent_create_enabled)
+        self.session = _require(self.session, "scheduler session")
+        if isinstance(self.max_concurrent, bool) or not isinstance(
+            self.max_concurrent, int
+        ):
+            raise ValueError("scheduler max_concurrent must be an integer")
+        if self.max_concurrent < 1:
+            raise ValueError("scheduler max_concurrent must be positive")
+        if isinstance(self.poll_seconds, bool) or not isinstance(
+            self.poll_seconds, (int, float)
+        ):
+            raise ValueError("scheduler poll_seconds must be a number")
+        self.poll_seconds = float(self.poll_seconds)
+        if self.poll_seconds <= 0:
+            raise ValueError("scheduler poll_seconds must be positive")
+
+
+@dataclass(slots=True)
 class EternalConversationConfig:
     enabled: bool = False
     extractor_agent_alias: str | None = None
@@ -334,6 +361,7 @@ class RunConfig:
     realtime_interaction: RealtimeInteractionConfig = field(
         default_factory=RealtimeInteractionConfig
     )
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
 
     def __post_init__(self) -> None:
         self.workspace_root = _abs_path(self.workspace_root)
@@ -402,6 +430,7 @@ class RunConfig:
             ("delegation", DelegationConfig),
             ("eternal_conversation", EternalConversationConfig),
             ("realtime_interaction", RealtimeInteractionConfig),
+            ("scheduler", SchedulerConfig),
         ):
             value = getattr(self, name)
             if not isinstance(value, cls):
