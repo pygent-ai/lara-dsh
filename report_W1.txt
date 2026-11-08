@@ -1,0 +1,294 @@
+# 死代码验证 W1 报告
+
+**只读确认**：全程只做了读取、grep、AST 分析，没有修改任何文件。`git status --porcelain` 前后一致，仅存在会话开始前就已存在的未跟踪文件 `report_V1..V4.txt`。
+
+## 一、范围与方法
+
+- 范围：`src/lara/runtime/agent/` 十个文件，共 3328 行。
+- “公开”定义：无前导下划线的模块级函数/类/常量 + 公开方法（不含 `__init__`、`__post_init__` 等 dunder）。
+- AST 抽取结果：**77 个公开符号**（含 5 个模块级常量、6 个模块级函数、13 个类、53 个公开方法/属性）。
+- 生产调用面：`src/lara` + `src/standard_agent`；`tests`、`examples` 单独核对。
+- 动态引用专项：全仓检查 `getattr`/`setattr`/`importlib`/`import *`/`__all__`/字符串注册。agent 包内只有 3 处 `getattr`，均与本次公开 API 无关（`pipeline.py:278` 读 context.case_run_id；`core.py:134-135` 读异常属性）。
+- 框架派发验证：
+  - `pygent/core/_module_definition.py:241` `Module.__call__` → managed scope → `pygent/core/_direct_execution.py:266` `await module.forward(...)`；
+  - `pygent/llm/layer.py:198` `invoker.execute(...)`；
+  - `pygent/core/definition.py:129` 读取 `trusted_live_resource_attributes`，`definition.py:24` 白名单包含 `execution_requirements`。
+- 对每个低引用符号都人工读了定义与调用上下文，而不是只看 grep 数量。
+
+## 二、结论摘要
+
+| 分类 | 数量 |
+|---|---|
+| 检查的公开符号总数 | **77** |
+| ① 确认无用（符号级） | **3** |
+| ② 仅测试使用 | **0** |
+| ③ 仍在用（含框架动态派发） | **74** |
+| 附：确认无用的公开数据字段 | **22** |
+| 附：死配置（有读点但从未赋值） | **2** |
+| 附：不可达分支 | **4** |
+| 附：死参数通路 | **2 组** |
+
+## 三、怀疑点详查
+
+### 1. `PromptRegistry.register`
+
+- **文件:行**：`src/lara/runtime/agent/prompts.py:143`
+- **怀疑理由**：公开注册方法，但 `PromptRegistry.__init__` 已用内联列表构造全部 11 个模块，疑似遗留扩展 API。
+- **调查过程**：
+  - AST 属性调用索引：`register` 作为 `PromptRegistry` 方法被调用 **0 次**。
+  - `rg "\.register\("` 全仓命中 `service.py:729/879/1703`，接收者分别是 `executor_registry`、`binding`、`model_resolver`，不是 `PromptRegistry`。
+  - `prompt_registry` 变量只在 `core.py:223/251 → DynamicPromptModule → AgentContextManager → PromptComposer` 之间传递；`service.py` 构造 `LaraAgent` 时从未传 `prompt_registry`，`PromptComposer` 也只以 `PromptComposer(None)` 构造。
+  - 无 `getattr`、无 `importlib`、无字符串注册、无 `__all__` 再导出；`tests`/`examples` 没有任何 `prompts` 导入。
+- **结论**：**确认无用**（本仓零调用；若定位为仓外 SDK 扩展点，则既无测试也无文档）。
+
+### 2. `PromptRegistry.replace`
+
+- **文件:行**：`prompts.py:148`
+- **怀疑理由**：与 `register` 成对的公开修改口，疑似遗留。
+- **调查过程**：
+  - `PromptRegistry` 实例只存在于 `PromptComposer.registry`（`prompts.py:181`）；该文件内对 registry 的调用只有 `self.registry.resolve(...)`（190/197/206）。
+  - `registry.replace(` / `prompt_registry.replace(` 全仓 0 次；66 个 `replace` 命中全部是 `str.replace` 或 `dataclasses.replace`（`pipeline.py`/`core.py`）。
+  - 同样无反射/字符串派发。
+- **结论**：**确认无用**。
+
+### 3. `PromptComposer.compose`
+
+- **文件:行**：`prompts.py:211`
+- **怀疑理由**：同时组合 static 与 request_system 的公开入口，但生产路径分别调用两个子方法。
+- **调查过程**：
+  - `grep -F ".compose("` 全仓 **0 命中**，只有定义行 `prompts.py:211`。
+  - 生产路径：静态部分走 `StaticPromptSessionCache.get_or_create → compose_static`（`prompts.py:286`）；请求部分走 `AgentContextManager.build_model_request_prompt → compose_request_system`（`prompts.py:518`）。
+  - `compose` 的两个内部调用目标 `compose_static`、`compose_request_system` 都有真实调用者，因此只有 `compose` 本身是多余的聚合入口。
+  - `tests`/`examples` 无 `PromptComposer` 导入。
+- **结论**：**确认无用**（`compose_static`、`compose_request_system` 仍在用，不能一并删除）。
+
+### 4. `PromptRequestContext` 的 11 个只写字段
+
+- **文件:行**：`prompt_models.py:99-111`；唯一构造点 `prompts.py:493-506`
+- **怀疑理由**：13 个字段中只有 2 个被读取。
+- **调查过程**：
+  - AST 枚举 `request_context.*` 的 Load：只有 `request_stage`（`prompts.py:349/355`）与 `request_type`（`prompts.py:363/380`），其余 11 个字段全仓 **0 读取**：
+    `session_id`(99)、`case_run_id`(100)、`turn_id`(101)、`request_id`(102)、`history_message_count`(105)、`latest_user_input_hash`(106)、`tool_names`(107)、`file_state_hash`(108)、`projection_hash`(109)、`runtime_state_hash`(110)、`dynamic_input_hash`(111)。
+  - 该对象只传给 `PromptInjectionPolicy.decide`，没有进入 `prompt.rendered` 事件；事件里的 `dynamic_inputs` 是另一个局部变量（`prompts.py:548`），不读该对象。
+  - 副作用：每次模型请求都白算一次 `_latest_user_input_hash(context.history)`（`common.py:112-122`，唯一调用点 `prompts.py:501`，反向扫描全部历史）、两次 `_hash_json`（503-506）。若删除这些字段，`_latest_user_input_hash` 也随之变成死代码（私有函数，未计入 77）。
+- **结论**：**确认无用（字段级）**；`PromptRequestContext` 类本身仍在用，但只剩 `request_stage`/`request_type` 两个有效字段。
+
+### 5. `ModelRequestPrompt` 的 7 个只写字段
+
+- **文件:行**：`prompt_models.py:148-155`；唯一构造点 `prompts.py:533-542`
+- **怀疑理由**：返回对象只有 `.text` 被消费。
+- **调查过程**：
+  - AST 枚举 `prompt.text`：唯一读取点 `pipeline.py:351`（`render_model_request_text`）。
+  - 另外 7 个字段全仓无读取：`static_text`(149)、`request_system_text`(150)、`prompt_hash`(151)、`static_prompt_hash`(152)、`request_system_prompt_hash`(153)、`modules`(154)、`injection_decision`(155)。
+  - `prompt.rendered` 事件用的是同名局部变量（`prompts.py:549-563`），不是这个返回对象；`build_model_request_prompt` 的唯一调用者是 `pipeline.py:347`。
+- **结论**：**确认无用（字段级）**；类仍在用，但实际契约等价于返回 `str`。
+
+### 6. `StaticPromptResult.metadata`
+
+- **文件:行**：`prompt_models.py:93`；赋值点 `prompts.py:308/337`
+- **怀疑理由**：缓存对象的元数据字段可能只写不读。
+- **调查过程**：
+  - `static_prompt.*` 的读取只有 `.text`、`.modules`、`.prompt_hash`、`.created`（`prompts.py:527/532/535/538/551/559/562`）；`.metadata` 全仓 0 读取。
+  - 磁盘元数据由局部变量 `metadata` 独立写入 `static_prompt.json`（`prompts.py:288-303`），并由 `_read_cached` 独立校验 `cache_status` 与 `prompt_hash`（`prompts.py:323-331`），不经过该字段。
+  - 附注：`static_prompt.json` 的 `registry_version`（`prompts.py:294-299`）也只写不读，实际校验依据是 `prompt_hash`（`prompts.py:330`）。
+- **结论**：**确认无用（字段级）**。
+
+### 7. `cli_bash_presets` 注入链
+
+- **文件:行**：`prompt_models.py:81`；`prompts.py:404/431/483`；来源 `pipeline.py:331`
+- **怀疑理由**：配置项从 `RunConfig` 一路注入 `PromptRenderContext`，但渲染函数可能不读。
+- **调查过程**：
+  - AST 枚举 `ctx.*`/`render_ctx.*`/`static_ctx.*` 的 Load：`cli_bash_presets` **0 次**。
+  - `_prompt_render_context_payload`（`prompt_sources.py:200-215`）也不包含该字段；`StaticPromptSessionCache` 甚至显式传空列表（`prompts.py:280`）。
+  - `AgentContextManager.cli_bash_presets` 只被读取一次，用于转发进这个死字段（`prompts.py:483`）；`AgentContextManager(prompt_composer=...)` 注入参数同样从未被外部传入。
+  - `config.cli_bash_presets` 本身仍是活配置：reminders 使用 `service.py:48/291`、`bootstrap.py:21`。死的只是 prompt 侧副本。
+- **结论**：**确认无用（字段级/注入链）**；`config.cli_bash_presets` 不能删。
+
+### 8. `PromptInjectionPolicy.decide` 的不可达分支
+
+- **文件:行**：`prompts.py:343-392`
+- **怀疑理由**：决策方法的输入在生产中固定，绝大多数分支可能不可达。
+- **调查过程**：
+  - 唯一调用点 `prompts.py:508`，输入来自 `build_model_request_prompt`：
+    - `request_stage="before_model_request"` 是字面量（`prompts.py:498`），因此 `349-357` 分支不可达；
+    - `dynamic_modules` 来自 `resolve_request_system_modules`（`prompts.py:490`），registry 中 4 个 `request_system` 模块全部默认启用，因此 `358-361` 的“空模块”分支不可达；
+    - `request_type` 参数默认 `"agent_turn"`（`prompts.py:450-452`），唯一调用者 `pipeline.py:347` 从不传该参数，因此 `363-378` 的 `summary` 分支与 `387-392` 的 fallback 分支不可达。
+  - 实际每次只走 `380-385`：始终 `inject_dynamic=True`、`module_ids` 为全部 4 个模块、`reason="before_model_request"`、`skipped_module_ids=[]`。
+- **结论**：方法**仍在用**（`build_model_request_prompt:508`），但 `349-357`、`358-361`、`363-378`、`387-392` 是**分支级死代码**；`request_type` 参数当前没有生产覆写点。若未来 summary/evaluation 路径启用，这些分支会重新变活。
+
+### 9. `PromptModule.depends_on` / `PromptModule.enabled`
+
+- **文件:行**：`prompt_models.py:26/27`
+- **怀疑理由**：依赖排序与条件启用是公开配置面，但可能从未被配置。
+- **调查过程**：
+  - `depends_on` 的读取点只有 `version_hash`（`prompt_models.py:38`）；`enabled` 的读取点只有 `PromptRegistry.resolve`（`prompts.py:173`）。
+  - AST 检查 `PromptModule` 的全部 11 次构造（`prompts.py:49-140`）：全部使用关键字参数，只传 `id/phase/type/cache_scope/order/render/required`，**从未传 `depends_on` 或 `enabled`**；也没有位置参数导致误绑。
+  - 因此 `depends_on` 恒为 `()`、`enabled` 恒为 `_always_enabled`（永远返回 True）。
+- **结论**：**仍在用 + 调用点**（`prompts.py:173`、`prompt_models.py:38`），但属于**死配置**：依赖排序与条件启用机制从未启用。`depends_on` 只在 `version_hash` 中贡献常量 `[]`。
+
+### 10. `RenderedPromptModule.skipped_reason`
+
+- **文件:行**：`prompt_models.py:54`
+- **怀疑理由**：字段存在但未见赋值点。
+- **调查过程**：
+  - 唯一构造点 `prompts.py:237-245` 不传 `skipped_reason`；全仓 `skipped_reason=` 0 命中。
+  - 读取点只有 `to_dict`（`prompt_models.py:67`），即原样输出 `null`；`_compose_modules` 对空内容/未启用模块直接 `continue`（`prompts.py:227-233`），根本不会为“被跳过模块”生成记录。
+- **结论**：**确认无用（字段级）**：恒为 `null`，没有任何信息量。
+
+### 11. `include` / `exclude` 参数通路
+
+- **文件:行**：`PromptRegistry.resolve` 的 `exclude`（`prompts.py:160`，过滤 `171-172`）；`PromptComposer.resolve_request_system_modules` 的 `include`/`exclude`（`prompts.py:187-188`）
+- **怀疑理由**：公开过滤参数可能无调用者。
+- **调查过程**：
+  - 全仓 `exclude=` 只出现在 `prompts.py:191`，即 wrapper 把自身参数原样传给 registry；而 wrapper 的唯一调用点 `prompts.py:490` 不传 `include` 也不传 `exclude`。
+  - `PromptRegistry.resolve` 的三个内部调用点（190/197/206）都不传 `exclude`；`include` 只在 `compose_request_system` 中传入 `module_ids`（207），该值来自 `decision.module_ids`，即全量模块。
+  - `phase` 与 `render_context` 在三个调用点始终显式传入，`phase=None` / `render_context=None` 分支也未走。
+- **结论**：方法**仍在用**（`resolve` 190/197/206；wrapper 490），但 `exclude` 过滤分支与 wrapper 的两个参数是**死参数通路**。
+
+### 12. `forward` / `execute` 等“无直接调用点”的公开方法（动态派发专项）
+
+- **文件:行**：`pipeline.py` 9 个 `Module.forward`；`compressor.py:35`；`core.py:184/440`；`model_invoker.py:14`
+- **怀疑理由**：AST 直接调用索引只有测试直接调 `LaraCompressorModule.forward`，其余看似零调用。
+- **调查过程**：
+  - `pygent/core/_module_definition.py:241` 的 `Module.__call__` 把调用交给 managed scope；`pygent/core/_direct_execution.py:266` 明确执行 `await module.forward(*args, **kwargs)`。
+  - `pygent/llm/layer.py:198` 明确调用 `invoker.execute(...)`。
+  - 所有模块类都在 `core.py:358/370/384/386/388/390-394/420/424` 被实例化并挂入 graph；`LaraModelInvoker` 由 `model_configuration.py:198` 构造。
+  - `execution_requirements` / `trusted_live_resource_attributes` 由 `pygent/core/definition.py:24/129` 按名读取。
+- **结论**：**仍在用（动态派发）**，不能按“无直接调用”判死。
+
+### 13. 重复常量专项
+
+- **文件:行**：`core.py:69` `DISABLED_COMPRESSION_WINDOW_TOKENS`；`core.py:71` `MODEL_RETRYABLE_ERROR_KINDS`
+- **怀疑理由**：同名常量在 `standard_agent/interfaces.py:20`、`lara/agents/runner.py:53/46`、`standard_agent/engine.py:46` 各有一份，疑似死重复。
+- **调查过程**：
+  - core 版本有真实使用：`core.py:413`、`core.py:87`。
+  - `standard_agent` 版本使用于 `interfaces.py:35` 与 `engine.py:259`；`agents/runner.py` 版本使用于 `runner.py:65/317`。
+  - `src/standard_agent` 没有 import `lara.runtime.agent`，只在注释里声明“与 core 对齐”。
+- **结论**：三份都**仍在用**，不是死代码；但属于独立复制，存在漂移风险（`core.py` 的 `MODEL_RETRYABLE_ERROR_KINDS` 是唯一实现，另外两处靠注释同步）。
+
+## 四、其余公开符号的在用证据
+
+以下 74 个符号均至少有一个生产调用点（框架派发已在上节说明）：
+
+```text
+common.py
+  DEFAULT_REACT_MAX_STEPS            core.py:418; service.py:259-261
+compressor.py
+  LaraCompressorModule               core.py:424
+  LaraCompressorModule.forward       框架派发
+core.py
+  DISABLED_COMPRESSION_WINDOW_TOKENS core.py:413
+  MAX_CONTEXT_COMPRESSIONS           core.py:431
+  MODEL_RETRYABLE_ERROR_KINDS        core.py:87
+  LARA_PROJECTION_READY_KIND         core.py:470; service.py:912
+  model_retry_policy                 core.py:339; service.py:1321
+  LaraForegroundAgent                core.py:420,437
+  SessionCompressionModule           service.py:1065
+  SessionCompressionModule.forward   框架派发
+  LaraAgent                          service.py:432,810,1688
+  LaraAgent.tool_definitions         core.py:343,514; service.py:1267,1272
+  LaraAgent.new_model_layer          core.py:382,383
+  LaraAgent.new_tool_layer           core.py:391
+  LaraAgent.forward                  框架派发（bound.start → pygent）
+  LaraAgent.aclose                   service.py:1740
+media_offload.py
+  UPLOADS_SUBDIR                     media_offload.py:351（模块内）
+  offload_inline_media               pipeline.py:95
+  RemoteMediaFetcher                 media_offload.py:91,118,199,232,267（注解）
+  offload_remote_media               pipeline.py:96
+  default_remote_fetcher             pipeline.py:99
+model_invoker.py
+  LaraModelInvoker                   model_configuration.py:198
+  LaraModelInvoker.execute           pygent layer.py:198（invoker.execute）
+pipeline.py
+  MAX_EMPTY_TOOL_FOLLOWUP_RETRIES    pipeline.py:425,433,436
+  EFFECT_FREE_RECOVERY               pipeline.py:410,802,839
+  MANAGED_EFFECT_RECOVERY            pipeline.py:361,442,521,648,884
+  checkpoint_conversation_message    core.py:459,524; service.py:1459; pipeline.py:463,490,898
+  render_model_request_text          pipeline.py:380; fork_context.py:119
+  LaraToolAuthorization              core.py:358,374
+  LaraToolAuthorization.forward      框架派发（ToolCallLayer）
+  DynamicPromptModule                core.py:370
+  DynamicPromptModule.forward        core.py:516,531
+  ForegroundModelModule              core.py:386
+  ForegroundModelModule.forward      框架派发
+  ConversationCheckpointModelModule  core.py:384
+  ConversationCheckpointModelModule.forward 框架派发
+  ToolAuditModule                    core.py:392; pipeline.py:845
+  ToolAuditModule.forward            pipeline.py:864（框架 Module 调用）
+  RuntimeReminderModule              core.py:393; pipeline.py:846
+  RuntimeReminderModule.forward      pipeline.py:867
+  PersistedDiffModule                core.py:394; pipeline.py:847
+  PersistedDiffModule.forward        pipeline.py:870
+  PreparedToolModule                 core.py:390
+  PreparedToolModule.forward         框架派发
+  ConversationCheckpointToolModule   core.py:388
+  ConversationCheckpointToolModule.forward 框架派发
+prompt_models.py
+  PromptModule                       prompts.py:49-140（11 次实例化）
+  PromptModule.version_hash          prompts.py:243; prompt_models.py:38
+  RenderedPromptModule               prompts.py:237
+  RenderedPromptModule.to_dict       prompts.py:245
+  PromptRenderContext                prompts.py:271,474
+  StaticPromptResult                 prompts.py:304,333
+  PromptRequestContext               prompts.py:493（类在用；字段见 §4）
+  PromptInjectionDecision            prompts.py:350,359,367,381,387
+  PromptInjectionDecision.to_dict    prompts.py:563
+  ModelRequestPrompt                 prompts.py:533（类在用；字段见 §5）
+prompts.py
+  PromptRegistry                     prompts.py:181（默认构造）; core.py:223（注解）
+  PromptRegistry.resolve             prompts.py:190,197,206
+  PromptComposer                     prompts.py:426
+  PromptComposer.resolve_request_system_modules  prompts.py:490
+  PromptComposer.compose_static      prompts.py:286
+  PromptComposer.compose_request_system          prompts.py:518
+  StaticPromptSessionCache           prompts.py:427
+  StaticPromptSessionCache.get_or_create         prompts.py:489
+  PromptInjectionPolicy              prompts.py:430
+  PromptInjectionPolicy.decide       prompts.py:508
+  AgentContextManager                pipeline.py:326
+  AgentContextManager.projection     prompts.py:454（内部）
+  AgentContextManager.build_model_request_prompt pipeline.py:347
+skill_catalog.py
+  skill_selection_changed            reminders/skills_context.py:52
+  skills_fingerprint                 reminders/skills_context.py:28,41
+  scan_multilevel_skills             reminders/skills_context.py:19,45
+  infer_installed_cli_names          reminders/cli_context.py:36
+```
+
+`prompt_sources.py`：没有公开符号（全部以 `_` 开头）。11 个 `_render_*` 与 `_prompt_render_context_payload` 通过 `PromptModule(render=...)` 动态注册；11 个模块在每次请求中都会被 static/request_system 两条渲染路径实际执行，已逐个核对注册与调用，不存在“注册后永不调用”的渲染函数。
+
+## 五、总数与确认无用清单
+
+**公开符号：77 个 → 确认无用 3 个，仅测试使用 0 个，仍在用 74 个。**
+
+### 确认无用（符号，3 个）
+
+1. `PromptRegistry.register` — `src/lara/runtime/agent/prompts.py:143`
+2. `PromptRegistry.replace` — `src/lara/runtime/agent/prompts.py:148`
+3. `PromptComposer.compose` — `src/lara/runtime/agent/prompts.py:211`
+
+### 附：确认无用的公开数据字段（22 个）
+
+- **`PromptRequestContext`（11）** — `prompt_models.py:99-111`，写入 `prompts.py:493-506`，仅 103/104 被读：
+  `session_id`、`case_run_id`、`turn_id`、`request_id`、`history_message_count`、`latest_user_input_hash`、`tool_names`、`file_state_hash`、`projection_hash`、`runtime_state_hash`、`dynamic_input_hash`
+- **`ModelRequestPrompt`（7）** — `prompt_models.py:149-155`，仅 `text` 被读（`pipeline.py:351`）：
+  `static_text`、`request_system_text`、`prompt_hash`、`static_prompt_hash`、`request_system_prompt_hash`、`modules`、`injection_decision`
+- `StaticPromptResult.metadata` — `prompt_models.py:93`
+- `PromptRenderContext.cli_bash_presets` — `prompt_models.py:81`
+- `AgentContextManager.cli_bash_presets` — `prompts.py:431`（仅转发进上一条死字段）
+- `RenderedPromptModule.skipped_reason` — `prompt_models.py:54`（恒为 `null`）
+
+### 附：分支级/参数级死代码
+
+- `PromptInjectionPolicy.decide` 不可达分支：`prompts.py:349-357`、`358-361`、`363-378`、`387-392`
+- `PromptRegistry.resolve(exclude=...)`：`prompts.py:160/171-172`
+- `PromptComposer.resolve_request_system_modules(include=, exclude=)`：`prompts.py:187-188`（唯一调用 `490` 均不传）
+- `AgentContextManager.build_model_request_prompt(request_type=...)`：`prompts.py:450-452`（唯一调用 `pipeline.py:347` 从不覆写）
+
+### 附：死配置（有读点但从未赋值，未计入“确认无用字段”）
+
+- `PromptModule.depends_on` — `prompt_models.py:26`，恒为 `()`
+- `PromptModule.enabled` — `prompt_models.py:27`，恒为 `_always_enabled`
+
+**范围外但被上述死数据牵连的私有符号**：`common._latest_user_input_hash`（`common.py:112`）唯一调用点是 `prompts.py:501` 的死字段；若清理 `PromptRequestContext`，该函数也会变成死代码。

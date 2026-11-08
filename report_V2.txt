@@ -1,0 +1,194 @@
+# 死代码验证报告 V2 — `src/lara/scheduler/` + `core/timefmt.py`
+
+只读分析完成，`git status --porcelain` 为空；额外跑了 `tests/test_scheduler_*.py` 作为基线证据（49 passed，`-p no:cacheprovider` + `PYTHONDONTWRITEBYTECODE=1`，未落盘）。
+
+## 结论速览
+
+| 项 | 数量 |
+|---|---|
+| 审计公开名（模块级函数/类/常量 + 类方法 + dataclass 字段） | 117（store 77、daemon 15、tools 5、schedule 10、keys 8、timefmt 2） |
+| 怀疑点 | 21 |
+| 全仓零引用（确认无用） | **0** |
+| 生产无消费（仅测试 / 仅写入 / 从未传入） | 8 类 |
+| 半死特性 | 2 类（`delivery` 全链路、event 默认不可触发） |
+
+最重要的结论：**`store.py` 主体是活的**（18 个公开方法里 16 个有生产调用点），真正的问题集中在「触发器元数据」和「内部提交入口」这两层——它们被完整建模、校验、持久化，但没有任何行为消费方。
+
+---
+
+## 一、store.py
+
+### S1 `SchedulerStore.submission()` — 仅测试使用
+- **文件:行** `src/lara/scheduler/store.py:411-418`
+- **怀疑理由** daemon 读待处理队列用的是 `pending_submissions()`；单条回读方法可能没人用。
+- **调查过程** 全仓 `rg "\.submission\("`：生产命中 **0**；测试命中 15 处（`test_scheduler_daemon.py` 8、`test_scheduler_tools.py` 3、`test_scheduler_cli.py` 2、`test_scheduler_store.py` 2）。daemon 写完 `mark_submission` 后从不回读；CLI 也没有 submissions 子命令。
+- **结论** **仅测试使用**（生产死代码）。
+
+### S2 `SchedulerStore.submit_internal()` — 仅测试使用
+- **文件:行** `src/lara/scheduler/store.py:382-409`
+- **怀疑理由** 注释说它是 daemon 内部的 timer/event 触发器入口，但 daemon 的定时触发实际走 `claim_due_tasks()`。
+- **调查过程** 全仓只有 `tests/test_scheduler_daemon.py:391,402` 调用。生产定时触发链路是 `_run_due_tasks` → `claim_due_tasks`（`daemon.py:351-357`），不经过 `submissions`。由此 `INTERNAL_SOURCES` 的无签名信任分支（`daemon.py:188-189`）在生产中也没有进程内生产者：任何 `source=timer/event` 的未签名行只能来自直接写库或测试。
+- **结论** **仅测试使用**。附带风险（非死代码结论）：daemon 对直接写入 DB 的 `source=timer/event` 行仍无条件信任。
+
+### S3 `Task.origin` — 写入 + 展示，无行为消费
+- **文件:行** 定义 `store.py:135`；序列化 `store.py:157`；回读 `store.py:206,232`；写入 `daemon.py:277,287`
+- **怀疑理由** 两层数据模型新增的触发器元数据，可能只是写库。
+- **调查过程** 全仓检索 `origin`：没有 `task.origin` 分支，没有 `WHERE origin`、没有 `ORDER BY origin`。daemon 只在提升任务时计算并写入；唯一出口是 `Task.to_dict()` → CLI `scheduler list/show` 的 JSON。
+- **结论** **半死**：值可被 CLI 观察到，但没有任何调度/投递行为读取它。注释里「classifies how an intent entered the bus」目前只是标签。
+
+### S4 `Task.delivery` + `TASK_DELIVERIES` + `DEFAULT_DELIVERY` + CLI `--delivery` — 功能未接线
+- **文件:行** `store.py:42,44,136,158,207-210,233,472,481-482`；`daemon.py:270-273,288`；`cli/scheduler.py:51-55,115`
+- **怀疑理由** CLI 暴露 `sync-reply|speak|fire-and-forget` 三种模式，但 `SubprocessTaskRunner` 固定执行 `lara session run`。
+- **调查过程** 检索 `delivery|sync-reply|speak|fire-and-forget`：生产读写仅限「接收 → 校验 → 写库 → 展示」。`SubprocessTaskRunner.run`（`daemon.py:87-123`）不读取 `task.delivery`；daemon 对 agent 强制改写为 `fire-and-forget` 也仅写入 DB；没有任何投递层（reply/speak）消费该值。
+- **结论** **半死（确认未接线）**：`--delivery speak` 对用户可见、可查询，但完全不改变执行或投递行为。`TASK_DELIVERIES`/`DEFAULT_DELIVERY` 只为这个死字段服务。
+
+### S5 `Submission.processed_at / task_id / error` — 只写审计字段
+- **文件:行** `store.py:100-102,113-115,198-200,443,449`；写入 `daemon.py:210-212`
+- **怀疑理由** 审计列是否有人读。
+- **调查过程** 生产代码读取 `Submission` 的只有 `_process_submissions` 的字段访问（`id/kind/source/payload/signature`）和 `to_dict()`；CLI 没有查询 submissions 的命令。`error` 里那条 `agent-requested-high normalized` 只有 `test_scheduler_daemon.py:343-348` 断言。`processed_at` 全仓除定义/写入/序列化外零读取。
+- **结论** **写入型审计数据，无生产读取路径**；只能直接打开 SQLite 才能看到（`store.submission()` 本身也是测试专用，见 S1）。
+
+### S6 从未传入的可选参数
+- **文件:行** `submit(created_at=)` `store.py:360`；`submit_internal(created_at=)` `store.py:389`；`create_task(task_id=)` `store.py:475`；`append_run(run_id=)` `store.py:676`
+- **怀疑理由** 测试注入缝是否真的有人用。
+- **调查过程** 全仓检索参数传入：4 个参数**没有任何调用方传入**（连测试都没有；`create_task` 的测试用 `explicit.id` 而非指定 id）。默认分支永远走 `uuid.uuid4()` / `utc_now()`。
+- **结论** **死参数**（保留默认行为，入参分支永不执行）。
+
+### S7 常量与内部辅助的冗余导出
+- **文件:行** `store.py:30-45,718-739`
+- **调查过程** `RUN_STATUSES`、`SUBMISSION_STATUSES`、`SUBMISSION_SOURCES`、`TASK_PRIORITIES`、`TASK_DELIVERIES` 只在 `store.py` 内部做校验；`parse_iso` 只在 `store.py` 内部使用。它们都在 `__all__` 里，但没有任何外部导入。`TASK_ORIGINS`、`DEFAULT_*` 确实被 `daemon.py` 导入使用。
+- **结论** **校验逻辑仍在用**，仅导出面冗余，不算死代码。
+
+其余 store 公开名均为生产在用（见文末清单）。
+
+---
+
+## 二、daemon.py
+
+### S8 `SchedulerDaemon.stop()` — 仅测试使用
+- **文件:行** `daemon.py:159-160`
+- **调查过程** 唯一调用方是 `tests/test_scheduler_daemon.py:296`（`run_forever` 的单轮测试）。生产入口 `cli/scheduler.py:97-103` 直接 `daemon.run_forever()`，没有信号处理，也不会调用 `stop()`——进程由 schtasks/终端终止。
+- **结论** **仅测试使用**（优雅停止能力实际没有生产入口）。
+
+### S9 `SchedulerDaemon.alerts` — 仅测试使用且无界增长
+- **文件:行** `daemon.py:156,426`
+- **调查过程** 生产侧告警真正落地是 `append_jsonl(alerts.jsonl)` 和 `alert_callback`；`self.alerts` 只被 `tests/test_scheduler_daemon.py:228` 读取，且每次 `_alert` 都追加、永不清理。
+- **结论** **仅测试观察缓冲区**。
+
+### S10 构造器依赖注入参数 — 生产只传 `config`
+- **文件:行** `daemon.py:129-140`（`store/runner/clock/sleeper/alert/session_id/lease_seconds`）；`tools.py:101-106`（`store=`）
+- **调查过程** `cli/scheduler.py:99` 与 `runtime/service.py:363` 都只传 `config`；这些参数仅测试使用。
+- **结论** **仅测试注入**（属于合理的可测性设计，但按调用点判定为测试专用）。
+
+### S11 `run_forever / run_once / SubprocessTaskRunner / TaskRunner / TaskResult / lara_command`
+- 全部在 `cli/scheduler.py:99-102`、`daemon.py:144,399`、`daemon.py:83` 有生产调用点 → **仍在用**。
+
+---
+
+## 三、tools.py
+
+### S12 全部公开名 — 仍在用
+- `SCHEDULER_TOOL_SPECS` → `runtime/service.py:363-365`（注册）与 `:417`（模型可见）；
+- `SCHEDULE_TASK_TOOL_SPEC` / `EMIT_EVENT_TOOL_SPEC` → 组成 `SCHEDULER_TOOL_SPECS`（`tools.py:97`）；
+- `SchedulerToolExecutor.execute` → 由 runtime 注册分派，`schedule_task` 分支 `tools.py:130-157`、`emit_event` 分支 `tools.py:158-176`。
+- **结论** `schedule_task` 有 CLI + agent 双入口；`emit_event` 只有 agent 工具入口（见 S14）。
+
+---
+
+## 四、schedule.py
+
+### S13 `Schedule` 四个字段 — 全部被消费，无死字段
+
+| 字段 | 消费点 |
+|---|---|
+| `kind` | `schedule.py:78-92`；`daemon.py:261,327,340` |
+| `interval_seconds` | `schedule.py:79-80`（`current + timedelta`） |
+| `at` | `schedule.py:82-83`；`daemon.py:260-262,328` |
+| `time_of_day` | `schedule.py:85-90`（`datetime.combine`） |
+| `event` | `daemon.py:340`（`_consume_event` 匹配） |
+
+`parse_schedule / next_run / advance` 均有生产调用（`daemon.py:258,262,326,329,337,419,420`；`tools.py:145`；`cli/scheduler.py:117`）。**结论：全部仍在用。**
+
+### S14 `event` kind 链路 — 消费方存在，但生产入口单一且默认关闭（半死）
+
+按要求专门核查「有没有 `on <事件>` 的消费方」：
+
+- **消费方存在**：`_process_submissions` 收集 `kind=="event"`（`daemon.py:218-219`），轮询末尾调用 `_consume_event`（`daemon.py:230-239`），后者遍历 `approved` 任务、匹配 `spec.kind=="event" and spec.event==event`，再 `claim_task` + `_execute_task`（`daemon.py:331-349`）。事件任务 `next_run_at=None`，只靠事件驱动；执行后 `advance()` 返回 `None`，任务保持 `approved` 可再次触发。逻辑闭环。
+- **生产生产者只有一个**：`emit_event` 工具（`tools.py:158-176`），注册并暴露于 `runtime/service.py:362-365,417`。**CLI 没有 `emit-event` 子命令**（`cli/scheduler.py:36-82` 仅有 run/add/list/show/approve…/init-keys/autostart）。
+- **默认不可用**：`SchedulerToolExecutor.execute` 在 `tools.py:120-123` 因 `agent_create_enabled=False` 直接抛 `PermissionError`；该配置默认值见 `schema/models.py:206`、`config/loader.py:223`。
+- **测试证据**：事件消费有端到端测试 `tests/test_scheduler_daemon.py:257-281`（用测试签名直接构造 `kind="event"`），生产签名侧有 `tests/test_scheduler_tools.py:103`。
+
+**结论**：`on <event>` **不是死代码**，消费方和生产者都真实存在。但按当前默认部署：用户可以用 `lara scheduler add --schedule "on build"` 创建事件任务，却**没有任何可用的生产入口去提交事件**——`event` 触发处于「默认配置下不可达」的半死状态；只有把 `scheduler.agent_create_enabled` 打开、由模型调用 `emit_event` 才能盘活。这一点建议在 README/工具描述中显式说明，或补一个 CLI `emit-event`。
+
+---
+
+## 五、keys.py
+
+### S15 `SOURCES` / `key_path` — 内部辅助，导出冗余
+- `keys.py:17,25,32` 与 `keys.py:24,33,46`；全仓无外部导入（`SOURCES`/`key_path` 只出现在 `keys.py` 自身和 `__all__`）。**结论：仍在用（内部），仅导出冗余。**
+
+### S16 `init_keys(force=...)` — 在用，但 `force=True` 无测试
+- **文件:行** `keys.py:30,35`；CLI `cli/scheduler.py:70-72`（`--force`）、`:164`（`init_keys(..., force=bool(args.force))`）。
+- **调查过程** CLI 已接线，分支会重写两个 key 文件。`tests/test_scheduler_cli.py:36` 传入的 `"force": False`，`tests/test_scheduler_keys.py` 未构造已存在的 key，因此 `force=True` 的覆盖分支**没有直接测试覆盖**。
+- **结论** **仍在用 + 调用点 `cli/scheduler.py:164`**；仅测试覆盖缺失，不是死代码。
+
+### S17 `canonical_payload` — 内部实现细节，包级导出无用
+- `keys.py:59-62`，唯一调用是 `sign()`（`keys.py:66`）。同时在 `keys.py:76` 和 `scheduler/__init__.py:4,40` 导出，但全仓无外部消费者。**结论：仍在用（内部签名规范化），公共导出冗余。**
+
+### S18 `SchedulerKeysMissing` — 在用
+- `load_secret` 抛出（`keys.py:50,56`），测试捕获（`tests/test_scheduler_keys.py:37`）。注意 `daemon.py:200` 只捕获 `(OSError, ValueError)`，`SchedulerKeysMissing` 是 `RuntimeError`，运行中删 key 会逃逸出 `_process_submissions` —— 非死代码，但异常契约不一致。
+
+### S19 `load_secret / sign / verify` — 在用
+CLI（`cli/scheduler.py:120,152`）、tools（`tools.py:124,146,165`）、daemon（`daemon.py:180,192`）均有调用。
+
+---
+
+## 六、core/timefmt.py
+
+### S20 `format_current_time_line` — 仍在用
+- 调用点：`scheduler/message.py:9,39`、`runtime/reminders/rendering.py:5,27`。**结论：在用，符合「两处不能漂移」的设计意图。**
+
+### S21 `TIME_LINE_FORMAT` — 内部常量，导出冗余
+- 只在 `timefmt.py:17` 使用；全仓无外部引用。**结论：仍在用（内部），导出冗余。**
+
+---
+
+## 七、包级门面 `scheduler/__init__.py`
+
+- **文件:行** `src/lara/scheduler/__init__.py:3-50`
+- **调查过程** 全仓 `rg "from lara\.scheduler import"` = **0**；所有消费者都直接从子模块导入（`cli/scheduler.py`、`runtime/service.py`、tests）。
+- **结论** **无仓内消费者的公共门面**。导入副作用仍会执行（导入 `lara.scheduler.tools` 会先跑 `__init__`，连带导入 daemon），所以它不是死代码，但 26 个 re-export 在仓内没有任何使用点。
+
+---
+
+## 八、仍在用的公开名（汇总）
+
+- **store**：`migrate`（daemon:178）、`submit`（tools:150/169、cli:122/154）、`pending_submissions`（daemon:184）、`mark_submission`（daemon:210,215,224,233,236,243）、`create_task`（daemon:278）、`task`（daemon:299、cli:138）、`list_tasks`（daemon:335、cli:132）、`set_task_status`（daemon:309,311,383）、`update_task_next_run`（daemon:303,313,384,420）、`claim_due_tasks`（daemon:352）、`claim_task`（daemon:342）、`release_task`（daemon:395,421）、`delete_task`（daemon:319）、`append_run`（daemon:385,409）、`list_runs`（cli:143）、`Submission/Task/Run.to_dict`（cli:127,132,142-143、tools:157,176）、`iso/utc_now/prompt_hash/scheduler_db_path/scheduler_keys_dir/submission_payload`。
+- **daemon**：`SchedulerDaemon.run_forever/run_once`、`SubprocessTaskRunner`、`TaskRunner`、`TaskResult`、`lara_command`。
+- **tools**：全部 5 个。
+- **schedule**：全部 10 个（含 `ScheduleKind` 类型别名）。
+- **keys**：`SOURCES`、`key_path`（内部）、`init_keys`、`load_secret`、`canonical_payload`（内部）、`sign`、`verify`、`SchedulerKeysMissing`。
+- **timefmt**：`format_current_time_line`、`TIME_LINE_FORMAT`（内部）。
+
+---
+
+## 九、总数与确认无用清单
+
+- **公开名审计总数**：117
+- **怀疑点**：21
+- **全仓零引用（严格意义的「确认无用」）：0 项** — 即使是最可疑的 `submission()` 也有测试引用。**确认无用清单为空。**
+
+**生产死代码清单（有引用，但生产无消费）**：
+
+1. `SchedulerStore.submission()` — 仅测试（`store.py:411`）
+2. `SchedulerStore.submit_internal()` — 仅测试（`store.py:382`）
+3. `SchedulerDaemon.stop()` — 仅测试（`daemon.py:159`）
+4. `SchedulerDaemon.alerts` — 仅测试读取、生产只增不减（`daemon.py:156`）
+5. `Task.origin` 读取侧 — 只写 + CLI 展示（`store.py:135`）
+6. `Task.delivery` 全链路 — 接收/校验/写库/展示，无执行消费（`store.py:136`、`cli/scheduler.py:115`）
+7. `Submission.processed_at/task_id/error` 读取侧 — 只写审计（`store.py:100-102`）
+8. 4 个从未传入的参数：`submit(created_at=)`、`submit_internal(created_at=)`、`create_task(task_id=)`、`append_run(run_id=)`
+
+**半死特性**：`delivery` 三种模式（S4）、`on <event>` 在默认配置下无生产者（S14）。
+
+**冗余导出（非死代码）**：`RUN_STATUSES` 等 5 个仅内部使用的状态常量、`parse_iso`、`SOURCES`、`key_path`、`canonical_payload`、`TIME_LINE_FORMAT`，以及整个 `scheduler/__init__.py` 门面。

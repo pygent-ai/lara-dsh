@@ -1,0 +1,146 @@
+# 死代码验证结果（只读，未改动任何文件）
+
+`git status --porcelain` 为空，全程只读。
+
+## 结论摘要
+
+| 分类 | 数量 |
+|---|---|
+| 检查的公开名总数 | **71**（58 个公开函数/类含方法 + 13 个公开常量） |
+| ① 确认无用（本仓零引用） | **7** |
+| ② 仅测试使用 | **2** |
+| ③ 仅定义文件内部使用（公开但无外部调用者） | **17** |
+| ④ 仍在用 | **45** |
+
+范围：`src/lara/core/`、`src/lara/credentials/`、`src/lara/tracing/`；"公开"= 无前导下划线的模块级函数/类、类公开方法、模块级常量。
+
+**调查手段**（每个怀疑点都实际读了调用上下文，不只看 grep）：
+1. AST 抽取全部公开名；对全仓（`src/lara` + `src/standard_agent` + `tests` + `examples`）建 Name/Attribute/import 索引，按接收者区分 `EventStore.append` 与 `list.append`、`Prompt.escape` 与 `html.escape`。
+2. `rg` 全仓逐名复核（含 README、pyproject），确认无字符串派发。
+3. 逐个打开定义文件与调用点读上下文（`prompt.py`、`io.py`、`process.py`、`store.py`、`events.py`、`diffing.py` 全文；调用点 `runtime/tools.py`、`runtime/service.py`、`runtime/bash_tasks.py`、`sessions/manager.py`、`cli/credentials.py`、`config/loader.py`、`schema/models.py`）。
+4. 动态引用专项：`getattr(`、`setattr(`、`__getattr__`、`inspect.`、`dir(`/`vars(`、`import *`、CLI 注册表、pyproject entry points。
+5. `git log -S<name>` 追溯引入点。
+
+---
+
+## ① 确认无用（7 条）
+
+**1. `read_jsonl_snapshot`** — `src/lara/core/io.py:83`
+- 理由：公开函数，未导出，全仓无任何 import/调用。
+- 调查：`rg read_jsonl_snapshot` 全仓仅命中定义行；AST 索引 0 个 Name/Attribute 引用；不在任何 `__all__`；`git log -S` 显示随抽取提交 `767a413` 整体进入，之后无调用者变更。
+- 结论：**确认无用**（连定义文件内部也不调用）。
+
+**2. `file_snapshot`** — `src/lara/core/io.py:99`
+- 理由：只在 `core/__init__.py` 被再导出，无实际调用。
+- 调查：全仓命中＝定义 + `core/__init__.py:5,18`；AST 无调用；同目录 `runtime/file_effect_models.py:13` 的 `FileSnapshot` 与 `runtime/tools.py:118-130` 的快照逻辑已覆盖其能力（exists/hash/size）。注意：它属于 `lara.core.__all__` 声明面，但本仓没有任何 `from lara.core import ...`。
+- 结论：**确认无用（仅 facade 导出）**。
+
+**3. `owner_is_foreign_and_alive`** — `src/lara/core/process.py:30`
+- 理由：整个 owner stamp 机制只有"写"没有"判"。
+- 调查：全仓仅定义行 + `process.py:83` 的 `__all__`；无 import、无属性访问。读取上下文的旁证：`current_owner()` 在 `sessions/manager.py:383` 写入 `history_start_index/owner`，而读取 owner 的 `SessionManager.run_owner()`（`sessions/manager.py:631`）本身也零调用（`rg run_owner\(` 只有定义）。即"跨进程 owner 对账"功能在本仓被裁掉，只留下写 stamp 的一半。
+- 结论：**确认无用**。
+
+**4. `EventStore.append_event`** — `src/lara/tracing/events.py:90`
+- 理由：与 `append()` 能力重复；`append()` 本身已接受 `ContextEvent`（`events.py:73-88`）。
+- 调查：全仓 `.append_event(` 0 次；AST 0 个属性引用；无 `__getattr__`/字符串派发。
+- 结论：**确认无用**。
+
+**5. `EventStore.list_by_session`** — `src/lara/tracing/events.py:124`
+- 调查：全仓 0 引用。对照：同组 `list_by_run` 在 `runtime/service.py:1516` 使用，`list_events` 在 `runtime/bash_tasks.py:160` 使用，`iter_jsonl` 在 `context_compression.py:209` 与 `diffing.py:315` 使用——只有 session/case/turn 三个过滤器无人调用。
+- 结论：**确认无用**。
+
+**6. `EventStore.list_by_case`** — `src/lara/tracing/events.py:128`
+- 调查：同上，全仓 0 引用。
+- 结论：**确认无用**。
+
+**7. `EventStore.list_by_turn`** — `src/lara/tracing/events.py:132`
+- 调查：同上，全仓 0 引用（`DiffTool.forward` 的 `turn_id` 过滤是直接读 JSONL，见 `diffing.py:264-267`，不走此方法）。
+- 结论：**确认无用**。
+
+---
+
+## ② 仅测试使用（2 条）
+
+**8. `Prompt.wrap_escaped`** — `src/lara/core/prompt.py:114`
+- 理由：生产代码没有任何 `wrap_escaped` 调用。
+- 调查：唯一实际调用是 `tests/test_prompt.py:35`；`tests/test_prompt_envelope_coverage.py:25` 的 `_PROMPT_METHODS` 只是用于 AST 扫描的字符串集合，不会调用。生产端走的是 `escape()` + `wrap()` 组合（`scheduler/message.py:44-47`、`runtime/reminders/rendering.py:26-27` 等）。
+- 结论：**仅测试使用**（作为 API 契约保留合理）。
+
+**9. `KNOWN_ENVELOPES`** — `src/lara/core/prompt.py:28`
+- 理由：信封注册表在生产端没有被查询。
+- 调查：全部引用是 `tests/test_prompt.py:7,72,89-92`、`tests/test_prompt_envelope_coverage.py:18,106,114`，外加 README:103 文字说明。生产端 `Prompt.wrap` 只调用 `_validate_tag`（`prompt.py:61-63`），不读取该表；`Prompt` 类本身也不引用它。
+- 结论：**仅测试使用**（测试把它当"信封契约白名单"用）。
+
+---
+
+## ③ 公开名，但只被定义文件内部使用（17 条）
+
+> 这 17 条不是"死代码"——都在本文件内被调用；但作为**公开名**零外部调用者，删除/私有化的决策应看公共 API 承诺。
+
+**10. `EnvelopeInfo`** — `src/lara/core/prompt.py:21`：仅本文件 `KNOWN_ENVELOPES` 构造与类型注解使用（16 处）；字段 `parser_contract/note` 由 `tests/test_prompt.py:89-92` 读取；无 import。**仅内部构造（字段被测试读取）**。
+
+**11. `REDACTED`** — `src/lara/core/redaction.py:9`：`redaction.py:52,72-75` 内部使用；仅 `core/__init__.py:13,16` 再导出；全仓无其他消费。**仅内部 + facade**。
+
+**12. `TIME_LINE_FORMAT`** — `src/lara/core/timefmt.py:11`：`timefmt.py:17` 使用，`__all__` 导出。两个生产消费者调用的是 `format_current_time_line`（`scheduler/message.py:39`、`runtime/reminders/rendering.py:27`），都不引用常量。**仅内部**。
+
+**13. `PROCESS_TOKEN`** — `src/lara/core/process.py:19`：`process.py:25,45` 内部使用，`__all__` 导出；无外部 import。**仅内部**。
+
+**14. `KEYRING_SERVICE`** — `src/lara/credentials/store.py:16`：`store.py:67,78,85` 使用；仅 `credentials/__init__.py:5,25` 再导出。**仅内部 + facade**。
+
+**15. `USER_CREDENTIALS_FILENAME`** — `src/lara/credentials/store.py:17`：`store.py:22,36,116` 使用；仅 facade 再导出。**仅内部 + facade**。
+
+**16. `ensure_user_lara_root`** — `src/lara/credentials/store.py:25`：`store.py:34`（`load_credentials`）、`115`（`set_user_credential`）内部使用；仅 facade 再导出（`cli/credentials.py` 未导入它）。**仅内部 + facade**。
+
+**17. `get_keyring_credential`** — `src/lara/credentials/store.py:63`：`store.py:57`（`lookup_credential`）、`144`（`credential_is_configured`）内部使用；仅 facade。**仅内部 + facade**。
+
+**18. `read_env_entries`** — `src/lara/credentials/store.py:91`：`store.py:50,117,126,136,142` 内部使用；仅 facade。**仅内部 + facade**。
+
+**19. `write_env_entries`** — `src/lara/credentials/store.py:107`：`store.py:119,130` 内部使用；仅 facade。**仅内部 + facade**。
+
+**20. `DESIGN_EVENT_TYPES`** — `src/lara/tracing/events.py:14`：`events.py:45` 用于合成 `LARA_EVENT_TYPES`；仅 `tracing/__init__.py:4,7` 再导出；无生产消费者。**仅内部 + facade**。
+
+**21. `LARA_EVENT_TYPES`** — `src/lara/tracing/events.py:45`：`events.py:283` 做事件类型校验；未出现在任何 `__init__`/`__all__`，也无外部 import。**仅内部**。
+
+**22. `MAX_DIFF_SNAPSHOT_BYTES`** — `src/lara/tracing/diffing.py:17`：`diffing.py:406` 内部使用；无外部引用。**仅内部**。
+
+**23. `MAX_INLINE_PATCH_CHARS`** — `src/lara/tracing/diffing.py:18`：`diffing.py:340` 内部使用。**仅内部**。
+
+**24. `MAX_INLINE_PATCH_LINES`** — `src/lara/tracing/diffing.py:19`：`diffing.py:341,349` 内部使用。**仅内部**。
+
+**25. `DiffArtifact`** — `src/lara/tracing/diffing.py:30`：只在 `diffing.py:131,146,189`（`_write_artifact` 的返回 DTO）使用；不在 `tracing/__init__.py.__all__`；全仓无 import。**仅内部 DTO**。
+
+**26. `DiffSnapshotContent`** — `src/lara/tracing/diffing.py:23`：内部在 `diffing.py:77,82,129-130,401-419,444` 构造/传参；虽然从未被按名 import，但它作为公开函数 `read_snapshot_content` 的返回类型跨模块被**结构化消费**（`runtime/tools.py:126-128` 读 `.content/.available/.reason`），**不是死代码**，只是公开名无外部导入者。
+
+---
+
+## ④ 仍在用（45 条，代表性命中）
+
+- **core/io.py**（13）：`jsonl_path_lock`（`bash_tasks.py:49`、`file_effects.py:99`）、`utc_now`（`process.py:26`、`tracing/events.py:267` 等）、`read_json`/`write_json`/`write_text`/`write_json_atomic`/`append_jsonl`（`tracing/events.py:9,159,224-225`、`sessions/manager.py`）、`validate_path_id`（`sessions/manager.py:65` 等）、`load_env_file`（`credentials/store.py:160`）、`non_empty_string`（别名 `_non_empty`，见下）、`plain_data`（`runtime/tools.py:564` 等）、`plain_object`（`runtime/service.py:475` 等）、`aclose_if_supported`（`runtime/service.py:1771`、`agent/core.py:640`）。
+- **core/paths.py**（2）：`user_lara_root`（`config/loader.py:48`）、`project_lara_root`（`schema/models.py:371`、`runtime/agent/prompt_sources.py:67`）。
+- **core/process.py**（1）：`current_owner`（`sessions/manager.py:383`）。
+- **core/prompt.py**（4）：`Prompt`（15+ 个生产模块）、`wrap`（`runtime/context_compression.py:193,204`、`scheduler/message.py:39-50` 等）、`escape`（`scheduler/message.py:44,47`）、`self_closing`（`scheduler/message.py:43`）。
+- **core/redaction.py**（1）：`redact_secrets`（`tracing/events.py:158`、`sessions/manager.py:724` 等）。
+- **core/timefmt.py**（1）：`format_current_time_line`（`scheduler/message.py:39`、`reminders/rendering.py:27`）。
+- **credentials/store.py**（10 + 1 常量）：`user_credentials_path`（`cli/credentials.py:51`）、`load_credentials`（`config/loader.py:49`）、`lookup_credential`（`cli/credentials.py:136`、`runtime/model_configuration.py:66`）、`set_keyring_credential`/`delete_keyring_credential`/`set_user_credential`/`delete_user_credential`/`prompt_for_secret`（`cli/credentials.py:68-89`）、`list_user_credential_names`（`cli/credentials.py:52`、`model_configuration.py:75`）、`credential_is_configured`（`cli/credentials.py:54`）、`DEFAULT_API_KEY_ENV`（`cli/credentials.py:53`）。
+- **tracing/events.py**（6）：`EventStore`、`append`（`runtime/tools.py:552`、`diffing.py:120`、`bash_tasks.py:104` 等）、`append_error`（`bash_tasks.py:143`）、`list_by_run`（`runtime/service.py:1516`）、`list_events`（`bash_tasks.py:160`）、`iter_jsonl`（`context_compression.py:209`、`diffing.py:315`）。
+- **tracing/diffing.py**（5 + 1 常量）：`DiffRecorder` + `record_effect`（`runtime/tools.py:325,348`）、`DiffTool` + `forward`（`runtime/service.py:250,255`）、`read_snapshot_content`（`runtime/tools.py:118`）、`DIFF_TOOL_SPEC`（`service.py:341`、`agent/core.py:295,354,661`）。
+
+### 误报澄清（grep 会误伤的几处）
+- `non_empty_string`：以 `_non_empty` 别名导入，实际调用在 `cli/credentials.py:59`、`config/loader.py:102,410-430`、`credentials/store.py:49`。
+- `Prompt.escape`：全仓大部分 `escape` 是 `html.escape`；真实方法调用只有 `scheduler/message.py:44,47`。
+- `write_text`：多数 `.write_text` 是 `pathlib.Path.write_text`；Lara 的 `io.write_text` 用在 `tracing/events.py:224`、`diffing.py:178`。
+- `EventStore.append`：`list.append` 大量存在，按接收者筛出后确认 8 处是 `EventStore` 实例调用。
+
+---
+
+## 动态引用专项（均未发现隐藏调用）
+
+- **getattr**：`rg getattr(` 全仓 30 处，均为具体属性读取（`diffing.py:78-85` 读 `effect` 字段、`mcp.py:46`/`model_configuration.py:90` 代理对象），**没有**按名字派发到上述公开名。
+- **CLI 注册表**：`cli/main.py:67-70` 是显式 `register_*_parser` 调用；`cli/credentials.py:28,38,43,46` 是 `set_defaults(handler=私有函数)`。范围内没有任何名字被注册为 CLI handler。
+- **pygent `@tool` 注册**：`DiffTool.forward` 虽被 `@tool` 装饰，但实际执行路径是 `service.py:250` 构造 `DiffTool` → `service.py:255` 直接 `diff.forward(**kwargs)`；真正的工具 spec 是 `DIFF_TOOL_SPEC`（`_diff_contract` 只用于生成 spec）。
+- **包级再导出**：`lara/__init__.py` 只导出 `SessionManager/ToolObserver/load_run_config`；全仓**没有任何** `from lara.core import ...`，也没有 `import *`；`pyproject.toml` 只有 `lara = "lara.cli:main"` 一个 entry point。
+
+## 限制说明
+
+- 本仓是"从上游 lara 完整抽取"的副本（README 明确说明复制代码保持原样）。git 历史中这些名字都随抽取提交 `767a413` 一次性进入，因此**本仓历史无法证明上游是否仍有调用者**；上表结论严格限定为"本仓生产代码零调用者"。删除前需考虑它们是声明过的公共 API（尤其被 `__all__` 再导出的 `file_snapshot`、`REDACTED`、`KNOWN_ENVELOPES`、credentials 的一组内部工具）。
+- 未运行测试（避免写入 `__pycache__`/临时文件）；结论均由静态读取与 AST 索引得出。

@@ -1,0 +1,261 @@
+# 死代码验证 W3 报告（只读）
+
+未修改任何文件。`git status --porcelain` 仍只有审计前已存在的 4 个未跟踪报告文件（`report_V1.txt` … `report_V4.txt`），本次审计未新增/改动工作区内容。
+
+## 结论速览
+
+| 项目 | 数量 |
+|---|---:|
+| 审计公开名总数 | **189**（60 个模块级函数/类/常量 + 129 个公开方法） |
+| 怀疑点 | **81** |
+| **确认无用** | **64**（orchestration 5 + sessions 17 + dispatch 42） |
+| 仅测试使用 | **0** |
+| 仍在用（怀疑点内） | **17** |
+
+判定口径：
+
+- 生产调用者 = `src/lara` + `src/standard_agent` 内的 import/调用；`tests`、`examples` 分开统计。
+- “确认无用（传递性）”= 唯一调用者本身已确认无用，且无其他活调用路径。
+- CLI handler 单独检查 argparse 注册表，而不是只看直接调用。
+- 检查了 `getattr`/`setattr`/`importlib`/`__getattr__`/`__all__` 与字符串派发；唯一遗漏风险点是 `attach_collaboration`，已确认由 `getattr` 动态调用。
+- 本仓是从上游 lara 抽取的副本；`git log -S` 显示这些符号均随抽取提交 `767a413` 一次性进入，本仓历史无法证明上游是否仍有调用者。
+
+---
+
+## 一、`src/lara/orchestration/`（10 个怀疑点）
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `WorkspaceRuntimePool.retire_scope` | `runtime_pool.py:150` | 公开生命周期方法，README 称 pool 负责 retire | 全仓 `rg` 仅定义行；AST Attribute 引用 0；无 `getattr`/测试/字符串派发 | **确认无用** |
+| `SessionExecutionCoordinator.recover_turn` | `session_execution.py:68` | 恢复入口，但当前提交路径不经过它 | `.recover_turn` 唯一命中是同文件 `:164` 的 `runtime_service.recover_turn`（不同类）；无 `coordinator.recover_turn`；测试 0。README 提到 “recovers turns”，属上游 API 残留 | **确认无用** |
+| `SessionExecutionCoordinator.find_execution` | `session_execution.py:273` | 公开查询方法 | 全仓零引用；无测试/反射 | **确认无用** |
+| `SessionExecutionCoordinator.find_case_run` | `session_execution.py:277` | 公开查询方法 | 全仓零引用；`SessionManager.find_case_run` 同名方法也死（见下） | **确认无用** |
+| `SessionExecutionCoordinator.session_busy` | `session_execution.py:281` | 公开状态查询 | 全仓零引用 | **确认无用** |
+| `ManagedSessionTurn.wait_finalized` | `managed_turn.py:56` | 公开等待原语，外部无调用 | 仅 `result()` 在 `:60` 调用；`result()` 被 `cli/sessions.py`、`standard_agent/lara_rt.py`、`dispatch/scheduler.py` 等使用 | **仍在用**（类内 `:60`） |
+| `WorkspaceRuntimePool.attach_collaboration` | `runtime_pool.py:41` | 无直接调用，易误判为死 | `execution_host.py:30-32` 使用 `getattr(self.runtime_pool, "attach_collaboration", None)` 后调用；无改名/字符串派发 | **仍在用**（动态派发） |
+| `SessionCollaborationService.message_status` | `session_collaboration.py:103` | 外部无调用 | 类内 `wait_message:190`、`item_status:210` 调用；两者分别被 CLI/运行时使用 | **仍在用**（内部） |
+| `SessionExecutionCoordinator.session_execution` | `session_execution.py:251` | 公开 async context manager，外部无调用 | 仅 `_drive_turn:118` 使用；所有 `submit_turn` 路径都经过它 | **仍在用**（内部） |
+| `SessionExecutionKey.from_manager` | `session_execution.py:28`（类 `:21`） | 模块 `__all__` 导出但包 `__init__` 未导出，外部零引用 | 类在 `:48` 作为 lane dict key；`:258/:282/:286` 调 `from_manager` | **仍在用**（内部） |
+
+---
+
+## 二、`src/lara/sessions/`（18 个怀疑点）
+
+### `SessionCollaborationStore`（legacy operation 表）
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `reserve` | `collaboration.py:163` | 旧 operation 提交入口，当前消息链路改用 `enqueue_message` | 全仓零引用；无测试/反射。`SessionCollaborationService.send` 只调 `enqueue_message` | **确认无用** |
+| `claim_preparation` | `collaboration.py:376` | 旧 preparing 租约流程 | 全仓零引用 | **确认无用** |
+| `attach_target` | `collaboration.py:403` | 旧 operation 目标绑定 | `.attach_target` 的命中全部是 `dispatch/scheduler.py:248/390` 对 `DispatchStore` 的调用，不是本类；本类零调用 | **确认无用** |
+| `claim` | `collaboration.py:439` | 旧 operation 租约 | 全仓零引用 | **确认无用** |
+| `mark_running` | `collaboration.py:504` | 旧 operation 状态更新 | `.mark_running` 的命中全部是 `dispatch/scheduler.py:288/425` 对 `DispatchStore` 的调用；本类零调用 | **确认无用** |
+| `heartbeat` | `collaboration.py:524` | 旧 operation 心跳 | `.heartbeat` 唯一命中是 `dispatch/scheduler.py:221` 对 `DispatchStore` 的调用；本类零调用 | **确认无用** |
+| `finish` | `collaboration.py:538` | 旧 operation 终态写入 | 全仓零引用；`finish` 的其他命中是注释/字符串 | **确认无用** |
+
+> 活的相邻面：`enqueue_message`、`get_message`、`list_operations`、`get`、`get_claimed_message`、`claim_messages`、`acknowledge_message`、`release_message` 均有生产调用，不能一并删除。
+
+### `SessionManager`
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `set_selected_model` | `manager.py:153` | 桌面端模型选择接口，CLI 无对应子命令 | 全仓零引用；无测试/反射 | **确认无用** |
+| `rename_model_key` | `manager.py:191` | 配置重命名迁移接口 | 全仓零引用 | **确认无用** |
+| `load_or_create` | `manager.py:214` | 旧 `SessionSpec` 入口 | 全仓零引用；`SessionSpec` 无活消费路径 | **确认无用** |
+| `history_with_run_timing` | `manager.py:516` | 历史分页接口，可能只供已裁剪 API | 全仓零引用；`runtime/service.py` 直接读 `session.history`，不调此方法 | **确认无用** |
+| `history_count` | `manager.py:587` | 历史计数接口 | 全仓零引用 | **确认无用** |
+| `history_before_count` | `manager.py:601` | 历史分页计数 | 全仓零引用 | **确认无用** |
+| `run_timing` | `manager.py:622` | 运行计时投影 | 唯一调用是 `history_with_run_timing:579`（已死） | **确认无用（传递性）** |
+| `run_owner` | `manager.py:631` | 进程 owner 读取 | 全仓零引用；`core/process.py` 的 owner 写入侧仍在，但读取侧已无消费者 | **确认无用** |
+| `load_run_config` | `manager.py:638` | 方法名与 `lara.config.load_run_config` 混淆 | 本方法零引用；模块级 `lara.config.load_run_config` 仍在大量使用，二者不是同一符号 | **确认无用** |
+| `find_case_run` | `manager.py:700` | case run 定位接口 | 全仓零引用；`SessionExecutionCoordinator.find_case_run` 也死 | **确认无用** |
+| `SessionDirectory.register_project` | `directory.py:58` | 公开注册入口 | 外部零引用；`register_session:88` 内部调用 | **仍在用**（内部） |
+
+---
+
+## 三、`src/lara/dispatch/`（42 个怀疑点）
+
+> 系统性背景：README 明确说明 `automations`、`lara_api`、桌面端已裁剪。本包的 **task 级 automation 管理/调度面整体没有本仓消费方**；仍活的是 “后台 start/fork item 的提交 + 查询” 这一条链。
+
+### 3.1 `DispatchScheduler` 与 `DispatchService`
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `DispatchScheduler` | `scheduler.py:43` | 类只在包 `__init__` 再导出 | `rg "DispatchScheduler\("` 全仓 0 次实例化；唯一引用是 `dispatch/__init__.py:11,23`；无测试 | **确认无用** |
+| `DispatchScheduler.start` | `scheduler.py:79` | 启动入口 | 无调用者；`_run_loop` 是唯一由它创建的任务 | **确认无用（传递性）** |
+| `DispatchScheduler.close` | `scheduler.py:87` | 关闭入口 | 无调用者；`.close` 的 17 个命中均为其他对象（runtime/host/coordinator） | **确认无用（传递性）** |
+| `DispatchScheduler.poll_once` | `scheduler.py:101` | 轮询入口 | 仅 `_run_loop:156` 调用，而 `_run_loop` 只由 `start:84` 启动 | **确认无用（传递性）** |
+| `DispatchScheduler.cancel_run` | `scheduler.py:122` | 取消入口 | 全仓零调用；注释提到它但无调用点 | **确认无用（传递性）** |
+| `DispatchService.create` | `service.py:20` | automation 创建 API | 无调用者；只有 `store.create:26`（下游也死） | **确认无用** |
+| `DispatchService.update` | `service.py:28` | automation 更新 API | 无调用者；`store.get:29`、`store.update:34` 均为死链 | **确认无用** |
+| `DispatchService.pause` | `service.py:36` | automation 暂停 API | 无调用者 | **确认无用** |
+| `DispatchService.resume` | `service.py:39` | automation 恢复 API | 无调用者 | **确认无用** |
+
+### 3.2 `DispatchStore`
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `create` | `store.py:67` | task 创建 | 唯一真实调用 `service.py:26`（已死的 `DispatchService.create`） | **确认无用（传递性）** |
+| `list` | `store.py:125` | task 列表 | 唯一真实调用 `dispatch/scheduler.py:161`（死类）；另一个 `.list(` 是模型目录对象 | **确认无用（传递性）** |
+| `get` | `store.py:136` | task 读取 | 真实调用仅 `service.py:29`（死）、`scheduler.py:231`（死）、`store.py:123/146/207/212/221/322/341/535`（全部在死方法内）；其余 500+ `.get` 是 dict | **确认无用（传递性）** |
+| `update` | `store.py:145` | task 更新 | 唯一真实调用 `service.py:34`（死）；`store.py:161` 是 dict.update | **确认无用（传递性）** |
+| `set_status` | `store.py:209` | task 状态 | 仅 `service.py:37/40`（死 pause/resume）与 `store.py:232`（死 pause_after_failure） | **确认无用（传递性）** |
+| `delete` | `store.py:223` | task 删除 | 零真实调用；7 个 `.delete` 命中全是 `"file.delete"` 字面量 | **确认无用** |
+| `pause_after_failure` | `store.py:231` | 失败后暂停 | 唯一调用 `scheduler.py:365`（死类） | **确认无用（传递性）** |
+| `request_run` | `store.py:321` | 手动触发 | 全仓零调用 | **确认无用** |
+| `list_items` | `store.py:340` | task 下 item 列表 | 全仓零调用；活的是 `list_items_for_session` | **确认无用** |
+| `claim_items` | `store.py:364` | 调度器领取 item | 唯一调用 `scheduler.py:107`（死类） | **确认无用（传递性）** |
+| `mark_running` | `store.py:440` | 调度器状态推进 | 唯一调用 `scheduler.py:288/425`（死类） | **确认无用（传递性）** |
+| `heartbeat` | `store.py:461` | 调度器租约心跳 | 唯一调用 `scheduler.py:221`（死类） | **确认无用（传递性）** |
+| `attach_target` | `store.py:472` | 运行中绑定会话 | 唯一调用 `scheduler.py:248/390`（死类） | **确认无用（传递性）** |
+| `finish_item` | `store.py:486` | item 终态 | 唯一调用 `scheduler.py:146/314/333/449/557`（死类） | **确认无用（传递性）** |
+| `record_task_run` | `store.py:521` | 记录最近运行 | 唯一调用 `scheduler.py:184`（死类） | **确认无用（传递性）** |
+| `next_run_at` | `store.py:537` | 计算下次运行 | 唯一调用 `views.py:29`（`automation_payload` 已死） | **确认无用（传递性）** |
+| `last_run_at` | `store.py:554` | 上次运行时间 | 唯一调用 `views.py:30`（同上） | **确认无用（传递性）** |
+
+> 仍活的 `DispatchStore` 方法：`submit_item`（`service.py:57/83`）、`get_item`（`session_collaboration.py:253`）、`list_items_for_session`（`session_collaboration.py:169`）、`migrate_legacy_automations`（`store.py:63` 构造时无条件调用）。
+
+### 3.3 models / messages / views
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `DispatchTask` | `models.py:51` | task 数据模型 | 无活构造点；`_task()` 只被死的 `create/get/list/update/set_status/record_task_run` 调用；`messages`/`views` 也死 | **确认无用** |
+| `DispatchTask.to_dict` | `models.py:66` | 公开序列化 | 唯一真实调用 `store.py:160`（死 `update`）；其余 `.to_dict` 是其他类型 | **确认无用（传递性）** |
+| `DispatchTaskStatus` | `models.py:12` | task 状态枚举 | 仅被死 `create/list/update/set_status/pause_after_failure/record_task_run` 与死 `service.pause/resume` 引用 | **确认无用（传递性）** |
+| `DispatchDestination` | `models.py:18` | 投递目标枚举 | 仅被死 `create/update/_validate_target` 与死 `scheduler` 引用 | **确认无用（传递性）** |
+| `DispatchItem.done` | `models.py:98` | item 终态属性 | 26 个 `.done` 命中均为 asyncio task 或 `AgentMessage`/`CollaborationOperation`/`DispatchOperationView`；无 `DispatchItem` 接收者 | **确认无用** |
+| `DispatchItem.to_dict` | `models.py:101` | item 序列化 | 真实活路径先把 `DispatchItem` 转成 `DispatchOperationView` 再 `to_dict`；无 `DispatchItem.to_dict` 调用 | **确认无用** |
+| `normalize_timezone` | `models.py:179` | 时区规范化 | 仅 `store.py:87/162`（死 create/update） | **确认无用（传递性）** |
+| `normalize_rrule` | `models.py:188` | rrule 规范化 | 仅 `store.py:92/179`（死）与 `next_occurrence:210`（死） | **确认无用（传递性）** |
+| `parse_at_time` | `models.py:197` | 时间解析 | 仅 `store.py:91/178`（死 create/update） | **确认无用（传递性）** |
+| `next_occurrence` | `models.py:204` | 下次触发计算 | 仅 `store.py:546`（死 `next_run_at`）、`store.py:653`（死 `_require_future_occurrence`）、`scheduler.py:176/199`（死类） | **确认无用（传递性）** |
+| `automation_trigger_message` | `messages.py:12` | automation 消息构造 | 唯一调用 `scheduler.py:253`（死类） | **确认无用（传递性）** |
+| `AUTOMATION_MESSAGE_KIND` | `messages.py:9` | automation 消息 kind | 唯一消费者 `automation_trigger_message:35`（已死） | **确认无用（传递性）** |
+| `automation_payload` | `views.py:9` | automation JSON 视图 | 仅包 `__init__:14,28` 再导出；无调用；docstring 提到的 HTTP `/automations` 与 `lara automation` 均已裁剪 | **确认无用** |
+| `run_payload` | `views.py:36` | automation run 视图 | 同上 | **确认无用** |
+| `ConfigFactory` | `scheduler.py:30` | 类型别名 | 仅作为死 `DispatchScheduler.__init__:57` 的注解 | **确认无用（传递性）** |
+| `RuntimeAcquirer` | `scheduler.py:31` | 类型别名 | 仅作为死 `DispatchScheduler.__init__:56` 的注解 | **确认无用（传递性）** |
+
+> 仍活的相邻面：`DispatchItemKind`（`service.py:58/84`、`store.py:251`）、`DispatchItemState`（`store.py:750` 每次 item 回读）、`DispatchItem` 类（`submit_item`/`get_item` 返回并转 view）、`utc_now`、`DispatchOperationView`、`DispatchService`/`DispatchStore` 类、`LEGACY_MIGRATION_MARKER`。
+
+---
+
+## 四、`src/lara/cli/`（11 个怀疑点，全部仍在用）
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `credentials_list` | `credentials.py:49` | 无直接调用，疑似死 handler | `credentials.py:28` `set_defaults(handler=credentials_list)`；`main.py:27` `args.handler(args)` | **仍在用**（argparse 注册表） |
+| `credentials_set` | `credentials.py:64` | 同上 | 注册于 `credentials.py:38` | **仍在用**（argparse 注册表） |
+| `credentials_delete` | `credentials.py:79` | 同上 | 注册于 `credentials.py:43` | **仍在用**（argparse 注册表） |
+| `credentials_validate` | `credentials.py:97` | 同上 | 注册于 `credentials.py:46` | **仍在用**（argparse 注册表） |
+| `register_credentials_parser` | `credentials.py:23` | 仅 main 调用 | `main.py:68` | **仍在用** |
+| `register_projects_parser` | `projects.py:10` | 仅 main 调用 | `main.py:69` | **仍在用** |
+| `register_scheduler_parser` | `scheduler.py:30` | 仅 main 调用 | `main.py:70` | **仍在用** |
+| `register_session_parser` | `sessions.py:17` | 仅 main 调用 | `main.py:67` | **仍在用** |
+| `build_parser` | `main.py:47` | 包导出 + 测试引用，易误判 | `main.py:24` 的 `main()` 直接调用；`cli/__init__.py:3` 再导出；`tests/test_scheduler_cli.py` 也使用 | **仍在用** |
+| `main` | `main.py:22` | CLI 入口 | `pyproject.toml` `[project.scripts] lara = "lara.cli:main"`；`src/lara/__main__.py` 与 tests/examples 使用 | **仍在用** |
+| `AUTOSTART_TASK_NAME` | `scheduler.py:27` | 公开常量 | 生产：`scheduler.py:236/249/259/264`；测试：`tests/test_scheduler_cli.py:125/127` | **仍在用** |
+
+---
+
+## 五、反证与误报澄清
+
+- **`.get` 噪声**：`DispatchStore.get` 的 516 个正则命中里绝大多数是 `dict.get` / `os.environ.get` / `metadata.get`；真实 `DispatchStore` 调用只在已死路径。
+- **`.done` 噪声**：`asyncio.Task.done()` 大量出现；`DispatchItem.done` 没有任何 `DispatchItem` 接收者调用，而 `DispatchOperationView.done` 是活的（`session_collaboration.py:241/276`、`runtime/service.py:624/640/641`）。
+- **`.to_dict` 噪声**：`DispatchTask.to_dict` / `DispatchItem.to_dict` 没有活接收者；`DispatchOperationView.to_dict` 仍是 CLI/运行时的活输出。
+- **`.start` / `.close` 噪声**：`DispatchScheduler.start/close` 的命中全是其他对象的 `start()`/`close()`；全仓没有 `DispatchScheduler(...)` 实例化。
+- **同名方法不同类**：`SessionCollaborationStore.attach_target/mark_running/heartbeat` 与 `DispatchStore` 的同名方法被误合并过；真正被调度器调用的是 `DispatchStore` 版本。
+- **同名函数不同模块**：`SessionManager.load_run_config` 已死，但 `lara.config.load_run_config` 仍被 CLI/运行时大量使用。
+- **动态派发**：仅 `WorkspaceRuntimePool.attach_collaboration` 通过 `getattr` 调用；`getattr(self, name)` 在 schema 中只用于 dataclass 字段，不涉及本次方法。
+- **argparse 注册表**：`credentials_*` 四个 handler 均已注册，不能按“无直接调用”删除。
+
+---
+
+## 六、总数与确认无用清单
+
+**审计总数：189 个公开名**（60 个模块级 + 129 个方法）。  
+**怀疑点：81 个。**  
+**确认无用：64 个。**  
+**仅测试使用：0 个。**  
+**仍在用（怀疑点内）：17 个。**
+
+### 确认无用清单（64）
+
+**orchestration（5）**
+
+1. `WorkspaceRuntimePool.retire_scope` — `runtime_pool.py:150`
+2. `SessionExecutionCoordinator.recover_turn` — `session_execution.py:68`
+3. `SessionExecutionCoordinator.find_execution` — `session_execution.py:273`
+4. `SessionExecutionCoordinator.find_case_run` — `session_execution.py:277`
+5. `SessionExecutionCoordinator.session_busy` — `session_execution.py:281`
+
+**sessions（17）**
+
+6. `SessionCollaborationStore.reserve` — `collaboration.py:163`
+7. `SessionCollaborationStore.claim_preparation` — `collaboration.py:376`
+8. `SessionCollaborationStore.attach_target` — `collaboration.py:403`
+9. `SessionCollaborationStore.claim` — `collaboration.py:439`
+10. `SessionCollaborationStore.mark_running` — `collaboration.py:504`
+11. `SessionCollaborationStore.heartbeat` — `collaboration.py:524`
+12. `SessionCollaborationStore.finish` — `collaboration.py:538`
+13. `SessionManager.set_selected_model` — `manager.py:153`
+14. `SessionManager.rename_model_key` — `manager.py:191`
+15. `SessionManager.load_or_create` — `manager.py:214`
+16. `SessionManager.history_with_run_timing` — `manager.py:516`
+17. `SessionManager.history_count` — `manager.py:587`
+18. `SessionManager.history_before_count` — `manager.py:601`
+19. `SessionManager.run_timing` — `manager.py:622`（仅被第 16 项调用）
+20. `SessionManager.run_owner` — `manager.py:631`
+21. `SessionManager.load_run_config` — `manager.py:638`
+22. `SessionManager.find_case_run` — `manager.py:700`
+
+**dispatch（42）**
+
+23. `DispatchScheduler` — `scheduler.py:43`
+24. `DispatchScheduler.start` — `scheduler.py:79`
+25. `DispatchScheduler.close` — `scheduler.py:87`
+26. `DispatchScheduler.poll_once` — `scheduler.py:101`
+27. `DispatchScheduler.cancel_run` — `scheduler.py:122`
+28. `DispatchService.create` — `service.py:20`
+29. `DispatchService.update` — `service.py:28`
+30. `DispatchService.pause` — `service.py:36`
+31. `DispatchService.resume` — `service.py:39`
+32. `DispatchStore.create` — `store.py:67`
+33. `DispatchStore.list` — `store.py:125`
+34. `DispatchStore.get` — `store.py:136`
+35. `DispatchStore.update` — `store.py:145`
+36. `DispatchStore.set_status` — `store.py:209`
+37. `DispatchStore.delete` — `store.py:223`
+38. `DispatchStore.pause_after_failure` — `store.py:231`
+39. `DispatchStore.request_run` — `store.py:321`
+40. `DispatchStore.list_items` — `store.py:340`
+41. `DispatchStore.claim_items` — `store.py:364`
+42. `DispatchStore.mark_running` — `store.py:440`
+43. `DispatchStore.heartbeat` — `store.py:461`
+44. `DispatchStore.attach_target` — `store.py:472`
+45. `DispatchStore.finish_item` — `store.py:486`
+46. `DispatchStore.record_task_run` — `store.py:521`
+47. `DispatchStore.next_run_at` — `store.py:537`
+48. `DispatchStore.last_run_at` — `store.py:554`
+49. `DispatchTask` — `models.py:51`
+50. `DispatchTask.to_dict` — `models.py:66`
+51. `DispatchTaskStatus` — `models.py:12`
+52. `DispatchDestination` — `models.py:18`
+53. `DispatchItem.done` — `models.py:98`
+54. `DispatchItem.to_dict` — `models.py:101`
+55. `normalize_timezone` — `models.py:179`
+56. `normalize_rrule` — `models.py:188`
+57. `parse_at_time` — `models.py:197`
+58. `next_occurrence` — `models.py:204`
+59. `automation_trigger_message` — `messages.py:12`
+60. `AUTOMATION_MESSAGE_KIND` — `messages.py:9`
+61. `automation_payload` — `views.py:9`
+62. `run_payload` — `views.py:36`
+63. `ConfigFactory` — `scheduler.py:30`
+64. `RuntimeAcquirer` — `scheduler.py:31`
+
+### 需要注意的边界
+
+- 这 64 项是**本仓生产代码零活调用**；其中不少是 `__all__` 声明过的公共 API（尤其 `DispatchScheduler`、`recover_turn`、`retire_scope`、`SessionManager.history_*`、`automation_payload`/`run_payload`），可能服务于已从本仓裁剪的 `lara_api`/桌面端。删除前应做产品/兼容性决策，而不只是静态清理。
+- `dispatch` 的 42 项本质上是一个**整链上游残留**：task 级 automation 管理/调度没有本仓消费者；活链只剩“后台 start/fork 提交 + `item_status`/`wait` 查询”。如果保留对外 API，建议保留符号但明确标注 out-of-repo 消费方，或整体移除该子系统。
+- 未运行测试；以上结论均来自 AST 索引、全仓 `rg`、调用上下文人工阅读、动态派发检查和 `git log -S`。

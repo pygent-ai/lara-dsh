@@ -1,0 +1,256 @@
+# 死代码验证报告 W4（只读，未修改任何文件）
+
+**范围与方法**：`src/lara/agents/` 五个文件（67 个公开名：child 3、context 26、fork 7、main 11、runner 20）、`src/lara/config/loader.py` 的 `scheduler.*`、`src/lara/core/timefmt.py`、`src/lara/runtime/realtime/` 中 `dac7ab0` 之后的首轮提醒改动。
+
+**手段**：AST 抽取公开名并区分 Name/Attribute/import 引用；对全仓 `src/lara`、`src/standard_agent`、`tests`、`examples` 逐名 `rg`；打开定义与调用点读上下文；`git log -S` 追溯引入；运行动态路径测试。
+
+**口径说明**：生产 = `src/lara` + `src/standard_agent`。`src/standard_agent` **没有任何** `lara.agents` 导入（只导入 `lara.config/core/orchestration/runtime/schema/sessions`），其同名 `AgentLimits`/`ToolProfile`/`build_model_layer_factory` 是独立镜像，不计为 `lara.agents` 的消费者。
+
+**验证结果**：`PYTHONDONTWRITEBYTECODE=1 uv run pytest -q -p no:cacheprovider tests/test_lara_agents.py tests/test_fork_context.py tests/test_scheduler_config.py tests/test_prompt_envelopes_golden.py tests/test_task_message.py tests/test_realtime_first_speak_nudge.py tests/test_realtime_nudge_interval.py tests/test_realtime_nudge_turn_reset.py` → **58 passed**。`git status --porcelain` 仍只有既有的未跟踪 `report_V1..V4.txt`，无新增文件改动。
+
+---
+
+## 一、`src/lara/agents/`
+
+### 怀疑点 1：`MainAgent` 整组 API 是否真的进入生产
+
+- **名称/文件:行**：`MainAgent`（`main.py:86`）、`BackgroundJobHandle`（`:28`）、`BackgroundOutcome`（`:71`）、`run_turn`（`:114`）、`spawn_fork`（`:137`）、`spawn_child`（`:156`）、`collect`（`:198`）
+- **怀疑理由**：文档把 `MainAgent` 描述为提交/收集点，但生产运行时实际使用 `SessionTurnService`/`SessionExecutionCoordinator`；怀疑整个 `main.py` 未接线。
+- **调查过程**：
+  - `src/lara` 内 `lara.agents` 的生产导入只有 5 处：`runtime/service.py:59`、`runtime/fork_context.py:24`、`orchestration/session_execution.py:13`、`runtime/eternal_conversation.py:15`、`runtime/realtime/envelope.py:13`。
+  - `service.py:59-70` 只导入 `AgentLimits/AgentRunner/ChildAgent/ChildSpec/ForkAgent/ForkSpec/ToolProfile/ToolRegistry/ToolkitToolSurface/build_model_layer_factory`，**没有** `MainAgent`、`BackgroundJobHandle`、`BackgroundOutcome`。
+  - `service.py:1672` 的 `_run_memory_job` 使用 `ForkAgent`（`:1726`）和 `ChildAgent`（`:1732`），不经过 `MainAgent`。
+  - `dispatch/scheduler.py:384` 的 fork 走 `manager.fork(...)`（`SessionManager`），与 `lara.agents.ForkAgent` 无关；`dispatch` 全目录无 `lara.agents` 导入。
+  - AST 引用索引：`MainAgent` 生产 0 次、测试 14 次；`BackgroundJobHandle`/`BackgroundOutcome` 生产 0 次，仅 `main.py` 内部及测试间接使用。
+- **结论**：**仅测试使用**。`main.py` 是测试覆盖完整、但生产未接线的 scaffold；`_run_memory_job` 只使用了 `ForkAgent`/`ChildAgent`，`dispatch` 也没有调用 `MainAgent`。
+
+### 怀疑点 2：`BackgroundJobHandle.kind` 是否被读取
+
+- **名称/文件:行**：`BackgroundJobHandle.kind`（`main.py:46`；构造参数 `:41`；传入口 `_register_job(kind=...)` `:174/193`；字面量 `"fork"`/`"child"` `:153/168`）
+- **怀疑理由**：`kind` 看起来用于区分 fork/child，但结果对象 `BackgroundOutcome` 没有 `kind` 字段。
+- **调查过程**：
+  - 全仓 `rg "\.kind\b"`：只有 `Task.kind`、`Schedule.kind`、`AgentMessage.kind` 等无关对象；没有任何 `handle.kind` 或 `outcome.kind`。
+  - `tests/test_lara_agents.py` 读取 `handle.job_id/label/cancelled/done`、`outcome.result/error/cancelled/job_id/label`，**从不读取 `kind`**。
+  - `kind` 只由 `spawn_fork`/`spawn_child` 写入，再一路传给 `_register_job` 存进 handle。
+- **结论**：**确认无用**（写而不读字段；连同 `_register_job` 的 `kind` 形参和两个 `"fork"/"child"` 字面量一起成为死链路）。
+
+### 怀疑点 3：`ForkProductSource.from_window_parts`
+
+- **名称/文件:行**：`context.py:191`（类 `ForkProductSource` `:181`）
+- **怀疑理由**：公开工厂方法，可能只被测试或完全没人用。
+- **调查过程**：
+  - 全仓 `rg "from_window_parts"` 仅命中定义行 `context.py:191`，无 import、无调用、无 `__all__` 直接提及（`ForkProductSource` 本身在 `__init__.py:20/55`）。
+  - `git log -S "from_window_parts" -- src/lara/agents/context.py`：只随 `767a413` 抽取提交进入，之后从未有调用者变更。
+  - `ForkProductSource` 类本身只在 `tests/test_lara_agents.py:439` 通过构造 `ForkProductSource(window=first.window())` 使用；生产没有导入。
+- **结论**：`from_window_parts` **确认无用**（零引用）；`ForkProductSource` 类整体**仅测试使用**。
+
+### 怀疑点 4：`StaticContextSource.from_history`
+
+- **名称/文件:行**：`context.py:154`（类 `StaticContextSource` `:146`）
+- **怀疑理由**：类工厂方法看起来用于从持久化历史建窗口，但生产 fork 已走 `SessionForkWindowSource`。
+- **调查过程**：
+  - 全仓 `rg "from_history"` 只命中 `context.py:154`（以及不同的 `messages_from_history` 与测试名 `test_messages_from_history...`）；没有任何 `StaticContextSource.from_history(...)` 调用。
+  - 生产实际使用 `messages_from_history` 的位置是 `runtime/fork_context.py:130`，由 `session_fork_window` 直接调用，不经过 `StaticContextSource.from_history`。
+  - `StaticContextSource` 仅在 `tests/test_lara_agents.py` 多处使用（如 `:279`、`:335`、`:353` 等）；生产零导入。
+- **结论**：`from_history` **确认无用**；`StaticContextSource` 类整体**仅测试使用**（`resolve()`/`describe()` 只在测试的 fork 路径中被执行）。
+
+### 怀疑点 5：`ForkAgent.plan`
+
+- **名称/文件:行**：`fork.py:133`
+- **怀疑理由**：只物化前缀、不运行模型，可能是测试专用便利方法。
+- **调查过程**：
+  - 全仓 `.plan(` 只有 `tests/test_lara_agents.py:299/340/768`。
+  - 生产 `service.py:1726` 只调用 `ForkAgent(...).run(...)`；`run` 内部调用 `materialize()`（`fork.py:147`），不经过 `plan()`。
+  - `materialize()` 本身在生产 `run` 路径和 `test_fork_context.py:121` 中都在用。
+- **结论**：`plan` **仅测试使用**；`materialize` **仍在用**（`fork.py:147` 生产内部）。
+
+### 怀疑点 6：`AgentRunResult.window`
+
+- **名称/文件:行**：`runner.py:185`
+- **怀疑理由**：G3 链式 fork 的转换方法，生产 `_run_memory_job` 只取 `result.text`。
+- **调查过程**：
+  - 全仓 `.window()` 只有 `tests/test_lara_agents.py:439/447`。
+  - `runtime/fork_context.py:122` 只有注释提到“与 `AgentRunResult.window()` 同一处理”，没有实际调用。
+  - `service.py:1731/1738` 的生产调用只读 `result.text`（`runner.py:182`）。
+- **结论**：**仅测试使用**（生产无调用点）。
+
+### 怀疑点 7：`MessageSlice.apply`
+
+- **名称/文件:行**：`context.py:96`
+- **怀疑理由**：类有 `apply()`，但生产 `ForkAgent.materialize` 直接调用 `align_slice_bounds`。
+- **调查过程**：
+  - 全仓 `.apply(` 测试命中只有 `tests/test_lara_agents.py:727-728`；`fork.py:120` 的 `.apply(` 属于 `ContextTransform.apply`，不是 `MessageSlice.apply`。
+  - 生产 `fork.py:112-116` 的切片逻辑是：
+    `start, end = align_slice_bounds(window.messages, spec.slice.start, spec.slice.end)`，然后手动 `replace(..., messages=window.messages[start:end])`，未调用 `MessageSlice.apply`。
+  - `MessageSlice` 的 `start`/`end` 字段仍通过 `ForkSpec.slice` 默认工厂和 `align_slice_bounds` 在生产使用。
+- **结论**：`MessageSlice.apply` **仅测试使用**；`MessageSlice` 类本身仍在用（作为 `ForkSpec` 的默认切片描述）。
+
+### 怀疑点 8：`ReminderTransform` / `SystemPromptTransform` / `ForkSpec.transforms`
+
+- **名称/文件:行**：`context.py:227`、`:275`；`fork.py:86`
+- **怀疑理由**：transform 是 fork scaffold 的扩展点，生产 `ForkSpec` 可能从不带 transforms。
+- **调查过程**：
+  - 生产唯一 `ForkSpec(...)` 构造点是 `service.py:1728`：`ForkSpec(source=SessionForkWindowSource(window))`，**没有传 `slice`/`transforms`**。
+  - `ReminderTransform`/`SystemPromptTransform` 只在 `tests/test_lara_agents.py:293/294/385/653/654/678/679/764` 构造。
+  - `ForkAgent.materialize` 的 transform 循环（`fork.py:119-121`）在生产中因 `transforms=()` 不会执行；但 `ContextTransform` 协议本身仍被 `ForkSpec` 注解引用。
+- **结论**：两个具体 transform 类 **仅测试使用**；`ForkSpec.transforms` 的生产路径恒为空。transform 机制是 scaffold 扩展面，不是当前生产功能。
+
+### 怀疑点 9：从未传入的可选参数（死覆盖入口）
+
+- **名称/文件:行**：
+  - `ForkAgent.run(label=...)`：`fork.py:143`
+  - `AgentRunner(compression_prompt=...)`：`runner.py:212`
+  - `MainAgent(tools=..., label=...)`：`main.py:94-95`
+  - `MainAgent.run_turn(limits=...)`：`main.py:119`
+  - `StaticContextSource(metadata=...)`：`context.py:151`
+- **怀疑理由**：公开可选参数可能从未被任何调用方显式传入，非默认分支永不执行。
+- **调查过程**：
+  - AST 扫描 `.run(` 的关键字参数：`ForkAgent.run` 的调用点只有 `service.py:1730`（无 `label`）、`main.py:153`（只传 `limits`）、测试（无 `label`）；**全仓没有 `run(..., label=...)`**。
+  - `AgentRunner(` 调用点（`service.py:1707`、测试、`main.py`）**从未传 `compression_prompt`**；默认值一直在 `runner.py:265` 使用。
+  - 所有 `MainAgent(...)` 构造只传 `system_prompt`；`tools`/`label` 从未传入。`run_turn` 测试只传 `prefix`，`limits` 从未传入。
+  - 所有 `StaticContextSource(...)` 构造只传 `system_prompt`/`messages`；`metadata` 从未传入，默认空映射一直在用。
+- **结论**：**死覆盖入口**（参数存在但非默认分支永不执行）。其中 `ForkAgent.run(label=)` 是最干净的死参数：连测试都没有传过。
+
+### 怀疑点 10：`ChildSpec.tools` / `ChildSpec.limits`
+
+- **名称/文件:行**：`child.py:28`、`:29`；读取点 `child.py:56-59`
+- **怀疑理由**：文档说 `tools` 可覆盖 runner 默认 profile，但生产 `ChildSpec` 可能从不传。
+- **调查过程**：
+  - 全部 `ChildSpec(...)` 构造点：`service.py:1734`、`tests/test_lara_agents.py:456/482/536/552/570/798`，**全部只传 `name`/`system_prompt`**。
+  - `ChildAgent.run` 在 `child.py:56-59` 把 `self._spec.tools`、`self._spec.limits` 传给 `AgentRunner.run`；由于二者恒为 `None`，实际总是走 runner 的 `default_tools`/`limits`。
+  - 没有 `replace(spec, tools=...)`、`ChildSpec(**...)` 或动态 `setattr` 路径。
+- **结论**：**死配置面**：字段仍被读取，但全仓无任何赋值点，`tools`/`limits` 覆盖分支永不执行。
+
+### 怀疑点 11：`ForkSnapshot` 审计元数据是否被生产读取
+
+- **名称/文件:行**：`fork.py:38`；`to_metadata` `:60`；生产写入 `:148`
+- **怀疑理由**：`ForkAgent.run` 把 snapshot 写进 `ContextWindow.metadata["lara.fork.snapshot"]`，但可能没有读取方。
+- **调查过程**：
+  - `to_metadata()` 在 `fork.py:148` 被 `ForkAgent.run` 调用，随后 `runner.py:278` 把 `prefix.metadata` 合并进 pygent context metadata，属于真实写入路径。
+  - 全仓 `rg "lara\.fork\.snapshot"`：只有 `fork.py:63` 和测试 `tests/test_lara_agents.py:421`；生产没有任何代码读取该 key。
+  - `start_index`/`end_index`/`message_count`/`source` 等字段除构造、`asdict()` 序列化外，仅在测试中读取（`test_fork_context.py:123-124`、`test_lara_agents.py:361-364`）。
+- **结论**：**仍在用（写入/审计路径）**，但生产无读取方，属于“审计写入型半死数据”；不是符号级死代码。
+
+### 怀疑点 12：`runner.py` 的公开常量与类型面
+
+- **名称/文件:行**：`MODEL_RETRYABLE_ERROR_KINDS`（`runner.py:46`）、`DISABLED_COMPRESSION_WINDOW_TOKENS`（`:53`）、`ModelFactory`（`:55`）、`ToolSurface`（`:87`）
+- **怀疑理由**：这些名字看起来像可删除的导出，且与 `runtime/agent/core.py`、`standard_agent` 有重复定义。
+- **调查过程**：
+  - `MODEL_RETRYABLE_ERROR_KINDS` 在 `runner.py:317` 的 `build_model_layer_factory` 中使用；`build_model_layer_factory` 被 `service.py:1708` 生产调用。
+  - `DISABLED_COMPRESSION_WINDOW_TOKENS` 是 `AgentLimits.context_window_tokens` 的默认值（`runner.py:65`），生产 `MEMORY_JOB_LIMITS` 未覆盖该字段，因此默认值会流入 `PygentAgent`。
+  - `ModelFactory` 用于 `AgentRunner.__init__`/`build_model_layer_factory` 注解；`ToolSurface` 用于 `ToolRegistry`/`AgentRunner` 注解。
+  - 同名常量确实在 `runtime/agent/core.py:69/71` 和 `standard_agent/interfaces.py:20`/`engine.py:46` 重复，但各自在本模块内使用。
+- **结论**：**仍在用（内部/类型面）**；重复定义是维护风险，不是死代码。
+
+---
+
+## 二、`src/lara/config/`：`scheduler.*` 挂载
+
+### 怀疑点 13：`SchedulerConfig` 的四个键是否真被生产读取
+
+- **名称/文件:行**：`loader.py:152`（构造）、`:222-227`（默认）、`:353-357`（形状校验）；`SchedulerConfig` 定义 `schema/models.py:203-226`
+- **怀疑理由**：loader 挂载 `scheduler` 后，store/daemon 可能仍用默认值，导致配置项“只挂载不生效”。
+- **调查过程**：
+  - `agent_create_enabled`：`scheduler/tools.py:120` 门禁 `execute()`；`scheduler/daemon.py:266` 决定任务直接 approved 还是 needs_review。
+  - `session`：`daemon.py:154` 作为默认 `session_id`；`scheduler/tools.py:137` 作为 agent 提交的默认 session；`cli/scheduler.py:113` 作为 CLI add 的默认 session。
+  - `max_concurrent`：`daemon.py:356` 传给 `claim_due_tasks(limit=...)`；`daemon.py:369` 作为 `ThreadPoolExecutor(max_workers=...)`。
+  - `poll_seconds`：`daemon.py:168` 控制 `run_forever` 轮询间隔；`daemon.py:152` 用于计算 lease 时长。
+  - `SchedulerStore` 本身只接收数据库路径（`store.py:253`），不读 `RunConfig`；daemon 通过 `scheduler_db_path(config.lara_root)` 构造（`daemon.py:143`）。因此“store 不读 scheduler 配置”是设计使然，不是漏接线。
+  - `tests/test_scheduler_config.py:18-62` 覆盖默认值、显式 RunConfig、YAML 加载；`tests/test_scheduler_daemon.py`/`test_scheduler_tools.py` 使用真实 config。
+- **结论**：**仍在用 + 调用点**。四个 `scheduler.*` 键全部有生产行为消费者，没有死配置项。
+
+### 怀疑点 14（跨范围发现）：`RealtimeInteractionConfig` 是否真的能从配置加载
+
+- **名称/文件:行**：`schema/models.py:181-199`、`:361`、`:432`；`runtime/agent/core.py:396-398`；`runtime/service.py:789-792`、`:1290`
+- **怀疑理由**：`039ffb0` 把 `nudge_interval` 接到 `RealtimeNudgeModule`，但 `loader.py` 是否真的挂载 `realtime_interaction`？
+- **调查过程**：
+  - 生产唯一的 `RunConfig(...)` 构造点是 `loader.py:88`；`load_run_config` **没有**传入 `realtime_interaction`。
+  - `loader.py` 的 `_default_config()`（`:169-228`）没有 `realtime_interaction`；`_validate_config_shape`（`:250-273`）的顶层允许键也不含 `realtime_interaction`。因此用户 YAML 写 `realtime_interaction:` 会被判为未知键。
+  - `RealtimeInteractionConfig.enabled` 的读取点是 `service.py:789-792` 的 fallback，但生产 `new_agent` 调用几乎都显式传 `realtime_interaction_enabled=realtime_enabled_for(session)`；`nudge_interval` 在 `core.py:397` 被读取，`fork_deadline_seconds` 在 `service.py:1290` 被读取，但在生产构造路径下二者恒为默认值（5 和 60）。
+  - 只有测试直接构造 `RunConfig(realtime_interaction={...})`（`tests/test_realtime_supersede.py:64`）；`test_realtime_nudge_interval.py` 直接实例化模块 `RealtimeNudgeModule(interval=3)`，没有走 loader。
+- **结论**：**半死（配置挂载缺失）**。`nudge_interval`/`fork_deadline_seconds` 的读取点存在且是活代码，但唯一生产构造路径无法从 YAML 提供它们；生产实际始终使用 schema 默认值。若目标是“可配置 nudge interval”，`loader.py` 还缺 `realtime_interaction` 的默认段、允许键与 `RunConfig` 传参。这是本次 W4 在 realtime 复查中发现的真实接线缺口。
+
+---
+
+## 三、`src/lara/core/timefmt.py`
+
+### 怀疑点 15：新增共享助手是否真的被两处使用
+
+- **名称/文件:行**：`TIME_LINE_FORMAT`（`timefmt.py:11`）、`format_current_time_line`（`:14`）
+- **怀疑理由**：新增模块可能只被一个渲染器使用，或 `TIME_LINE_FORMAT` 无消费者。
+- **调查过程**：
+  - `format_current_time_line` 有两个生产调用点：`runtime/reminders/rendering.py:27`、`scheduler/message.py:39`。
+  - `scheduler/message.py` 的 `build_task_message` 由 `scheduler/daemon.py:89` 调用，属于活路径。
+  - 全仓 `rg "%Y-%m-%d %H:%M:%S %Z"` 只剩 `timefmt.py:11` 一处，原两处内联格式已消除，未发现漂移。
+  - `TIME_LINE_FORMAT` 没有被外部 import；只在 `timefmt.py:17` 内部使用。`__all__` 的导出面没有外部消费者。
+  - 没有直接针对 `timefmt` 的测试，但 `tests/test_prompt_envelopes_golden.py:259/287` 与 `tests/test_task_message.py:25` 的 golden 覆盖了输出。
+- **结论**：**仍在用 + 调用点**（两个生产渲染器）。`TIME_LINE_FORMAT` 仅内部使用，导出面向外多余，但不是死代码。
+
+---
+
+## 四、`src/lara/runtime/realtime/`：`dac7ab0` 之后的首轮提醒
+
+### 怀疑点 16：首轮提醒新增状态/分支是否可达
+
+- **名称/文件:行**：`FIRST_RESULT_SPEAK_REMINDER`（`injection.py:28`）、`_NudgeCounter`（`:34`）、`RealtimeNudgeModule.forward`（`:77-116`）、`DEFAULT_NUDGE_INTERVAL`（`nudge.py:12`）
+- **怀疑理由**：首轮提醒条件包含 `not message.content`、`context.tools` 检查；如果生产每个 boundary 都已有 runtime reminder，或 `context.tools` 不含 speak，则分支可能永远不执行。
+- **调查过程**：
+  - 生产装配：`runtime/agent/core.py:396-398` 在 `realtime_interaction_enabled` 时构造 `RealtimeNudgeModule(interval=config.realtime_interaction.nudge_interval)`；`runtime/agent/pipeline.py:873-876` 在 reminders/persisted_diff 之后调用它。
+  - `context.tools` 在生产中有值：`core.py:291-294` 的 `tool_definitions` 在 realtime 开启时包含 `SPEAK_TOOL_SPEC.definition`，`core.py:514` 把 `tools=self.tool_definitions` 放进执行上下文；因此 `any(definition.name == SPEAK_TOOL_NAME ...)` 可达。
+  - `message.content` 不是恒非空：`RuntimeReminderModule` 只有在 `observe_after_tools` 返回 section 或 claim 到 agent message 时才追加内容（`pipeline.py:748-795`）；普通首个工具结果可以保持空内容，首轮分支可达。
+  - 状态字段全部有读写：`rounds`（`:92/110/112`）、`turn_id`（`:81-82`）、`first_result_seen`（`:94-95`）、`spoke_yet`（`:90-91/98`）；`b321c91` 已在 turn 切换时补上 `rounds = 0`（`:83`）。
+  - `test_realtime_first_speak_nudge.py` 覆盖首轮提醒、已有 envelope、speak 跳过、后续 boundary 不重复、跨 turn 重置；`test_realtime_nudge_interval.py` 覆盖 interval=3；`test_realtime_nudge_turn_reset.py` 覆盖 turn 重置。全部 58 项测试通过。
+  - `should_nudge` 已在 `e46d18a` 删除，全仓零命中；`DEFAULT_NUDGE_INTERVAL` 仍被 `injection.py:25/70` 作为构造默认值。
+  - 细节：`spoke_yet` 是持久字段，但只在 `first_result` 为真时读取；每个 turn 的首个 boundary 后 `first_result_seen=True`，后续不再读取它。它等价于首轮局部的 `spoke` 变量，属于**结构性冗余**，不是死代码。
+  - `DEFAULT_NUDGE_INTERVAL`：生产 `core.py:397` 现在总是显式传 `config.realtime_interaction.nudge_interval`，因此生产不走构造默认值；该默认值只在测试的 `RealtimeNudgeModule()` 无参构造中生效。
+- **结论**：首轮提醒新增部分 **仍在用（生产可达）**；`FIRST_RESULT_SPEAK_REMINDER`、`_NudgeCounter` 的四个字段、周期提醒分支都有调用/读取点。`DEFAULT_NUDGE_INTERVAL` **仅测试使用（作为构造默认值）**；生产实际值来自 config（但见怀疑点 14 的 loader 缺口）。
+
+---
+
+## 汇总
+
+- **怀疑点总数：16**
+- **审计面**：agents 五文件 67 个公开名；`scheduler.*` 4 个配置键；`timefmt` 2 个公开名；realtime 首轮提醒新增 2 个公开名 + `nudge.py` 3 个公开名。
+- **严格符号级零引用（确认无用）：3 项**
+- **死参数/死配置面（确认无用覆盖入口）：3 组**
+- **仅测试使用：7 组**
+- **半死/无生产读取：2 项**
+- **仍在用：其余生产或内部活路径**
+
+### 确认无用清单
+
+| 名称 | 文件:行 | 类型与证据 |
+|---|---|---|
+| `ForkProductSource.from_window_parts` | `src/lara/agents/context.py:191` | 零引用方法；`rg` 仅定义行，测试也不调用 |
+| `StaticContextSource.from_history` | `src/lara/agents/context.py:154` | 零引用类方法；生产走 `messages_from_history`，不经过它 |
+| `BackgroundJobHandle.kind` | `src/lara/agents/main.py:46` | 只写不读字段；连同 `_register_job(kind=...)` 和 `"fork"/"child"` 字面量 |
+| `ForkAgent.run(label=...)` | `src/lara/agents/fork.py:143` | 全仓零调用参数；调用点均不传 `label` |
+| `AgentRunner(compression_prompt=...)` | `src/lara/agents/runner.py:212` | 全仓零调用参数；默认值一直使用，覆盖分支永不执行 |
+| `ChildSpec.tools` / `ChildSpec.limits` | `src/lara/agents/child.py:28-29` | 全仓零赋值；8 处 `ChildSpec(...)` 均不传，读取值恒为 `None` |
+
+> 另有 `MainAgent(tools=, label=)`、`MainAgent.run_turn(limits=)`、`StaticContextSource(metadata=)` 等从未传入的可选参数，因整个 `MainAgent`/`StaticContextSource` 已是仅测试使用，未重复计入上表；详见怀疑点 9。
+
+### 仅测试使用（生产零调用）
+
+- `MainAgent`、`BackgroundJobHandle`、`BackgroundOutcome` 整组：`src/lara/agents/main.py:28/71/86`
+- `StaticContextSource`：`src/lara/agents/context.py:146`
+- `ForkProductSource`：`src/lara/agents/context.py:181`
+- `ForkAgent.plan`：`src/lara/agents/fork.py:133`
+- `AgentRunResult.window`：`src/lara/agents/runner.py:185`
+- `MessageSlice.apply`：`src/lara/agents/context.py:96`
+- `ReminderTransform` / `SystemPromptTransform`：`src/lara/agents/context.py:227/275`
+
+### 半死/需注意
+
+- `ForkSnapshot` 审计元数据：`src/lara/agents/fork.py:60/148` 写入 `lara.fork.snapshot`，但生产无读取方，只有测试读取。
+- `RealtimeInteractionConfig.nudge_interval` / `fork_deadline_seconds`：`core.py:397`、`service.py:1290` 有读取点，但 `load_run_config` 不挂载 `realtime_interaction`（`loader.py:88`、允许键 `:250-273`），生产实际恒为默认值 5/60；`test_realtime_supersede.py:64` 通过直接构造 `RunConfig` 绕过 loader。
+
+### 仍在用（关键调用点）
+
+- `ForkAgent` / `ChildAgent`：`service.py:1726/1732`（`_run_memory_job`）
+- `AgentRunner` / `ToolRegistry` / `ToolkitToolSurface` / `build_model_layer_factory` / `ToolProfile`：`service.py:1698-1719`
+- `ContextWindow` / `messages_from_history`：`runtime/fork_context.py:24/130`
+- `system_reminder`：`orchestration/session_execution.py:243`、`eternal_conversation.py:821/838`、`realtime/envelope.py:39`
+- `SchedulerConfig` 四键：`daemon.py:154/168/266/356/369`、`scheduler/tools.py:120/137`、`cli/scheduler.py:113`
+- `format_current_time_line`：`reminders/rendering.py:27`、`scheduler/message.py:39`
+- `FIRST_RESULT_SPEAK_REMINDER` / `RealtimeNudgeModule`：`injection.py:106`、`pipeline.py:873-876`、`core.py:396-398`

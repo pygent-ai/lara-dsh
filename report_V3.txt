@@ -1,0 +1,139 @@
+# 死代码验证报告 V3（只读）
+
+未修改任何文件（`git status --porcelain` 为空）。验证期间运行了相关测试：`uv run pytest -q tests/test_prompt.py tests/test_prompt_envelope_coverage.py tests/test_prompt_envelopes_golden.py tests/test_simple_agent.py tests/test_lara_rt.py` → **41 passed**。
+
+先更正一个前提：`KNOWN_ENVELOPES` 实际是 **15 条**，不是 14 条（`src/lara/core/prompt.py:28-58`）。
+
+---
+
+## 范围一：`src/lara/core/prompt.py`
+
+### 1. `Prompt` 方法
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `wrap` | prompt.py:96 | 核心入口，需确认生产落点 | `rg "\.wrap\("` 在 `src/` 有 20 处：`agents/context.py:41`、`scheduler/message.py:39/40/50`、`runtime/eternal_conversation.py:281`、`attachments.py:160`、`context_compression.py:193/204`、`service.py:1586`、`agent/compressor.py:66`、`realtime/envelope.py:35/36`、`reminders/{agent_messages:28,bootstrap:38,cli_context:64,git_context:160,rendering:28,skills_context:65}` | **仍在用**（唯一的主力渲染入口） |
+| `wrap_escaped` | prompt.py:114 | 只有定义，怀疑无生产调用 | 全仓 `rg "wrap_escaped"`：仅 `tests/test_prompt.py:35` 与 `tests/test_prompt_envelope_coverage.py:25`（后者只是方法名白名单）引用。生产代码要么用 `escape().wrap()`（prompt.py:119），要么手写 `Prompt(...).escape()`（scheduler/message.py:44/47） | **仅测试使用**（生产零调用） |
+| `escape` | prompt.py:121 | 是否被旁路 | `scheduler/message.py:44`、`:47` 生产调用；同时被 `wrap_escaped` 内部调用（prompt.py:119） | **仍在用+调用点** |
+| `self_closing` | prompt.py:126 | 是否只有测试 | `scheduler/message.py:43` 用于 `<task ... />`；测试 `test_prompt.py:49-51`、`test_task_message.py:10` 覆盖 | **仍在用+调用点** |
+| `__add__` | prompt.py:134 | `str` 子类可省；怀疑无调用 | 全仓 `rg` 无任何 `Prompt(...) + ...` 生产表达式；仅 `tests/test_prompt.py:55`。生产站点全部用 f-string/`str()` 转换，不依赖返回类型保持为 `Prompt` | **仅测试使用** |
+| `__radd__` | prompt.py:139 | 同上 | 仅 `tests/test_prompt.py:56` | **仅测试使用** |
+
+补充：`Prompt` 是 `str` 子类，去掉 `__add__/__radd__` 后 `Prompt + str` 仍可运行（返回 `str`），因此生产行为不受影响；这两个方法只是类型保持便利。
+
+### 2. `KNOWN_ENVELOPES` 的 15 个条目
+
+| 名称(tag) | 注册行 | 怀疑理由 | 调查过程（渲染/解析落点） | 结论 |
+|---|---|---|---|---|
+| `system-reminder` | prompt.py:29 | 基础骨架 | `Prompt.wrap` 于 `agents/context.py:41`；`system_reminder()` 被 `context.py:241/270`、`orchestration/session_execution.py:243`、`eternal_conversation.py:821/838`、`realtime/envelope.py:39` 调用；golden `test_prompt_envelopes_golden.py:46/55` | **仍在用+调用点** |
+| `runtime-context` | prompt.py:32 | 低频 | `reminders/agent_messages.py:28`（→ `agent/pipeline.py:762`）、`reminders/bootstrap.py:38`（→ `reminders/service.py:254`）；golden :71/:268 | **仍在用+调用点** |
+| `agent-message` | prompt.py:35 | 担心无渲染方 | 未走 Prompt API，由 `reminders/agent_messages.py:23` 的 f-string 字面量渲染并包在 `runtime-context` 内；`pipeline.py:762` 生产调用；golden :71；覆盖元测试按字面量扫描命中 | **仍在用+调用点**（渲染方式为原始字符串） |
+| `git-context` | prompt.py:36 | 低频 | `reminders/git_context.py:160`；经 `bootstrap.py:25`、`git_context.py:209` 调用；golden :94/:120 | **仍在用+调用点** |
+| `skills-context` | prompt.py:37 | 低频 | `reminders/skills_context.py:65`；经 `bootstrap.py:22`；golden :157 | **仍在用+调用点** |
+| `cli-context` | prompt.py:38 | 低频 | `reminders/cli_context.py:64`；经 `bootstrap.py:21`；golden :209 | **仍在用+调用点** |
+| `time` | prompt.py:39 | 低频 | `scheduler/message.py:39`、`reminders/rendering.py:28`；golden :243/:268；`test_task_message.py:10` | **仍在用+调用点** |
+| `user-context` | prompt.py:40 | 低频 | `runtime/service.py:1586`（`_prepare_turn`）；golden :402 | **仍在用+调用点** |
+| `session-context` | prompt.py:41 | 低频 | `runtime/agent/compressor.py:66`；golden :473 | **仍在用+调用点** |
+| `file-read` | prompt.py:44 | **用户点名怀疑** | `context_compression.py:204`；唯一调用方 `agent/compressor.py:47`；golden :297，并在 `test_compressor_session_context_golden` 内嵌验证 | **仍在用+调用点**（活链路：compressor → 压缩续接上下文） |
+| `file` | prompt.py:47 | 内层条目，疑似只被测试用 | `context_compression.py:193` 在 `render_file_read_block` 内逐条渲染，外层即 `file-read`（:204） | **仍在用+调用点** |
+| `memory-access-instruction` | prompt.py:50 | **用户点名怀疑**（永续会话专用） | `eternal_conversation.py:281` 定义渲染；生产注入点 `runtime/agent/pipeline.py:355`，条件 `context.eternal_memory_enabled`；golden :339 | **仍在用+调用点** |
+| `attachments` | prompt.py:53 | **用户点名怀疑** | `attachments.py:160` 定义渲染；生产调用 `runtime/service.py:1585`（仅当 `resolved_attachments` 非空），外层 `user-context`；golden :362/:402 | **仍在用+调用点** |
+| `task-context` | prompt.py:54 | 低频 | `scheduler/message.py:50`；生产调用 `scheduler/daemon.py:89`；`test_task_message.py:10` | **仍在用+调用点** |
+| `summary` | prompt.py:55 | 无任何 `wrap("summary")`，疑似死条目 | 全仓无渲染方；但 `context_compression.py:136-147` 的 `parse_summary` 解析模型输出的 `<summary>`，被 `agent/compressor.py:40` 调用；条目 note 明确 "no renderer is owned by Lara"；`test_prompt.py:89-92` 锁定 `parser_contract is True` | **注册即用途（parser contract）+ 仍在用（解析侧）**，不是死代码 |
+
+**关于"注册本身即是用途"的说明**：`tests/test_prompt_envelope_coverage.py:106` 把 `KNOWN_ENVELOPES` 当作允许清单——任何生产代码里新出现的顶层标签若未注册就会失败；`tests/test_prompt.py:72-93` 又锁定了 15 个 key 的精确集合。因此每个条目即使没有独立渲染函数（如 `summary`），注册本身也承担"防漏网 + 目录完整性"的测试契约，不能按死代码删除。
+
+### 3. `EnvelopeInfo.note`
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `EnvelopeInfo.note` | prompt.py:25（声明块 20-25；条目 29-57 均按位置传入） | 是否只有声明、无消费 | 全仓 `rg "\.note\b"`：唯一读取点是 `tests/test_prompt.py:90`（断言 `summary` 的 note 含 `"model-generated"`）。`src/` 运行时代码零读取；也没有代码生成/文档渲染消费它 | **仅测试消费**（文档性元数据；非死代码，但生产侧零消费） |
+
+同族补充：`EnvelopeInfo.parser_contract`（prompt.py:24）同样只被 `tests/test_prompt.py:89/92` 读取，运行时代码不使用。整个 `KNOWN_ENVELOPES` 在 `src/` 内除定义处外无任何 import（`rg` 确认），生产运行时从不读取该目录。
+
+---
+
+## 范围二：`src/standard_agent/` 全部公开名
+
+**总的调查前提**：`rg "standard_agent"` 显示 `src/lara` **零 import**（无静态 import、无 `import_module/__import__`）。`standard_agent` 是 `pyproject.toml:37` 明确打包的独立层（wheel `packages = ["src/lara", "src/standard_agent"]`），仓内消费者只有 `tests/` 与 `examples/`。它的 `interfaces.py`/`engine.py` 与 `src/lara/agents/{runner,context}.py` 是高度重复的镜像实现（`ContextWindow`、`AgentLimits`、`ToolProfile`、`ToolSurface`、`ToolkitToolSurface`、`build_model_layer_factory` 等）。
+
+### 4. 包根 `__all__`（16 个）
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `DISABLED_COMPRESSION_WINDOW_TOKENS` | interfaces.py:20 | 常量可能无消费 | 仅作 `AgentLimits.context_window_tokens` 默认值（interfaces.py:35）；tests/examples 不引用 | **仍在用**（内部默认值）；无外部消费者 |
+| `Agent` | interfaces.py:86 | Protocol 可能没人用 | 唯一使用：`tests/test_simple_agent.py:154` `isinstance(agent, Agent)`；`src/` 无引用 | **仅测试使用** |
+| `AgentInput` | interfaces.py:56 | — | `engine.py:180`、`simple_agent.py:54/56/58`、`lara_rt.py:109/117` 签名/构造；tests 使用 | **仍在用+调用点** |
+| `AgentLimits` | interfaces.py:24 | — | `engine.py:167/176`、`simple_agent.py:26`；tests/examples 未直接使用 | **仍在用**（引擎默认预算） |
+| `AgentResult` | interfaces.py:72 | — | `engine.py:184/233`、`lara_rt.py:109/136` 返回类型/构造；tests 读取 `.text/.label/.context` | **仍在用**（但 `answer` 字段只写不读，见下） |
+| `ContextWindow` | engine.py:57 | 与 `lara.agents.context.ContextWindow` 重复 | `engine.py:183/238-245` 的 `prefix` 路径；`tests/test_simple_agent.py:31/193/200`。`result_window` 是唯一把它从结果转回窗口的函数，而 `result_window` 无调用者 | **仍在用+调用点**（prefix 路径） |
+| `ModelFactory` | engine.py:53 | 类型别名可能没人用 | `PygentEngine.__init__`（engine.py:164）、`build_model_layer_factory` 返回类型（:256）；tests 以 lambda 满足它 | **仍在用**（类型面） |
+| `PygentEngine` | engine.py:152 | 是否仅示例 | `simple_agent.py:15/47` 组合；tests/examples 实例化；`src/lara` 不引用 | **仍在用**（被 `SimpleAgent` 调用；而 `SimpleAgent` 的消费者只有测试/示例） |
+| `SimpleAgent` | simple_agent.py:35 | 试点实现 | 仅 `examples/run_simple_agent.py:87/110`、`tests/test_simple_agent.py:33/101/132`；`src/lara` 不引用 | **仅示例/测试使用**（非生产） |
+| `SimpleAgentSpec` | simple_agent.py:20 | — | `SimpleAgent` 构造 + examples/tests | **仅示例/测试使用**（经 `SimpleAgent`） |
+| `ToolProfile` | interfaces.py:41 | — | `engine.py:130/166/195`、`simple_agent.py`、tests/examples | **仍在用+调用点** |
+| `ToolRegistry` | engine.py:117 | — | `engine.py:193/197` 解析；examples/tests 注册 | **仍在用+调用点** |
+| `ToolSurface` | engine.py:76 | Protocol 可能没人用 | `ToolRegistry` 内部类型（engine.py:121/123/130/190）；唯一实现是 `ToolkitToolSurface` | **仍在用**（内部协议面） |
+| `ToolkitToolSurface` | engine.py:90 | 进程内实现，怀疑仅测试 | `src/` 内无实例化；仅 `examples/run_simple_agent.py:96`、`tests/test_simple_agent.py:88` | **仅示例/测试使用** |
+| `build_model_layer_factory` | engine.py:249 | 生产模型接线，但怀疑无调用 | 全仓无调用；仅 `examples/run_simple_agent.py:8/10` 的 **docstring 文本**提到。与 `src/lara/agents/runner.py:294` 的实现逐行等同，后者被 `runtime/service.py:1708` 生产使用 | **确认无用**（仓内零调用；重复实现） |
+| `result_window` | engine.py:238 | "fork 链式派生"素材，怀疑无调用 | 全仓无调用；仅 `__init__.py:21/49` 的 import/`__all__`；tests/examples 均不引用 | **确认无用** |
+
+### 5. `lara_rt` 公开名与方法
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `LaraSessionAgent` | lara_rt.py:41 | 真实运行时适配层 | 仅 `tests/test_lara_rt.py:12`、`examples/run_lara_session_agent.py:18`；`src/lara` 不引用；README 作为对外用法示例 | **仅示例/测试使用**（对外适配 API） |
+| `REALTIME_SESSION_MODE` | lara_rt.py:38 | 低频常量 | `tests/test_lara_rt.py:53` 使用；example 仅 import + 注释引用（:42） | **仅测试使用**（示例未实际执行） |
+| `RunConfig` | lara_rt.py:32 import / :226 `__all__` | 唯一用途是 re-export？ | `lara_rt.py` 内部除 docstring 外无使用；tests/examples 不 import 它；无任何调用点 | **确认无用**（未使用的 re-export） |
+| `run_lara_turn` | lara_rt.py:201 | 便捷入口，怀疑无调用 | 全仓仅定义 + `__all__`；无 tests/examples/生产调用（`git log -S` 显示自抽取初始提交起即未被使用） | **确认无用** |
+| `LaraSessionAgent.run` | lara_rt.py:109 | — | examples:30、tests:62，以及死函数 `run_lara_turn:220` | **仅示例/测试使用** |
+| `session_id` | lara_rt.py:150 | — | examples:24/38、tests:31/48；内部 `run()` 用私有 `_session_id`，不走该属性 | **仅示例/测试使用** |
+| `session` | lara_rt.py:154 | — | 仅内部消费者：`history:163`、`enable_eternal_memory:171`、`eternal_memory_enabled:179`、`realtime_enabled:192` | **仍在用**（包内） |
+| `history` | lara_rt.py:160 | — | examples:32、tests:38 | **仅示例/测试使用** |
+| `enable_eternal_memory` | lara_rt.py:167 | — | examples:24、tests:36 | **仅示例/测试使用** |
+| `eternal_memory_enabled` | lara_rt.py:177 | — | examples:26、tests:35/37/46 | **仅示例/测试使用** |
+| `memory_projection` | lara_rt.py:181 | — | examples:34、tests:39 | **仅示例/测试使用** |
+| `realtime_enabled` | lara_rt.py:189 | — | examples:27、tests:33/47/55 | **仅示例/测试使用** |
+| `__aenter__` / `__aexit__` | lara_rt.py:86/102 | — | 所有 `async with LaraSessionAgent(...)` 使用（examples、tests、`run_lara_turn`） | **仍在用+调用点** |
+
+### 6. 其余公开成员
+
+| 名称 | 文件:行 | 怀疑理由 | 调查过程 | 结论 |
+|---|---|---|---|---|
+| `MODEL_RETRYABLE_ERROR_KINDS` | engine.py:46 | 公开常量，可能孤立 | 唯一消费者是 `build_model_layer_factory`（engine.py:270），而该函数仓内零调用 | **孤立依赖**（随 `build_model_layer_factory` 一起失去生产用途） |
+| `AgentResult.answer` | interfaces.py:81 | 字段只写不读？ | 赋值于 `engine.py:234`、`lara_rt.py:139`；全仓 `rg "\.answer\b"` 无读取点（`agents/runner.py:183` 是另一个 `AgentRunResult`） | **确认无用**（只写字段；`context` 字段有 tests 读取） |
+| `SimpleAgent.run` | simple_agent.py:54 | — | examples:91/114、tests:120/138/160/176 | **仅示例/测试使用** |
+| `PygentEngine.run` | engine.py:179 | — | `simple_agent.py:57` 调用；tests:188/191/205 | **仍在用**（上游 `SimpleAgent` 仅测试/示例使用） |
+| `ToolRegistry.register` | engine.py:123 | — | examples:95、tests:88/138 | **仅示例/测试使用** |
+| `ToolRegistry.resolve` | engine.py:130 | — | `engine.py:197` 调用 | **仍在用** |
+| `ToolkitToolSurface.definitions` | engine.py:100 | — | `engine.py:200` 调用 | **仍在用**（但实例化只在测试/示例） |
+| `ToolkitToolSurface.tool_module` | engine.py:103 | — | `engine.py:211` 调用 | **仍在用**（同上） |
+| `ContextWindow` 字段（`system_prompt/messages/metadata`） | engine.py:64-66 | `metadata` 是否有人填？ | `engine.py:202/222/228` 读取；`metadata` 仅由 `result_window`（死函数）和 `prefix` 传入，仓内无生产填充点 | 字段本身**仍在用**；`metadata` 的生产填充链路依赖已死的 `result_window` |
+| `ToolProfile.surface_id` | interfaces.py:48 | — | `engine.py:132` 解析 | **仍在用** |
+| `SimpleAgentSpec` 字段（`name/system_prompt/tools/limits`） | simple_agent.py:24-26 | — | `simple_agent.py:52/62/66/69` 读取，`__post_init__` 校验 | **仍在用**（包内） |
+
+---
+
+## 总数与确认无用清单
+
+### 疑点总数
+
+- 范围一：**22**（6 个 Prompt 方法 + 15 个 catalog 条目 + 1 个 `note` 字段）
+- 范围二：**41**（16 个包根导出 + `MODEL_RETRYABLE_ERROR_KINDS` + 4 个 `lara_rt` 顶层名 + 10 个 `LaraSessionAgent` 成员 + `AgentResult.answer` + `SimpleAgent.run` + `PygentEngine.run` + 2 个 `ToolRegistry` 方法 + 2 个 `ToolkitToolSurface` 成员 + `ContextWindow` 字段 + `ToolProfile.surface_id` + `SimpleAgentSpec` 字段）
+- 合计：**63 个疑点**
+
+### 确认无用清单
+
+1. **`src/standard_agent/engine.py:249` `build_model_layer_factory`** — 仓内零调用；与 `src/lara/agents/runner.py:294` 重复，后者被 `runtime/service.py:1708` 使用。
+2. **`src/standard_agent/engine.py:238` `result_window`** — 仓内零调用，仅被 `__init__.py` 重新导出。
+3. **`src/standard_agent/engine.py:46` `MODEL_RETRYABLE_ERROR_KINDS`** — 唯一消费者是上面的死函数（engine.py:270）。
+4. **`src/standard_agent/lara_rt.py:201` `run_lara_turn`** — 仓内零调用（仅定义 + `__all__`）。
+5. **`src/standard_agent/lara_rt.py:32/226` `RunConfig`** — 未使用的 re-export，仓内零引用。
+6. **`src/standard_agent/interfaces.py:81` `AgentResult.answer`** — 只写不读的公开字段。
+
+### 需要注意的边界
+
+- `Prompt.wrap_escaped`、`Prompt.__add__`、`Prompt.__radd__` 不是"确认无用"，而是**仅测试使用**；生产路径不依赖它们（生产已统一走 `wrap`/`escape`/`self_closing`）。
+- `EnvelopeInfo.note` 与 `parser_contract` 生产代码零读取，但属于**目录元数据 + 测试断言对象**，不是可删除的死代码。
+- `KNOWN_ENVELOPES` 在 `src/` 内无运行时消费者，但注册行为本身是覆盖元测试的允许清单（`test_prompt_envelope_coverage.py:106`）和目录完整性契约（`test_prompt.py:72-93`），按任务约定**不算死代码**。
+- `standard_agent` 整体在 `src/lara` 中零 import，但它是 `pyproject.toml:37` 声明的独立打包层；上面列出的"仅示例/测试使用"名称是对外库 API，删除与否属于产品决策，而不是纯仓内死代码清理。唯一能凭仓内静态证据判定为死的是上面 6 项。

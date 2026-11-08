@@ -1,0 +1,294 @@
+# 死代码验证 W2（只读，未修改任何文件）
+
+`git status --porcelain` 与开始时一致，仍只有既有的 `report_V1..V4.txt`（未跟踪）。全程只做 AST / rg / 人工读码 / `git log -S`。
+
+## 调查方法与前提
+
+1. AST 抽取 14 个目标文件的全部模块级函数/类/方法/模块常量（公开符号约 **184 个**）。
+2. 对 `src/lara` + `src/standard_agent` + `tests` + `examples` 建 `Name`/`Attribute`/`import` 索引；对同名方法再做接收者复核（避免把 `session.close()` 误算成 `BashTaskObservations.close()`）。
+3. `rg` 全仓复核，含 README/pyproject；对 `.venv` 内同名符号单独排查（`get_task`/`cancel_task`/`wait_idle`/`resumable` 的命中全部是 pygent/mcp 自身符号，与 Lara 无关）。
+4. 动态派发专项：`getattr`/`setattr`/字符串方法名/`importlib`/entry points；`service.py` 没有按字符串调用自身方法的分发器。
+5. `git log -S` 追溯：绝大多数候选自 `767a413`（“Extract complete agent implementation from lara”）进入本仓后从未被接线；`5a142ff` 只改写了 `send_interrupt` 方法体并新增测试，没有新增生产调用者。
+
+关键背景证据：
+- `src/lara/__init__.py:1-8` 明示“原仓的 evaluation / repair / automations / workflows 与 lara_api 服务层已裁剪”。
+- `tests/test_import_completeness.py:39-41` 断言 evaluation/repair/automations/workflows 目录不存在。
+- `src/lara/runtime/README.md:34` 说 `service.py` 是“session-oriented runtime facade used by API and CLI adapters”，而 API 适配层已不在本仓 —— 这是下面一批“facade-only”死代码的来源，也意味着**删前需确认上游 API 是否仍引用**。
+
+---
+
+## A. `src/lara/runtime/service.py`（组合根）
+
+### A1 `LaraRuntimeService.compress_session` — service.py:1012
+- **怀疑理由**：公开 API，名字独特，全仓 grep 为 0。
+- **调查过程**：AST 索引在 `src/`、`tests`、`examples` 中零 `Name/Attribute/import` 引用；`rg "compress"` 在 `cli/`、`orchestration/`、`dispatch/` 无命中；无 `"compress_session"` 字符串派发。其内部依赖 `SessionCompressionModule`（agent/core.py:166）也只被它调用（跨包证据）。`git log -S` 显示自初始抽取后无接线提交。
+- **结论**：**确认无用**（生产与测试均零调用）。连带 `SessionCompressionUnavailable` 一并成为死代码（见 A8）。
+
+### A2 `LaraRuntimeService.send_steering` — service.py:1099
+- **怀疑理由**：唯一构造 `StandaloneUserMessage`/`SteeringMode` 的地方，但全仓无调用。
+- **调查过程**：全仓仅定义行；`handle.send_input(` 的另一处是 `_deliver_projection_replacement`（live），与本方法无关；CLI/orchestration 没有 steering 入口；无字符串派发。
+- **结论**：**确认无用**。
+
+### A3 `LaraRuntimeService.send_interrupt` — service.py:1148（仅测试使用）
+- **怀疑理由**：realtime supersede 的入口，但生产 orchestrator 走的是同一 session lane 排队，不是中断。
+- **调查过程**：
+  - 生产命中 0；唯一调用是 `tests/test_realtime_supersede.py:119`（把真实方法绑到 fake service 上执行）。
+  - `src/lara/orchestration/session_execution.py:151/164` 只调用 `start_turn`/`recover_turn`；取消走 `ManagedSessionTurn.cancel()`（managed_turn.py:65），不走本方法。
+  - `src/lara/runtime/realtime/__init__.py:19-21` 的 docstring 仍声称“fork reply runs via LaraRuntimeService.send_interrupt”，但只是文档承诺，没有实体调用。
+  - 连带链：`_start_fork_reply`（:1241，唯一调用点 :1195 在 `send_interrupt` 内）、`_fork_agent`（:1294，唯一调用点 :1269）、`self._fork_states`（:421，仅 :1172 使用）、`self._fork_agents`（:420，仅 :1307/:1323 使用）均只在该测试可达路径上。
+  - `5a142ff` 的 service.py diff 只加方法体/私有 helper，没有加生产调用者。
+- **结论**：**仅测试使用**（生产零调用）。`_start_fork_reply`/`_fork_agent`/`_fork_states`/`_fork_agents` 属“仅测试可达”。
+
+### A4 `LaraRuntimeService.cancel_turn` — service.py:1326
+- **怀疑理由**：取消能力已由 `ManagedSessionTurn.cancel()` 和执行 handle 提供。
+- **调查过程**：全仓零引用；`dispatch/scheduler.py:136/470/488` 调用的是 `turn.cancel()`；CLI 无 cancel 子命令；无 `"cancel_turn"` 字符串派发。
+- **结论**：**确认无用**。
+
+### A5 `LaraRuntimeService.recovery_case_run` — service.py:1402
+- **怀疑理由**：从 execution 重放 `CaseRunRef` 的辅助入口。
+- **调查过程**：全仓零引用；`session_execution.recover_turn` 的 `run_ref` 由 dispatch item 提供（session_execution.py:72/164），无需回读；`recover_turn`（:1336）本身是 live 的，但它不调用本方法。
+- **结论**：**确认无用**。
+
+### A6 `LaraRuntimeService.execute_case` — service.py:1416
+- **怀疑理由**：接收 `case: Any` 并读取 `.title/.session/.input`，明显是已裁剪 evaluation 子系统的入口。
+- **调查过程**：全仓零引用；CLI 无 `case run` 命令；`EventStore`/`checkpoint_conversation_message` 的其他使用点均不经过它；`src/lara/__init__.py` 与 `test_import_completeness.py` 明示 evaluation 已裁剪；`git log -S` 自初始抽取后无变化。
+- **结论**：**确认无用**（evaluation 裁剪遗留）。
+
+### A7 `get_task` / `get_task_output` / `get_task_result` / `cancel_task` — service.py:1742 / 1745 / 1748 / 1751
+- **怀疑理由**：四个 tool-task 转发薄封装，名字常见，易被同名符号掩盖。
+- **调查过程**：四者在 `src/`、`tests`、`examples` 零引用；`rg "get_task"` 的全部其他命中都在 `.venv` 的 pygent/mcp 内部（`ToolTaskManager.get_task` 等，非 `LaraRuntimeService`）；`bash_tasks.py:182/184` 直接调用的是 `self.runtime.get_tool_result/get_tool_output`，不经过 service 封装；`cancel_task` 同样只命中 pygent 的局部变量名。
+- **结论**：**四条均确认无用**（底层 runtime API 仍被 `bash_tasks.py` 使用，删的是 service 这层转发）。
+
+### A8 `SessionCompressionUnavailable` — service.py:145
+- **怀疑理由**：异常类只在 `compress_session` 内被 raise。
+- **调查过程**：4 个 raise 点全在 `compress_session`（:1028/1036/1047/1062）；无 import、无 `__all__` 导出（service.py:1783 只导出 `LaraRuntimeService`）。
+- **结论**：**确认无用**（A1 的传递死代码）。
+
+### A9 已核对“仍在用”的 service 方法（防止误杀）
+
+| 方法 | 生产调用点 |
+|---|---|
+| `start_turn` | `orchestration/session_execution.py:151` |
+| `recover_turn` | `orchestration/session_execution.py:164` |
+| `deliver_approval` | `cli/sessions.py:317` |
+| `close` | `orchestration/runtime_pool.py:184`（及 96/133/148/162） |
+| `initialize` | `orchestration/runtime_pool.py:90` |
+| `new_agent` | service.py 内部 :965/1040/1250/1361/1471 |
+| `bind` | service.py :860/982/1065/1274/1370/1487 |
+| `_prepare_turn` | service.py :972/1478；`tests/test_prompt_envelopes_golden.py:437` |
+| `_restored_session_context` | service.py :1050/1562；`tests/test_fork_context.py:68` |
+| `reminders`（属性） | `orchestration/runtime_lease.py:22` |
+
+---
+
+## B. `src/lara/runtime/tools.py`
+
+### B1 `_hash_file` — tools.py:626
+- **怀疑理由**：私有 helper，与 `snapshot_workspace` 内的内联 sha256 逻辑重复。
+- **调查过程**：全仓零引用；`snapshot_workspace` 在 :104-117 自己构造 `hashlib.sha256()` 并分块读取，未调用它；`hashlib` 仍被内联代码使用，因此不是“只为它导入”。`git log -S` 自初始抽取后无变化。
+- **结论**：**确认无用**（与 :104-117 重复）。
+
+---
+
+## C. `src/lara/runtime/model_request_journal.py` — 整模块
+
+### C1 `ModelRequestJournal`（class:11；`list`:22；`list_window`:26；私有 `_snapshot_from_event`:63、`_iso_timestamp`:84）
+- **怀疑理由**：模块 docstring 声称“Trace inspector 从这里读快照”，但本仓没有 Trace inspector 消费方。
+- **调查过程**：全仓 `rg "ModelRequestJournal|model_request_journal"` 仅命中本文件（`list`/`list_window` 只互相调用）；`src/lara/tracing/` 只读取 `EventStore`/diff 快照，不读 pygent journal；无 `importlib`/entry point 动态加载；模块能被 `test_import_completeness` 导入成功，但没有任何业务消费者。
+- **结论**：**确认无用**（整模块；上游 Trace/API 层裁剪遗留）。
+
+---
+
+## D. `src/lara/runtime/model_configuration.py`
+
+### D1 `discover_models` — model_configuration.py:235
+### D2 `builtin_model_catalogs` — model_configuration.py:266
+- **怀疑理由**：两者只出现在 `runtime/__init__.py` 的 facade 再导出和本文件 `__all__`。
+- **调查过程**：全仓实际调用 0（`:6-7`、`:15-16` 只是 re-export；没有任何 `from lara.runtime import discover_models/builtin_model_catalogs`）；`cli/`、`config/`、`dispatch/` 均无命中；`src/lara/runtime/README.md:36-37` 还明确写“package-level compatibility re-exports are intentionally not provided”，与现状矛盾。`git log -S` 自初始抽取后无变化。
+- **结论**：**确认无用（仅 facade 导出）**。注意：这是公开再导出面，删前需确认上游 settings UI 是否引用。
+
+---
+
+## E. `src/lara/runtime/deployment.py`
+
+### E1 `LaraModelResourceResolver.validate` — deployment.py:21
+- **怀疑理由**：类被 `service.py:377-378` 注册、`register/acquire` 都在用，但 `validate` 全仓零调用。
+- **调查过程**：pygent 0.3.33 `LocalRuntime` 只读 `resolver_id` 并调用 `resolver.acquire(...)`（`.venv/.../pygent/runtime/local.py:242-274`）；全 `.venv` 无 `resolver.validate(` 调用；但 `pygent/llm/types.py:273-284` 的 `ModelResourceResolver` **Protocol 明确声明了 `validate` 成员**。
+- **结论**：**协议占位——无任何调用者，但不建议按普通死代码删除**（删除会破坏 pygent Protocol 的类型契约）。不计入“确认无用”。
+
+---
+
+## F. `src/lara/runtime/file_effect_models.py`
+
+### F1 `DeferredFileEffectBatch.tool_call_ids` — file_effect_models.py:109
+- **怀疑理由**：property，名字独特，零引用。
+- **调查过程**：全仓仅定义行；batch 的序列化走 `to_dict()`（:112），`create()`（:94）也不使用它；无 `getattr(batch, "tool_call_ids")`。
+- **结论**：**确认无用**。
+
+---
+
+## G. `src/lara/runtime/eternal_conversation.py`
+
+### G1 `PROPOSAL_FIELD_LIMITS` — eternal_conversation.py:38
+- **怀疑理由**：模块常量，注释说用于“publish-pending gate”，但代码里没有引用。
+- **调查过程**：全仓零引用；`EXTRACTOR_GUIDANCE`（:189-190）里把同样的 4/4/6/4/4/6 限制硬编码为散文，未使用该常量；`DynamicMemoryCli.call` 直接调外部脚本，限制由脚本自己校验。
+- **结论**：**确认无用**（与 guidance 文案重复且未接线）。
+
+### G2 `memory_cli_handler` — eternal_conversation.py:109
+### G3 `MEMORY_CLI_ALLOWED_COMMANDS` — eternal_conversation.py:97（传递死）
+### G4 `DynamicMemoryCli.file_command` — eternal_conversation.py:236（传递死）
+- **怀疑理由**：handler 是旧设计里 memory job 的唯一 CLI 执行面，但 `_run_memory_job` 现在改用 `StandardTools`/bash。
+- **调查过程**：
+  - `memory_cli_handler` 全仓零调用；`service._run_memory_job`（service.py:1672-1740）只注册 `ToolkitToolSurface(self._memory_job_tools.toolkit)`，注释明确“bash reaches the memory CLI; there are no dedicated memory tools”。
+  - `MEMORY_CLI_ALLOWED_COMMANDS` 只在 `memory_cli_handler` 内部 :125/:128 使用。
+  - `DynamicMemoryCli.file_command` 只在 `memory_cli_handler` 内部 :140 使用；`init`/`call` 仍被活路径 :472-473 等使用。
+- **结论**：`memory_cli_handler`、`MEMORY_CLI_ALLOWED_COMMANDS`、`DynamicMemoryCli.file_command` **三条均确认无用**（后者为前者的传递死代码）。
+
+### G5 `render_memory_context` — eternal_conversation.py:298
+- **怀疑理由**：`__all__`（:860）导出了它，但全仓无调用。
+- **调查过程**：只有定义和 `__all__`；`render_memory_access_instruction` 与 `render_memory_snapshot` 的真实调用点分别是 `agent/pipeline.py:355` 和 `service.py:1623`，二者都不经过这个组合函数。
+- **结论**：**确认无用**（facade 导出冗余）。
+
+### G6 `EternalConversationHarness.retry_pending` — eternal_conversation.py:432
+- **怀疑理由**：恢复失败 extractor 的公开方法。
+- **调查过程**：全仓零调用；`close`/`record_and_trigger` 才是 live；没有 CLI/调度入口调用 `retry_pending`；其内部复用的 `_guarded_extract_loop` 仍被 `record_and_trigger`（:409）使用，所以不必连带。
+- **结论**：**确认无用**。
+
+### G7 `EternalConversationHarness.wait_idle` — eternal_conversation.py:736
+- **怀疑理由**：等待后台 job 的公开方法。
+- **调查过程**：全仓零调用（`.venv` 的 `wait_idle` 是 pygent MCP pool 的同名方法，无关）；`close` 自己用 `asyncio.wait(...)` 实现，不调用它。
+- **结论**：**确认无用**。
+
+### G8 已核对仍在用
+`EternalConversationHarness` ← service.py:427；`record_and_trigger` ← agent/core.py:598；`close` ← service.py:1758；`load_projection` ← service.py:1621 / fork_context.py:46 / standard_agent/lara_rt.py:184；`render_memory_snapshot` ← service.py:1623；`render_memory_access_instruction` ← agent/pipeline.py:355；`estimate_context_tokens` ← :427；`DynamicMemoryCli.init/call` ← :472-473/479 等。
+
+---
+
+## H. `src/lara/schema/models.py`
+
+### H1 `SessionRef.from_dict` — models.py:507
+- **怀疑理由**：同类的 `to_dict` 在 CLI 使用，`from_dict` 可能没人用。
+- **调查过程**：`SessionRef.to_dict` 有生产调用（`cli/sessions.py:125/160`）；`from_dict` 全仓零调用（`rg "SessionRef\.from_dict"` 为 0）；`manager` 只在 :112/:231 直接构造 `SessionRef(...)`。
+- **结论**：**确认无用**（仅 `from_dict` 死；类本身 live）。
+
+### H2 `CaseRunStatus.resumable` — models.py:551
+- **怀疑理由**：docstring 说“resumable set drives session recovery”，但 recovery 逻辑可能没读它。
+- **调查过程**：全仓零 `.resumable` 引用；真正参与 recovery 的是 `terminal`（dispatch/scheduler.py:38、orchestration/models.py:46、sessions/manager.py:404）和 `from_value`（上述三处）；`rg "resumable"` 的一方源码命中只有定义与 docstring。
+- **结论**：**确认无用**。
+
+### H3 `CaseRunResult` — models.py:567（含 `__post_init__`:577 / `to_dict`:586 / `from_dict`:590）
+### H4 `WorkspaceRef` — models.py:595（含 `__post_init__`:600 / `to_dict`:606）
+### H5 `EvaluationResult` — models.py:611（含 `__post_init__`:616 / `to_dict`:624）
+### H6 `CaseDefinition` — models.py:659（含 `__post_init__`:669 / `to_dict`:677 / `from_dict`:681）
+- **怀疑理由**：四个类只被 `schema/__init__.py` 再导出，没有任何实例化/消费；命名与已裁剪的 evaluation 子系统吻合。
+- **调查过程**：
+  - 全仓（`src/lara`、`src/standard_agent`、`tests`、`examples`）对四个类的唯一外部命中都是 `schema/__init__.py` 的 import/`__all__`（:4/:6/:11/:23 与 :31-36/:50）。
+  - 没有 `CaseDefinition`/`EvaluationResult`/`WorkspaceRef`/`CaseRunResult` 的实例化、类型注解或 `isinstance`。
+  - `execute_case(case: Any)` 读取 `.title/.session/.input`，正是 `CaseDefinition` 的形状，说明这批类是 `execute_case` 的配套；两者一起成为 evaluation 裁剪遗留。
+  - `git log -S` 自 `767a413` 后无功能变更。
+- **结论**：**四个类均确认无用（整类；含其公开方法）**。
+
+### H7 已核对仍在用
+`RunConfig`/`AgentSession`/`CaseRunRef`/`ContextEvent`/`SessionSpec`/`SessionRef`/`CaseRunStatus` 的主体均在用：
+- `RunConfig.to_dict/from_dict` ← service.py:157/841、sessions/manager.py:376/646；
+- `AgentSession.to_dict/from_dict` ← sessions/manager.py:97/125/277/724；
+- `CaseRunRef.to_dict/from_dict` ← bash_tasks.py:70/103/143/150、sessions/manager.py:384、file_effect_models.py:115/125；
+- `ContextEvent` ← tracing/events.py:75/110/119/120/287；
+- `SessionRef` ← sessions/manager.py:112/231，`to_dict` ← cli/sessions.py:125/160；
+- `CaseRunStatus.terminal/from_value` ← dispatch/scheduler.py:37-38、orchestration/models.py:45-46、sessions/manager.py:403-404；
+- `native_model_config_complete` ← config/loader.py:475；
+- `ResolvedAgentConfig.safe_dict` ← models.py:458（`RunConfig.to_dict` 内部）。
+
+---
+
+## I. 其余目标文件：逐项核对结论（全部仍在用）
+
+| 符号 | 文件:行 | 生产调用点 |
+|---|---|---|
+| `resolve_attachments` | attachments.py:64 | service.py:215/1112/1572 |
+| `build_media_blocks` | attachments.py:103 | service.py:1137/1613 |
+| `render_attachments_xml` | attachments.py:119 | service.py:1585（+ golden 测试 :393） |
+| `ResolvedAttachment.is_media` | attachments.py:60 | attachments.py:115 |
+| `BashTaskObservations.prepare/track/restore/on_tool_task_event/close` | bash_tasks.py:41/59/77/82/204 | pipeline.py:861/570；service.py:742/678/1760 |
+| `ReadinessRetryingTransport` / `.session` | mcp.py:65/85 | service.py:756；pygent `MCPClientPool` 调用 `.session()` |
+| `CredentialEnvironment` | model_configuration.py:49 | agent/core.py:272 |
+| `build_model_invoker` | model_configuration.py:155 | agent/core.py:270 |
+| `preferred_models` / `preferred_profile_name` | model_configuration.py:115/109 | service.py:883/882/945 |
+| `workspace_media_resolver` | model_configuration.py:133 | agent/core.py:273 |
+| `FileEffectBaselineStore` / `is_complete` / `save` | file_effects.py:21/39/44 | bash_tasks.py:46/50/54；file_effects.py:98/106/156 |
+| `FILE_EFFECT_TOOL_SPEC` / `FileEffectToolExecutor` | file_effects.py:57/77 | service.py:340；agent/core.py:373；agent/pipeline.py:825 |
+| `LaraContext` / `append_file_effects` / `drain_file_effects` / `history` | context.py:22/58/66/42 | service.py:308；pipeline.py:568/641/813；prompts.py:454-501 |
+| `COMPRESSION_REQUEST_PROMPT` / `TRANSCRIPT_POINTER` | context_compression.py:11/116 | agent/core.py:422；agent/compressor.py:62 |
+| `parse_summary` / `collect_recent_file_reads` / `render_file_read_block` | context_compression.py:136/150/162 | agent/compressor.py:40/48/47 |
+| `FileEffect.key` | file_effect_models.py:44 | tools.py:327 |
+| `DeferredFileEffectBatch.create/to_dict/from_dict` | file_effect_models.py:94/112/122 | bash_tasks.py:176；pipeline.py:815/826；file_effects.py:89 |
+| `ToolObserver` / `record_framework_result` | tools.py:447/473 | pipeline.py:545/558；bash_tasks.py:152/165 |
+| `FileEffectTracker` / `snapshot_workspace` / `observed_effects` / `merge_effects` | tools.py:32/74/185/260 | file_effects.py:107/120/145/151；bash_tasks.py:47/54 |
+| `WorkspaceToolExecutor` | deployment.py:39 | service.py:335 |
+| `LaraModelResourceResolver.register/acquire` | deployment.py:18/30 | service.py:879；pygent `local.py:272` |
+
+> `src/lara/runtime/model_request_journal.py` 的模块能被 `test_import_completeness` 导入，因此不会触发悬空 import 失败；但导入≠使用，结论仍是整模块无用。
+
+---
+
+## J. 附注（字段级 / 非计数，供后续清理参考）
+
+- `src/lara/runtime/file_effects.py:14` 导入的 `DeferredFileEffectJob` 在本文件内未使用，仅靠 `__all__` 字符串再导出；实际消费者都从 `file_effect_models` 直接导入。属“无用 import + 多余 re-export”，符号本身不是死代码。
+- `src/lara/schema/models.py:315` `RunConfig.case_file`：`config/loader.py:38/62/93` 会接收并归一化，但**全仓没有任何调用者传 `case_file=`**，也没有行为读取它（只被 `RunConfig.to_dict` 序列化）。属 evaluation 裁剪后的残留配置字段。
+- `src/lara/schema/models.py:331` `model_configuration_error`：只被 `__post_init__` 写入、被 `to_dict` 序列化，全仓没有读取点。
+- `src/lara/schema/models.py:328` `model_configuration_status`：`__post_init__` 内部读一次做一致性校验，外部无消费者；更像给已裁剪 settings UI 的状态字段。
+- 以上四项是 dataclass 字段，不计入下表的“公开函数/类/方法/常量”确认清单。
+
+---
+
+## 总数与确认无用清单
+
+| 分类 | 数量 |
+|---|---|
+| 审计公开符号（模块级函数/类/公开方法/常量，约） | 184 |
+| 怀疑点（按符号组计） | **30** |
+| ① 确认无用（生产与测试零引用） | **28 组** |
+| ② 仅测试使用 | **1 组**（`send_interrupt`，另含 2 个仅测试可达私有方法） |
+| ③ 协议占位、无调用者但不建议删 | **1**（`ModelResourceResolver.validate`） |
+| ④ 已核对仍在用 | 其余全部（关键调用点见 A9/I/H7） |
+
+### ① 确认无用（28 组）
+
+1. `service.py:1012` `LaraRuntimeService.compress_session`
+2. `service.py:1099` `LaraRuntimeService.send_steering`
+3. `service.py:1326` `LaraRuntimeService.cancel_turn`
+4. `service.py:1402` `LaraRuntimeService.recovery_case_run`
+5. `service.py:1416` `LaraRuntimeService.execute_case`
+6. `service.py:1742` `LaraRuntimeService.get_task`
+7. `service.py:1745` `LaraRuntimeService.get_task_output`
+8. `service.py:1748` `LaraRuntimeService.get_task_result`
+9. `service.py:1751` `LaraRuntimeService.cancel_task`
+10. `service.py:145` `SessionCompressionUnavailable`
+11. `tools.py:626` `_hash_file`
+12. `model_request_journal.py:11` `ModelRequestJournal`（整模块；含 `list`:22、`list_window`:26）
+13. `model_configuration.py:235` `discover_models`
+14. `model_configuration.py:266` `builtin_model_catalogs`
+15. `file_effect_models.py:109` `DeferredFileEffectBatch.tool_call_ids`
+16. `eternal_conversation.py:38` `PROPOSAL_FIELD_LIMITS`
+17. `eternal_conversation.py:97` `MEMORY_CLI_ALLOWED_COMMANDS`
+18. `eternal_conversation.py:109` `memory_cli_handler`
+19. `eternal_conversation.py:236` `DynamicMemoryCli.file_command`
+20. `eternal_conversation.py:298` `render_memory_context`
+21. `eternal_conversation.py:432` `EternalConversationHarness.retry_pending`
+22. `eternal_conversation.py:736` `EternalConversationHarness.wait_idle`
+23. `models.py:507` `SessionRef.from_dict`
+24. `models.py:551` `CaseRunStatus.resumable`
+25. `models.py:567` `CaseRunResult`（整类）
+26. `models.py:595` `WorkspaceRef`（整类）
+27. `models.py:611` `EvaluationResult`（整类）
+28. `models.py:659` `CaseDefinition`（整类）
+
+### ② 仅测试使用（1 组）
+
+- `service.py:1148` `LaraRuntimeService.send_interrupt` — 唯一调用者 `tests/test_realtime_supersede.py:119`；连带 `_start_fork_reply`:1241、`_fork_agent`:1294、`_fork_states`:421、`_fork_agents`:420 仅测试可达。
+
+### ③ 协议占位（1 项，未计入确认无用）
+
+- `deployment.py:21` `LaraModelResourceResolver.validate` — 本仓与 pygent 运行时均无调用；仅 pygent `ModelResourceResolver` Protocol（`pygent/llm/types.py:273-284`）要求该成员。
+
+**最重要的结论**：28 组确认无用项里有 16 组集中在 `service.py` 与 `schema/models.py`，全部指向同一来源——本仓已裁剪的 **evaluation 子系统**（`execute_case`/`recovery_case_run`/`CaseDefinition`/`CaseRunResult`/`EvaluationResult`/`WorkspaceRef`/`case_file`）和 **lara_api/desktop 服务层**（`compress_session`/`send_steering`/`send_interrupt`/`get_task*`/`ModelRequestJournal`/`discover_models`/`builtin_model_catalogs`）。删除前建议先确认上游 API 适配层是否仍直接引用这些 facade 方法。

@@ -1,0 +1,70 @@
+# 死代码验证报告 V4（只读，未修改任何文件；`git status` 干净）
+
+## 怀疑点 1：`result_window()`
+
+- **文件:行**：`src/lara/runtime/fork_context.py`（整文件 159 行）无此函数；同名实现位于 `src/standard_agent/engine.py:238`
+- **怀疑理由**：疑为未使用的 fork 结果窗口构造函数
+- **调查过程**：
+  - `rg "result_window"` 全仓仅 3 处：`standard_agent/engine.py:238` 定义、`standard_agent/__init__.py:21` 导入、`:49` `__all__`。`src/lara`、`tests`、`examples` 零引用（含通配导入检查）。
+  - `git log -- src/lara/runtime/fork_context.py` 只有 2 次提交（`96e3b22` 创建、`d865035` 类型修复）；`git log -S "result_window" -- src/lara/runtime/fork_context.py` 无命中，创建提交的 diff 也未增删该符号 → **该文件从未有过 `result_window()`**。
+  - 逐个核对 fork_context.py 的 4 个导出：`restore_session_context`→`service.py:1538`（+测试）；`session_fork_window`→`service.py:1257`（live）与 `:1721`（frozen）；`SessionForkWindowSource`→`service.py:1728`，`describe()` 经 `agents/fork.py:123` 消费；`ForkContextMode` 仅 `fork_context.py:84` 内部注解使用，无外部导入。
+- **结论**：**前提不成立**（fork_context.py 无 `result_window()`）。真正的同名函数 `standard_agent.engine.result_window` = **确认无用**；`ForkContextMode` = 导出多余（仍在用，仅限模块内）。
+
+## 怀疑点 2：`fork_state.py` 导出是否都被 `service.py` 消费
+
+- **文件:行**：`src/lara/runtime/realtime/fork_state.py:11`（唯一导出 `SessionForkState`）
+- **怀疑理由**：新增模块可能只导出了半成品字段
+- **调查过程**：
+  - 类本身：`service.py:107` 导入、`:421` 注解 `_fork_states`、`:1172` `setdefault(..., SessionForkState())`。
+  - 字段全部被读写：`handle`（1174/1179/1183/1202/1211/1236）、`finished`（1174/1194/1212/1222/1237）、`pending`（1175/1178/1186/1213/1238）、`generation`（1176/1184/1210/1219）、`lock`（1173/1209/1219）。
+  - `tests/test_realtime_supersede.py:119` 把真实 `LaraRuntimeService.send_interrupt` 绑定到假 service 上执行，走的是真实 `setdefault` 构造路径。
+  - 模块导入项 `asyncio`/`dataclass`/`field`/`Any` 均被使用。
+- **结论**：**仍在用**（`service.py:421/1172`），无死导出、无死字段。
+
+## 怀疑点 3：`DEFAULT_NUDGE_INTERVAL` 是否与 `injection.py` 的默认值重复
+
+- **文件:行**：`src/lara/runtime/realtime/nudge.py:12`；消费点 `injection.py:25` 导入、`:70` 作为 `__init__(interval=...)` 默认值
+- **怀疑理由**：injection 可能自带 5 导致两处阈值不同步
+- **调查过程**：
+  - `injection.py` 内没有第二个字面量 5，也没有独立默认常量，而是直接 import 该常量 → **不是 injection 内部的重复**。
+  - 但真正的重复在配置层：`src/lara/schema/models.py:185` `RealtimeInteractionConfig.nudge_interval = 5`。全仓 `rg "nudge_interval"` 只有定义与 `__post_init__` 校验（models.py:190-193），**没有任何行为读取点**；`core.py:396` 构造 `RealtimeNudgeModule()` 时未传 `interval`。因此 `RealtimeNudgeModule.interval` / `should_nudge(interval=...)` 的形参从未被显式传值。
+- **结论**：`DEFAULT_NUDGE_INTERVAL` **仍在用**（唯一默认值来源）；重复的是配置项 `RealtimeInteractionConfig.nudge_interval`，它本身**确认无用**（范围外，附注）。
+
+## 怀疑点 4：`SCHEDULER_GUIDANCE` 是否只被自身使用
+
+- **文件:行**：`src/lara/scheduler/message.py:11`，使用点 `message.py:36`；导出 `message.py:53`、`scheduler/__init__.py:5,26`
+- **怀疑理由**：常量可能只是消息模板的内部拼接片段，导出多余
+- **调查过程**：
+  - 生产使用：`build_task_message()` 在 `message.py:36` 直接引用它拼接 `<instructions>`；`build_task_message` 被 `scheduler/daemon.py:89` 调用（活路径）。
+  - 外部引用：`rg "SCHEDULER_GUIDANCE"` 仅 `tests/test_task_message.py:7`（从 `lara.scheduler.message` 直接导入，:28 用于 golden 断言）；**没有任何代码 `from lara.scheduler import ...`**，因此 `scheduler/__init__.py` 的重新导出零消费者。
+  - 文案唯一性：`rg "You are executing a scheduled Lara task"` 仅 `message.py:12` 一处，无副本。
+- **结论**：常量**仍在用**（模块内部）；`message.py.__all__` 与 `scheduler/__init__.py` 的对外导出 = **仅测试使用 / 导出多余**，但**不是死代码**。
+
+## 怀疑点 5：首轮提醒 vs nudge 循环提醒的状态/逻辑重叠
+
+- **文件:行**：`injection.py:34-48`（`_NudgeCounter`）、`:77-115`（forward 两分支）；`nudge.py:22-29`（`should_nudge`）、`:32-35`（`nudge_reminder`）
+- **怀疑理由**：两条提醒可能各自维护状态，或在同一 boundary 重复注入；`should_nudge` 可能是被 injection 内联规则取代的残留
+- **调查过程**：
+  - **状态**：唯一状态是 `injection.py:34` 的 `_NudgeCounter`；`nudge.py` 全是无状态纯函数 → **无状态重复**。
+  - **逻辑**：`spoke` 每 boundary 只扫描一次（`:86-88`），同时驱动 `spoke_yet` 与 `rounds` 归零；首轮分支 `:95-107` 命中直接 `return`，周期分支 `:109-115` 不会执行 → 同一 boundary 不会双注入（首轮条件含 `not message.content`，与 `RuntimeReminderModule`/envelope 的"先占位"约定一致；`tests/test_realtime_first_speak_nudge.py:62-73` 覆盖）。
+  - **规则重复**：`nudge.py:22 should_nudge()` 的 `rounds_since_speak >= interval` 与 `injection.py:109` 内联的 `rounds % interval == 0` 等价，但 injection 未调用它；`rg "should_nudge" -g '*.py'` 只有 `nudge.py:22` 定义与 `:42` `__all__` 自引用，**零调用点** → 确认无用。
+  - **实测耦合（非死代码，仅报告）**：`:81-84` 切换 `turn_id` 时只重置 `first_result_seen`/`spoke_yet`，**不重置 `rounds`**。用 `uv run python` 跑真实模块：turn1 连续 4 个 boundary 后，turn2 首个 boundary 若已带 envelope（`content` 非空，首轮分支被跳过），会立即追加 *"You have not spoken to the user for 5 tool rounds"*。若这是"距上次 speak 的累计轮数"的有意语义则无误，否则首轮提醒与周期提醒存在跨 turn 状态耦合。
+  - 相关测试：`tests/test_realtime_first_speak_nudge.py`、`tests/test_realtime_supersede.py` 共 13 项，与 `test_task_message.py`、`test_fork_context.py` 一起运行全部通过（13 passed），证明上述活跃路径当前成立。
+- **结论**：两模块**无状态重复**，逻辑重叠但互补；`should_nudge` 是**确认无用**的重复规则实现。
+
+## 汇总
+
+**怀疑点总数：5**（其中 1 个前提不成立；确认无用项 4 个，均在点名文件内/直接相关）
+
+**确认无用清单**
+
+| 名称 | 位置 | 说明 |
+|---|---|---|
+| `should_nudge` | `src/lara/runtime/realtime/nudge.py:22` | 零调用，仅 `__all__` 自引用；规则已被 `injection.py:109` 内联 |
+| `standard_agent.engine.result_window` | `src/standard_agent/engine.py:238` | 同名误导项：fork_context.py 从未存在此函数；src/tests/examples 零调用 |
+| `RealtimeInteractionConfig.nudge_interval` | `src/lara/schema/models.py:185` | 无行为读取点，`core.py:396` 未接线（范围外附注） |
+| `Any`（未使用导入） | `src/lara/scheduler/message.py:6` | 死导入 |
+
+**仍在用但导出多余**（非死代码）：`ForkContextMode`（`fork_context.py:32`，仅内部注解）、`NUDGE_REMINDER`（`nudge.py:14`，仅 `nudge_reminder` 使用）、`SCHEDULER_GUIDANCE` 的包级重导出（`scheduler/__init__.py:5,26`，零消费者；常量本身仍被 `message.py:36` 使用）。
+
+**顺带发现（未展开、未修改）**：`ForkProductSource.from_window_parts`（`src/lara/agents/context.py:191`）零调用；`AgentRunResult.window()`（`src/lara/agents/runner.py:185`）仅被 `tests/test_lara_agents.py:439,447` 使用。

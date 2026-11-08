@@ -515,6 +515,56 @@ async def test_r10_speaking_turn_end_skips_finalizer_reminder(
 
 
 @pytest.mark.e2e
+async def test_r10b_late_tool_round_without_speak_triggers_finalizer(
+    tmp_path: Path,
+) -> None:
+    """R10b: only the tool round right before the final reply counts.
+
+    Anchor: the agent spoke in an early round, but the LAST tool round before
+    the final text had no speak — the trailing answer would otherwise be
+    invisible, so the bottom-line finalizer must fire. This pins the
+    user-approved preceding-round semantics (not a whole-turn scan).
+    """
+
+    def responder(call):
+        assert not call.is_fork
+        index = len(scenario.invoker.main_calls) - 1
+        if index == 0:
+            return AIMessage(
+                content="",
+                tool_calls=(speak_call("speak-1", "progress update"),),
+            )
+        if index == 1:
+            return AIMessage(
+                content="",
+                tool_calls=(read_call("read-1", "note.txt"),),
+            )
+        return AIMessage(content="plain final")
+
+    scenario = build_scenario(tmp_path, responder)
+    async with LocalExecutionHost(runtime_pool=scenario.pool) as host:
+        turn = await _submit(host, scenario, "干活并在结束时汇报", "turn-1")
+        output, _ = await asyncio.wait_for(turn.result(), timeout=10)
+        await wait_until(
+            lambda: len(scenario.invoker.main_calls) == 4,
+            description="finalizer turn ran",
+        )
+
+    result = output.data["result"]
+    assert result["status"] == "passed"
+    assert TURN_FINALIZER_REMINDER in scenario.invoker.main_calls[-1].text
+    finalizer_calls = [
+        call
+        for call in scenario.invoker.main_calls
+        if call.message_kind == "lara.realtime.finalizer"
+    ]
+    assert len(finalizer_calls) == 1
+    assert "note.txt" in finalizer_calls[0].text or "plain final" in str(
+        finalizer_calls[0].text
+    )
+
+
+@pytest.mark.e2e
 async def test_r11_non_realtime_session_has_no_speak_or_reminders(
     tmp_path: Path,
 ) -> None:

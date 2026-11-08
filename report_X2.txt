@@ -1,0 +1,154 @@
+# 冗余深挖 X2 — 跨模块相似/重复逻辑检测（只读）
+
+**方法**：对 `src/lara` + `src/standard_agent` 共 109 个 `.py` 文件做 AST 解析，去掉 docstring/注释后用 `ast.unparse` 规范化，再按 token 序列跑 `difflib.SequenceMatcher.ratio()`；主筛条件为“函数体 ≥6 行且 ratio ≥0.75”，另做全量**逐字相同函数体**扫描（不限行数）、≥40 字符字符串常量扫描、异常类/raise 模式扫描。共 521 个顶层/类方法纳入比较，命中 31 对 ≥0.75。
+
+本次分析未修改任何文件（`git status` 与开始时一致，仅原有未跟踪的 `report_*.txt`）。
+
+---
+
+## 一、相似函数对（ratio ≥ 0.75）
+
+### A. 真重复 → 该合并（或抽单一实现）
+
+| # | A | B | 相似度 | 判断 |
+|---|---|---|---|---|
+| 1 | `ToolRegistry.resolve@src/lara/agents/runner.py:150` | `ToolRegistry.resolve@src/standard_agent/engine.py:130` | **1.000** | 真重复。逐字相同（含错误文案），是 `standard_agent` 对 `agents` 的移植副本。 |
+| 2 | `build_model_layer_factory@src/lara/agents/runner.py:292`（内层 `factory:309`） | `build_model_layer_factory@src/standard_agent/engine.py:238`（内层 `factory:253`） | **1.000** | 真重复。重试策略/退避参数完全一致，两份必须同步改。 |
+| 3 | `DispatchOperationView.to_dict@src/lara/dispatch/models.py:115` | `CollaborationOperation.to_dict@src/lara/sessions/collaboration.py:131` | **0.992** | 真重复。字段、`include_message` 语义、`done` 属性（两边都是 `return self.state.terminal`）完全相同，是刻意的“operation JSON 兼容投影”，但两套模型会漂移。 |
+| 4 | `ToolkitToolSurface.tool_module@src/lara/agents/runner.py:122` | `ToolkitToolSurface.tool_module@src/standard_agent/engine.py:103` | **0.982** | 真重复。仅授权 `reason_code` 常量不同（`lara-agents-uniform-tool-surface` vs `lara-uniform-tool-surface`）。 |
+| 5 | `_chat_config_and_manager@src/lara/cli/sessions.py:343` | `_collaboration_config_and_manager@src/lara/cli/sessions.py:355` | **0.912** | 真重复。唯一差别是前者多传 `session_id=`；可合并为一个带可选 `session_id` 的函数。 |
+| 6 | `_offload_remote@src/lara/runtime/agent/media_offload.py:115` | `_offload@src/lara/runtime/agent/media_offload.py:155` | **0.911** | 真重复。递归树遍历骨架逐行同构，只有“inline 源 → 落盘”与“url 源 → 下载”的节点处理不同；可抽 `_walk_media(node, handler)`。 |
+| 7 | `RuntimeGenerationKey.from_config@src/lara/orchestration/runtime_keys.py:30` | `_config_fingerprint@src/lara/runtime/service.py:147` | **0.887** | 真重复。同一份 `config.to_dict() → canonical JSON → sha256`；`service` 直接复用 key 类即可。 |
+| 8 | `AgentRunner.run@src/lara/agents/runner.py:220` | `PygentEngine.run@src/standard_agent/engine.py:179` | **0.885** | 真重复。工具面解析 → 模型层 → `PygentAgent` 组装 → prefix 替换 → invoke，整段编排一一对应，仅入参/返回类型不同。 |
+| 9 | `SessionCollaborationService.wait_message@src/lara/orchestration/session_collaboration.py:181` | `SessionCollaborationService.wait@src/lara/orchestration/session_collaboration.py:266` | **0.877** | 真重复。`while True: status; if done: return; sleep(poll)` + `asyncio.wait_for` 包装完全同构，只差状态查询函数。 |
+| 10 | `_write_config@src/lara/config/editor.py:91` | `write_json_atomic@src/lara/core/io.py:56` | **0.854** | 真重复。临时文件 + fsync + `os.replace` + finally unlink 的原子写逻辑逐行相同，只差序列化器（YAML vs JSON）。 |
+| 11 | `load_env_file@src/lara/core/io.py:88` | `read_env_entries@src/lara/credentials/store.py:91` | **0.844** | 真重复。`.env` 行解析（去注释、`=` 分割、去引号）同一套逻辑；差别只是写入 `os.environ` vs 返回 dict。 |
+| 12 | `AgentMessage.from_dict@src/lara/sessions/collaboration.py:77` | `SessionCollaborationStore._agent_message@src/lara/sessions/collaboration.py:465` | **0.822** | 真重复。`None → str | None` 的字段强转规则两处手写，`from_dict` 已经能消费行 dict，可归一为一个反序列化器。 |
+| 13 | `_message_record@src/lara/tracing/events.py:290` | `_file_event_record@src/lara/tracing/events.py:330` | **0.804** | 部分真重复。`event_id/session_id/case_id/case_run_id/turn_id/created_at` 信封字段在 `_tool_result_record`、`_diff_event_record` 等 5+ 处重复，可抽 `_event_envelope(event)`。 |
+| 14 | `_manager@src/lara/cli/main.py:74` | `_manager@src/lara/cli/sessions.py:366` | **0.787** | 真重复。同样的 `SessionManager(load_run_config(...))`，sessions 版多一个 `getattr(args,"session_id",None)`。 |
+| 15 | `_manager@src/lara/cli/main.py:74` | `_collaboration_config_and_manager@src/lara/cli/sessions.py:355` | **0.764** | 同上，真重复。 |
+| 16 | `_int_config@src/lara/config/loader.py:653` | `_float_config@src/lara/config/loader.py:671` | **0.959** | 真重复。除 `int()`/`float()` 与错误文案外完全相同，可用 `converter` 参数合一（低收益，同文件内）。 |
+
+补充：**逐字相同但不满足 6 行门槛**的同源副本（同一移植簇）：
+- `ContextWindow.__post_init__@src/lara/agents/context.py:75` = `@src/standard_agent/engine.py:68`（1.000）
+- `ToolProfile.__post_init__@src/lara/agents/runner.py:81` = `@src/standard_agent/interfaces.py:50`（1.000）
+- `ToolkitToolSurface.__init__/definitions`、`ToolRegistry.__init__/register`、`_NoToolLayer.forward` 两侧逐字相同（1.000）
+- `_base_config@src/lara/cli/credentials.py:164` = `_config@src/lara/cli/scheduler.py:85`（1.000）
+- `utc_now@src/lara/core/io.py:33` = `_now@src/lara/runtime/agent/common.py:122`（1.000，同为 `datetime.now(timezone.utc).isoformat()`）
+- `_fingerprint@src/lara/dispatch/store.py:18` = `_fingerprint@src/lara/orchestration/session_collaboration.py:307`（1.000，canonical JSON + sha256）
+- `ConversationCheckpointModelModule.__init__@src/lara/runtime/agent/pipeline.py:444` = `ConversationCheckpointToolModule.__init__@src/lara/runtime/agent/pipeline.py:886`（1.000）
+
+### B. 名似实异 → 该保留
+
+| # | A | B | 相似度 | 判断 |
+|---|---|---|---|---|
+| 17 | `SchedulerStore.submission@src/lara/scheduler/store.py:411` | `SchedulerStore.task@src/lara/scheduler/store.py:519` | 0.934 | 名似实异。同文件两套表的 `get` 骨架相同（表存在性守卫 + 单行查询），但实体/映射器不同；抽 `_select_one(table,id,mapper)` 收益低，保留即可。 |
+| 18 | `SchedulerStore.list_tasks@src/lara/scheduler/store.py:528` | `SchedulerStore.list_runs@src/lara/scheduler/store.py:704` | 0.931 | 同上，过滤列/排序键不同（`created_at` vs `started_at`）。 |
+| 19 | `SessionCollaborationStore.get_message@src/lara/sessions/collaboration.py:194` | `SessionCollaborationStore.get@src/lara/sessions/collaboration.py:313` | 0.896 | 名似实异。不同表、不同实体、不同错误文案（`Agent message …` / `Collaboration operation …`）。 |
+| 20 | `DispatchService.submit_start@src/lara/dispatch/service.py:18` | `DispatchService.submit_fork@src/lara/dispatch/service.py:44` | 0.873 | 名似实异。`submit_fork` 额外要求 `SessionManager(config).load(fork_from)`（fork 会复制会话文件），共享的是参数形状不是语义。 |
+| 21 | `_spec@src/lara/runtime/agent_collaboration.py:9` | `_spec@src/lara/scheduler/tools.py:26` | 0.864 | 名似实异。`ToolSpec` 外壳相同，但 `tool_id` 前缀、`side_effect`、`idempotency`、`resource_key`、`timeout` 均不同，属各自领域的策略常量。 |
+| 22 | `offload_inline_media@src/lara/runtime/agent/media_offload.py:64` | `offload_remote_media@src/lara/runtime/agent/media_offload.py:87` | 0.860 | 名似实异。只是“空參数提前返回 + try/except OSError 降级”的薄封装同形，内部走不同递归实现（见 #6）。 |
+| 23 | `SchedulerStore.mark_submission@src/lara/scheduler/store.py:436` | `SchedulerStore.set_task_status@src/lara/scheduler/store.py:541` | 0.859 | 名似实异。都做“状态白名单校验 + UPDATE”，但后者要清空 `lease_id/lease_expires_at`，语义不同。 |
+| 24 | `ReminderService.acknowledge_initial@src/lara/runtime/reminders/service.py:112` | `ReminderService.release_initial@src/lara/runtime/reminders/service.py:132` | 0.839 | 名似实异。互逆状态迁移（CLAIMED→CONSUMED vs CLAIMED→READY），前置条件不同。 |
+| 25 | `PromptInjectionDecision.__post_init__@src/lara/runtime/agent/prompt_models.py:108` | `PromptInjectionDecision.to_dict@src/lara/runtime/agent/prompt_models.py:120` | 0.788 | 名似实异。一处是 hash 输入字段清单，一处是输出字段清单；字段同集是刻意契约，合并会掩盖“hash 不覆盖 decision_hash”的意图。 |
+| 26 | `DispatchStore.get_item@src/lara/dispatch/store.py:130` | `SessionCollaborationStore.get_message@…:194` / `get@…:313` | 0.785 | 名似实异。通用“按 id 取一行 —— 抛异常”模式；异常类型刻意不同（`KeyError` vs `FileNotFoundError`）。 |
+| 27 | `credentials_set@src/lara/cli/credentials.py:64` | `credentials_delete@src/lara/cli/credentials.py:79` | 0.780 | 名似实异。镜像命令，前置校验相同但 keyring/file 分支的返回值语义不同。 |
+| 28 | `DispatchStore.list_items_for_session@src/lara/dispatch/store.py:139` | `SessionCollaborationStore.list_operations@src/lara/sessions/collaboration.py:204` | 0.762 | 名似实异。SQL 形状相近，但 limit 处理不一致：dispatch 为 `max(1,min(limit,200))` 静默截断，collaboration 直接 raise（见异常模式一节）。 |
+| 29 | `SessionCollaborationStore._operation@src/lara/sessions/collaboration.py:439` | `SessionCollaborationStore._agent_message@src/lara/sessions/collaboration.py:465` | 0.755 | 名似实异。不同 dataclass 的行映射，重复的只是 `None→str` 强转惯用法。 |
+| 30 | `get_keyring_credential@src/lara/credentials/store.py:63` | `delete_keyring_credential@src/lara/credentials/store.py:81` | 0.755 | 名似实异。返回类型/异常吞掉策略不同，不适合合并。 |
+
+---
+
+## 二、重复字符串常量（≥40 字符、2+ 处）
+
+| 常量 | 位置 | 判断 |
+|---|---|---|
+| `" is not registered; tool profiles must reference surfaces registered by the composition root"` | `agents/runner.py:155`、`standard_agent/engine.py:135` | 移植副本，真重复 |
+| `"Compress this agent run's transcript without losing tool errors or tool results."` | `agents/runner.py:261`、`standard_agent/engine.py:169` | 真重复（engine 侧还多一份在 `__init__` 默认参） |
+| `"agent run has no tool surface configured but the model emitted a tool call ("` | `agents/runner.py:168`、`standard_agent/engine.py:147` | 真重复 |
+| `"Show persisted file diffs for the current Lara session or run."` + 4 条参数描述 | `tracing/diffing.py:229/253/243/248/259`（`DiffTool.forward`） vs `tracing/diffing.py:367/387/379/382/392`（`_diff_contract`） | 真重复：同一 tool 契约写两遍，仅靠人工同步；建议抽 `Annotated` 类型别名 + 共享 `description` 常量 |
+| `"Stable idempotency key for retrying the same submission"`、`"Session ID of the sending agent; omit for an external sender"` | `cli/sessions.py:73/78`（fork 参数） vs `cli/sessions.py:108/113`（`_add_collaboration_submission`） | 真重复：fork 分支没复用旁边的 helper |
+| `"scheduler autostart is only supported on Windows"` | `cli/scheduler.py:223`、`:257` | 同文件两 handler 重复校验，可抽 `_require_windows()` |
+| `"LaraAgent requires a configured native model configuration"` | `runtime/agent/core.py:207`、`:212` | 同一函数里 `resolved is None` 与 `model_config is None` 两条守卫文案重复，可合并判断 |
+| `"model_group must be non-empty when provided"` | `dispatch/service.py:74`、`dispatch/store.py:65` | 同一校验分散在 service 与 store，真重复 |
+| `"attachment paths must be non-empty strings"` | `runtime/attachments.py:73`、`runtime/realtime/speak.py:130` | 同一输入契约的重复实现 |
+| `"session execution coordinator is closing"` | `orchestration/session_execution.py:68`、`:219` | 同一错误文案两处，宜提常量 |
+| `"eternal_conversation.extraction_trigger_ratio"` | `config/loader.py:580`、`:581` | 同一 `…_dig` key 重复调用，可提局部变量 |
+| `'SELECT * FROM dispatch_items WHERE item_id = ?'` | `dispatch/store.py:121`、`:133` | 同文件重复 SQL，可提常量/helper |
+
+---
+
+## 三、错误类 / 异常模式
+
+- **重复的自定义异常类：0**。全仓仅有 3 个，且各只用一处：`SpeakArgsError@runtime/realtime/speak.py:94`、`SnapshotBudgetExceeded@runtime/tools.py:28`、`SchedulerKeysMissing@scheduler/keys.py:20`。
+- **重复的 raise 模式（真重复，该收敛）**：
+
+| 模式 | 出现点 | 判断 |
+|---|---|---|
+| `RuntimeError("model_configuration_required")` | `runtime/service.py:859`、`sessions/manager.py:149`、`:155`、`:540` | 4 处同义守卫，建议单一 `require_model_configuration(config)` |
+| `ValueError(f"unknown model group {…!r}")` | `dispatch/service.py:77`、`runtime/agent/core.py:215`、`runtime/model_configuration.py:114`、`sessions/manager.py:545` | 4 份重复校验；`dispatch/service.py:70` 已有 `_require_model_group`，应上提为公共助手 |
+| `ValueError("model_group must be non-empty when provided")` | `dispatch/service.py:74`、`dispatch/store.py:65` | 同一前置条件两层重复 |
+| `ValueError("limit must be between 1 and 200")` | `orchestration/session_collaboration.py:167`、`sessions/collaboration.py:209` | 同名限制两处；且与 `dispatch/store.py:139` 的“静默 clamp”策略不一致，属规范漂移，建议统一到一处 |
+| `ValueError("submission_id must be non-empty")` | `dispatch/store.py:67`、`sessions/collaboration.py:172` | 真重复的入参契约校验 |
+| `ValueError("message must be non-empty")` | `orchestration/models.py:28`、`orchestration/session_collaboration.py:62` | 真重复 |
+| `ValueError("LaraAgent requires…")` / `ValueError(f"agents[…] must be a mapping")` | 前者同函数 2 次；后者 `config/editor.py:36/42` 与 `config/loader.py:363/367` | 前者是分支重复，后者是跨模块配置校验复制 |
+
+---
+
+## 四、重复助手函数（缩进/格式化/哈希/时间）
+
+| 助手 | 位置 | 判断 |
+|---|---|---|
+| `_indent(text)` | `scheduler/message.py:19` | **真重复**：与 `core/prompt.py:87 _indent_body`、`runtime/attachments.py:161` 行内实现完全同式（`"\n".join(f"  {line}" …)`）。三处可统一为 `Prompt` 的 indent 能力 |
+| `_fingerprint(**values)` | `dispatch/store.py:18`、`orchestration/session_collaboration.py:307` | **逐字相同的真重复**（canonical JSON + sha256），应收进 `core/redaction.py` 或新 `core/hashing.py` |
+| `utc_now()` | `core/io.py:33`、`runtime/agent/common.py:122 _now`、`dispatch/models.py:63` | 三个 `ISO-8601 UTC` 实现；`dispatch.models` 用 `datetime.now(UTC)`，另两处 `timezone.utc`，输出等价。真重复 |
+| `_hash_text` | `agents/context.py:24`、`runtime/agent/common.py:116` | 同一 sha256-hex 助手两处（后者还带局部 import），真重复 |
+| canonical JSON | `dispatch/store.py:20`、`orchestration/runtime_keys.py:36`、`orchestration/session_collaboration.py:309`、`runtime/service.py:153`、`scheduler/keys.py:61`、`scheduler/store.py:81` | 6 处重复 `ensure_ascii=False, sort_keys=True, separators=(",",":")`，建议单一 `canonical_json_bytes()` |
+| 原子写 | `config/editor.py:91`、`core/io.py:56` | 见 A#10 |
+| `.env` 解析 | `core/io.py:88`、`credentials/store.py:91` | 见 A#11 |
+| 配置装配 | `cli/credentials.py:164 _base_config`、`cli/scheduler.py:85 _config`、`cli/main.py:74 _manager`、`cli/sessions.py:366 _manager` | 4 份 `load_run_config` 直接拼装，建议 CLI 层单一 `_load_config(args, with_session=…)` |
+
+---
+
+## 五、两个已知点核验
+
+### 1) `scheduler/store.py` vs `dispatch/store.py` 的“队列语义”
+
+**结论：不构成可直接合并的重复实现，该保留；但 `dispatch` 与 `sessions/collaboration` 之间有一处真重复。**
+
+- AST 两两比较中，两文件之间 **没有任何函数对达到 0.75**。
+- 语义层：
+  - `scheduler/store`：`submissions → tasks → runs` 三表；`claim_due_tasks`（优先级排序 + `BEGIN IMMEDIATE` + 逐行条件 UPDATE）、`claim_task`、`release_task` 带 `lease_id/lease_expires_at` 租约；`prompt_hash` 只在任务创建时落库，`daemon.py:381` 用于执行前校验 prompt 未被篡改。
+  - `dispatch/store`：只有 `dispatch_items` 单表 + `migrate_legacy_automations`；**没有任何 claim/release/next_run 实现**，`owner_id/lease_until_epoch` 只是预留列。幂等提交（`INSERT` 捕获 `IntegrityError` + 按 `submission_id` 回读 + `fingerprint` 冲突报错）比 scheduler 的 `INSERT OR IGNORE`（`store.py:369-372`）更严格。
+- 唯一实质重复是**幂等指纹**的同一个辅助函数：`_fingerprint@dispatch/store.py:18` 与 `_fingerprint@orchestration/session_collaboration.py:307` 逐字相同，应该合并（不是与 scheduler 合并）。
+- 真正“同构但不同粒度”的租约状态机是 `SchedulerStore.claim_due_tasks@…:584` vs `SessionCollaborationStore.claim_messages@sessions/collaboration.py:235`：前者按到期时间+优先级批量认领任务，后者按目标会话+过期回收认领消息，SQL 条件与回收策略不同 → **保留两套**，强行合并会把两种队列语义耦死。
+- 状态枚举 `DispatchItemState@dispatch/models.py:14` 与 `CollaborationState@sessions/collaboration.py:15` 值域重叠但集合不同（前者有 `claimed/cancelled`，后者有 `preparing/starting`）→ **保留**。
+
+### 2) `scheduler/message.py` vs `runtime/reminders/rendering.py` 的时间块
+
+- 时间行本身已共用 `core/timefmt.format_current_time_line`，无第二份 `strftime`。
+- **仍残留逐字重复片段**：
+  - `scheduler/message.py:39`：`Prompt(f"  {format_current_time_line(timestamp)}").wrap("time")`
+  - `runtime/reminders/rendering.py:26-28`：`Prompt(f"  {format_current_time_line(timestamp)}").wrap("time")`
+  → 建议在 `timefmt` 增加 `render_time_block(moment) -> Prompt`，两端直接调用。
+- 顺带发现**语义漂移**：`message.py:37` 先把时间 `astimezone(timezone.utc)`，`rendering.py:24` 用 `datetime.now().astimezone()`（本地时区）。同一个 `<time>` 信封在两条路径可能显示不同时区（`%Z` 不同），这不是单纯重复，而是行为不一致，合并时间块 helper 时应一并统一。
+- 缩进：`message.py:19 _indent` 与 `Prompt._indent_body`（`core/prompt.py:87`）重复；`rendering.py` 则直接用 `Prompt.wrap(indent="  ")`，两条路径的缩进实现也不统一。
+
+---
+
+## 六、Top 清单（按“合并收益 / 漂移风险”排序）
+
+1. **`standard_agent/engine.py` ≅ `lara/agents/runner.py` 整簇**：`AgentRunner.run` / `PygentEngine.run`（0.885）+ `ToolRegistry` / `ToolkitToolSurface` / `_NoToolLayer` / `ContextWindow` / `ToolProfile` / `build_model_layer_factory`（多为 1.000）+ 3 条重复错误文案。**最高优先级**，目前是逐字移植副本，任何一侧改动都会静默分叉。需先决定分层策略（standard_agent 反向依赖 lara，或抽共享 kernel）。
+2. **`DispatchOperationView` ≅ `CollaborationOperation`**（0.992，`to_dict`+`done` 全同）：共享 operation JSON 契约；建议共享字段基类/序列化器，避免 CLI/工具输出漂移。
+3. **`RuntimeGenerationKey.from_config` ≅ `runtime/service._config_fingerprint`**（0.887）：两份 canonical JSON + sha256，直接复用。
+4. **`_fingerprint` 逐字重复**（`dispatch/store.py:18` = `orchestration/session_collaboration.py:307`）：零风险合并到公共哈希助手，同时收敛 6 处 canonical JSON。
+5. **原子写 `_write_config` ≅ `write_json_atomic`**（0.854）：抽 `atomic_write_text`，`core/io` 与 `config/editor` 共用。
+6. **`.env` 解析 `load_env_file` ≅ `read_env_entries`**（0.844）：抽解析函数，`os.environ` 注入与 dict 返回分层。
+7. **CLI 配置装配四份副本**（`_base_config`/`_config`/两个 `_manager`，含逐字相同的 1.000 对）：低风险收敛。
+8. **`wait_message` ≅ `wait`**（0.877）与 **`_chat_config_and_manager` ≅ `_collaboration_config_and_manager`**（0.912）：同文件内可直接抽 helper。
+9. **媒体树遍历 `_offload_remote` ≅ `_offload`**（0.911）：抽 `_walk_media(node, on_media, on_content)`；中风险（涉及 inline/remote 两套节点语义）。
+10. **`diffing.py` 双份 tool 契约 + `sessions.py` fork/发送参数**（字符串常量重复）：schema/CLI 契约重复，靠人工同步，建议共享 `Annotated` 类型与参数注册 helper。
+11. **`scheduler/message.py` 与 `reminders/rendering.py` 的 `<time>` 组合**：残留 3 行重复 + UTC/本地时区不一致；在 `timefmt` 提供 `render_time_block` 一并修正。
+12. **模型组校验 4 份 / `model_configuration_required` 4 处**：错误模式重复，建议单一校验入口（顺带修正 `limit` 的 clamp vs raise 不一致）。
+
+**不建议合并（明确保留）**：`scheduler/store.py` ↔ `dispatch/store.py` 队列实现、scheduler 任务租约 ↔ collaboration 消息租约、`_spec` 两份 ToolSpec 外壳、`submit_start/submit_fork`、`credentials_set/delete`、`get_keyring/delete_keyring`、`acknowledge/release_initial`、`PromptInjectionDecision.__post_init__/to_dict`、各 store 的 `get_*` 单行查询。

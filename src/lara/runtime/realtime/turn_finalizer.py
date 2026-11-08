@@ -45,9 +45,10 @@ def decide_turn_finalization(
     accepted as a deliberate silent finish, guarding against loops. An empty
     final text still nudges once — the model must decide explicitly.
 
-    ``spoke`` reports whether the turn already delivered a successful
-    ``speak`` call. The user has then seen the agent's output, so the trailing
-    invisible draft needs no bottom-line decision.
+    ``spoke`` reports whether the tool round immediately before the final
+    reply delivered a successful ``speak`` call. The user was then updated
+    right up to the end, so the trailing invisible draft needs no bottom-line
+    decision; a silent gap in the last round still requires one.
     """
 
     if spoke or nudge_used:

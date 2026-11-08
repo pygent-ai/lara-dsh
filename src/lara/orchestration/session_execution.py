@@ -191,7 +191,7 @@ class SessionExecutionCoordinator:
         decision = decide_turn_finalization(
             final_text=str(last.get("content") or ""),
             nudge_used=False,
-            spoke=_turn_spoke(session.history),
+            spoke=_preceding_round_spoke(session.history),
         )
         if decision.action != "nudge" or decision.reminder is None:
             return
@@ -262,27 +262,27 @@ class SessionExecutionCoordinator:
             )
 
 
-def _turn_spoke(history: list[dict[str, Any]]) -> bool:
-    """Whether the current turn already delivered a successful speak call.
+def _preceding_round_spoke(history: list[dict[str, Any]]) -> bool:
+    """Whether the tool round immediately before the final assistant message
+    delivered a successful speak call.
 
-    The scan stops at the turn's opening user message so a speak from an
-    earlier turn cannot suppress this turn's bottom-line decision.
+    User-approved semantics: only the round right before the final reply
+    counts. If the agent spoke earlier in the turn but the last tool round
+    did not, the trailing draft still needs the bottom-line decision —
+    the final answer text is otherwise invisible to the user.
     """
 
-    for item in reversed(history):
-        role = item.get("role")
-        if role == "user":
-            return False
-        if role != "tool":
-            continue
-        for result in item.get("results") or ():
-            if (
-                isinstance(result, dict)
-                and result.get("name") == SPEAK_TOOL_NAME
-                and result.get("status") == "succeeded"
-            ):
-                return True
-    return False
+    if len(history) < 2:
+        return False
+    previous = history[-2]
+    if previous.get("role") != "tool":
+        return False
+    return any(
+        isinstance(result, dict)
+        and result.get("name") == SPEAK_TOOL_NAME
+        and result.get("status") == "succeeded"
+        for result in previous.get("results") or ()
+    )
 
 
 def _terminal_state(status: str) -> TurnState:
