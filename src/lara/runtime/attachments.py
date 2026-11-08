@@ -10,6 +10,8 @@ from typing import Sequence
 
 from pygent import MediaBlock, MediaSource
 
+from lara.core.prompt import Prompt
+
 MAX_ATTACHMENTS = 10
 MAX_INLINE_BYTES = 64 * 1024
 MEDIA_MAX_BYTES = 20 * 1024 * 1024
@@ -117,7 +119,7 @@ def build_media_blocks(
 def render_attachments_xml(attachments: Sequence[ResolvedAttachment]) -> str:
     """Render the <attachments> block placed inside <user-context>."""
 
-    lines = ["  <attachments>"]
+    item_lines: list[str] = []
     for item in attachments:
         attrs = [
             f'delivery="{item.delivery}"',
@@ -131,7 +133,7 @@ def render_attachments_xml(attachments: Sequence[ResolvedAttachment]) -> str:
             attrs.append(
                 'note="media attached natively to this user message"'
             )
-            lines.append(f"    <attachment {' '.join(attrs)}/>")
+            item_lines.append(f"<attachment {' '.join(attrs)}/>")
         elif item.delivery == "inline":
             content = _read_inline(item.path)
             truncated = content is None
@@ -145,16 +147,18 @@ def render_attachments_xml(attachments: Sequence[ResolvedAttachment]) -> str:
             attrs.append(f'truncated="{str(truncated).lower()}"')
             if truncated:
                 attrs.append('note="content truncated; use read tool for the full file"')
-            lines.append(
-                f"    <attachment {' '.join(attrs)}>{escape(body, quote=False)}</attachment>"
+            item_lines.append(
+                f"<attachment {' '.join(attrs)}>{escape(body, quote=False)}</attachment>"
             )
         else:
             attrs.append(
                 'note="content not embedded; inspect with read/grep tools"'
             )
-            lines.append(f"    <attachment {' '.join(attrs)}/>")
-    lines.append("  </attachments>")
-    return "\n".join(lines)
+            item_lines.append(f"<attachment {' '.join(attrs)}/>")
+    if not item_lines:
+        return "  <attachments>\n  </attachments>"
+    block = Prompt("\n".join(item_lines)).wrap("attachments", indent="  ")
+    return "\n".join(f"  {line}" for line in str(block).splitlines())
 
 
 def _workspace_path(root: Path, raw: str) -> Path:

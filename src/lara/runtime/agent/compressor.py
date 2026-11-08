@@ -6,6 +6,7 @@ from pathlib import Path
 from pygent import AIMessage, Message, Module
 from pygent.core import EffectSafety, ExecutionRequirements, RecoverySafety
 
+from lara.core.prompt import Prompt
 from lara.runtime.context import LaraContext
 from lara.runtime.context_compression import (
     TRANSCRIPT_POINTER,
@@ -50,11 +51,20 @@ class LaraCompressorModule(Module[Message, AIMessage]):
             ),
             max_chars=self.config.context_compression_file_read_max_chars,
         )
-        continuation = "\n".join((
-            "<session-context>", summary, "", file_read_xml, "", TRANSCRIPT_POINTER,
-            f"{session_dir / 'session.json'} (the authoritative transcript is in its history field)",
-            "</session-context>",
-        ))
+        continuation = str(
+            Prompt(
+                "\n".join(
+                    (
+                        summary,
+                        "",
+                        file_read_xml,
+                        "",
+                        TRANSCRIPT_POINTER,
+                        f"{session_dir / 'session.json'} (the authoritative transcript is in its history field)",
+                    )
+                )
+            ).wrap("session-context")
+        )
         await self.emit(
             kind="lara.context.compressed",
             data={

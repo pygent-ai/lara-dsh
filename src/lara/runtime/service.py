@@ -69,6 +69,7 @@ from lara.agents import (
     build_model_layer_factory,
 )
 from lara.core.io import aclose_if_supported, plain_object, read_json, write_json
+from lara.core.prompt import Prompt
 from lara.runtime.attachments import (
     ResolvedAttachment,
     build_media_blocks,
@@ -1508,15 +1509,13 @@ class LaraRuntimeService:
             # them in <user-context> would misrepresent their origin.
             wrapped = message
         else:
-            lines = [
-                "<user-context>",
+            body_lines = [
                 f"  <user-identity>{escape(config.user_identity or 'default', quote=False)}</user-identity>",
                 f"  <user-message>{escape(message, quote=False)}</user-message>",
             ]
             if resolved_attachments:
-                lines.append(render_attachments_xml(resolved_attachments))
-            lines.append("</user-context>")
-            wrapped = "\n".join(lines)
+                body_lines.append(render_attachments_xml(resolved_attachments))
+            wrapped = str(Prompt("\n".join(body_lines)).wrap("user-context"))
         reminder = await self.reminders.claim_initial(session.session_id, turn_id)
         dynamic_reminder = await self.reminders.collect_pending(session.session_id)
         if dynamic_reminder:

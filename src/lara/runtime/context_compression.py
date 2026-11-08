@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from html import escape
 from pathlib import Path
 from typing import Any, Literal
 
+from lara.core.prompt import Prompt
 from lara.tracing import EventStore
 
 
@@ -164,19 +164,22 @@ def render_file_read_block(
     *,
     max_chars: int = 5000,
 ) -> tuple[str, list[dict[str, Any]]]:
-    lines = ["<file-read>"]
+    lines: list[str] = []
     metadata: list[dict[str, Any]] = []
     for record in records:
         char_count = len(record.content)
         truncated = char_count > max_chars
-        attrs = [
-            f'path="{escape(record.path, quote=True)}"',
-            f'mode="{record.mode}"',
-        ]
+        attrs: dict[str, Any] = {
+            "path": record.path,
+            "mode": record.mode,
+        }
         if record.range is not None:
-            attrs.append(f'range="{escape(record.range, quote=True)}"')
-        attrs.extend(
-            [f'truncated="{str(truncated).lower()}"', f'char_count="{char_count}"']
+            attrs["range"] = record.range
+        attrs.update(
+            {
+                "truncated": str(truncated).lower(),
+                "char_count": str(char_count),
+            }
         )
         if truncated:
             scope = "full file" if record.mode == "full" else f"lines {record.range}"
@@ -187,7 +190,7 @@ def render_file_read_block(
             )
         else:
             body = record.content
-        lines.extend([f"<file {' '.join(attrs)}>", body, "</file>"])
+        lines.append(str(Prompt(body).wrap("file", **attrs)))
         row: dict[str, Any] = {
             "path": record.path,
             "mode": record.mode,
@@ -198,8 +201,7 @@ def render_file_read_block(
         if record.range is not None:
             row["range"] = record.range
         metadata.append(row)
-    lines.append("</file-read>")
-    return "\n".join(lines), metadata
+    return str(Prompt("\n".join(lines)).wrap("file-read")), metadata
 
 
 def _collect_file_event_reads(session_dir: Path) -> list[FileReadRecord]:
