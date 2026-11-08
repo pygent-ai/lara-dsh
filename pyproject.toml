@@ -40,6 +40,9 @@ packages = ["src/lara", "src/standard_agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "e2e: end-to-end functional-anchor scenario (real runtime, scripted model)",
+]
 
 # 本机验证环境：暂用原 lara 项目的 venv（内含 pygent/凭据组）；
 # 独立 `uv sync` 之后可删去 venvPath/venv 两行。
