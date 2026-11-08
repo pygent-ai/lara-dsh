@@ -30,6 +30,8 @@ def _args(tmp_path: Path, **overrides: object) -> argparse.Namespace:
         "prompt": "do it",
         "instructions": "",
         "session": None,
+        "priority": "normal",
+        "delivery": "fire-and-forget",
         "task_id": "task-1",
         "force": False,
     }
@@ -59,6 +61,20 @@ def test_cli_add_creates_signed_user_submission(
     submission = store.submission(str(result["id"]))
     assert submission is not None
     assert submission.payload["schedule"] == "every 1h"
+
+
+def test_cli_add_forwards_bus_fields(tmp_path: Path, monkeypatch) -> None:
+    config = _config(tmp_path)
+    init_keys(config.user_lara_root)
+    monkeypatch.setattr(scheduler_cli, "load_run_config", lambda **_: config)
+    result = scheduler_cli._scheduler_add(
+        _args(tmp_path, priority="high", delivery="speak")
+    )
+    store = SchedulerStore(scheduler_db_path(config.lara_root))
+    submission = store.submission(str(result["id"]))
+    assert submission is not None
+    assert submission.payload["priority"] == "high"
+    assert submission.payload["delivery"] == "speak"
 
 
 def test_cli_init_keys(tmp_path: Path, monkeypatch) -> None:

@@ -76,6 +76,30 @@ async def test_schedule_task_signs_as_agent(tmp_path: Path) -> None:
     )
 
 
+async def test_schedule_task_carries_priority(tmp_path: Path) -> None:
+    config = _config(tmp_path, enabled=True)
+    store = SchedulerStore(scheduler_db_path(config.lara_root))
+    store.migrate()
+    init_keys(config.user_lara_root)
+    executor = SchedulerToolExecutor(config, store=store)
+    result = await executor.execute(
+        SCHEDULE_TASK_TOOL_SPEC,
+        _call(
+            {
+                "name": "agent task",
+                "schedule": "every 1h",
+                "prompt": "do it",
+                "priority": "high",
+            }
+        ),
+        None,  # type: ignore[arg-type]
+    )
+    assert isinstance(result, dict)
+    submission = store.submission(str(result["id"]))
+    assert submission is not None
+    assert submission.payload["priority"] == "high"
+
+
 async def test_emit_event_signs_as_agent(tmp_path: Path) -> None:
     config = _config(tmp_path, enabled=True)
     store = SchedulerStore(scheduler_db_path(config.lara_root))

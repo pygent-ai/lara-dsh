@@ -47,6 +47,12 @@ def register_scheduler_parser(subparsers: Any) -> None:
     add.add_argument("--prompt", required=True)
     add.add_argument("--instructions", default="")
     add.add_argument("--session", default=None)
+    add.add_argument("--priority", choices=["high", "normal", "low"], default="normal")
+    add.add_argument(
+        "--delivery",
+        choices=["sync-reply", "speak", "fire-and-forget"],
+        default="fire-and-forget",
+    )
     add.set_defaults(handler=_scheduler_add)
 
     list_command = commands.add_parser("list", help="List promoted tasks")
@@ -105,6 +111,8 @@ def _scheduler_add(args: argparse.Namespace) -> dict[str, Any]:
         "prompt": args.prompt,
         "instructions": args.instructions or "",
         "session": args.session or config.scheduler.session,
+        "priority": getattr(args, "priority", None) or "normal",
+        "delivery": getattr(args, "delivery", None) or "fire-and-forget",
     }
     parse_schedule(payload["schedule"])
     signature = sign(

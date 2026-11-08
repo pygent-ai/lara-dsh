@@ -314,3 +314,123 @@ def test_default_session_is_scheduler_name(tmp_path: Path) -> None:
     )
     daemon.run_once(now=now)
     assert store.list_tasks()[0].session == "scheduler"
+
+
+def test_agent_high_priority_is_normalized_with_audit_note(
+    tmp_path: Path,
+) -> None:
+    daemon, store, user_root = _daemon(tmp_path, agent_create_enabled=True)
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    submission_id = _submit(
+        store,
+        user_root,
+        kind="task",
+        source="agent",
+        payload={
+            "name": "agent-high",
+            "schedule": "every 1h",
+            "prompt": "urgent",
+            "priority": "high",
+            "delivery": "sync-reply",
+        },
+    )
+    daemon.run_once(now=now)
+    task = store.list_tasks()[0]
+    assert task.source == "agent"
+    assert task.origin == "user"
+    assert task.priority == "normal"
+    assert task.delivery == "fire-and-forget"
+    submission = store.submission(submission_id)
+    assert submission is not None
+    assert submission.status == "verified"
+    assert submission.error == "agent-requested-high normalized"
+
+
+def test_user_priority_and_delivery_are_honored(tmp_path: Path) -> None:
+    daemon, store, user_root = _daemon(tmp_path)
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    _submit(
+        store,
+        user_root,
+        kind="task",
+        source="user",
+        payload={
+            "name": "loud",
+            "schedule": "every 1h",
+            "prompt": "speak",
+            "priority": "high",
+            "delivery": "speak",
+        },
+    )
+    _submit(
+        store,
+        user_root,
+        kind="task",
+        source="user",
+        payload={"name": "quiet", "schedule": "daily 09:00", "prompt": "quiet"},
+    )
+    daemon.run_once(now=now)
+    tasks = {task.name: task for task in store.list_tasks()}
+    assert (tasks["loud"].origin, tasks["loud"].delivery, tasks["loud"].priority) == (
+        "user",
+        "speak",
+        "high",
+    )
+    assert (
+        tasks["quiet"].origin,
+        tasks["quiet"].delivery,
+        tasks["quiet"].priority,
+    ) == ("user", "fire-and-forget", "normal")
+
+
+def test_internal_timer_and_event_submissions_are_unsigned(
+    tmp_path: Path,
+) -> None:
+    daemon, store, _user_root = _daemon(tmp_path, agent_create_enabled=True)
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    timer = store.submit_internal(
+        kind="task",
+        origin="timer",
+        payload={
+            "name": "timer-intent",
+            "schedule": "every 1h",
+            "prompt": "tick",
+            "priority": "high",
+            "delivery": "speak",
+        },
+    )
+    event = store.submit_internal(
+        kind="task",
+        origin="event",
+        payload={
+            "name": "event-intent",
+            "schedule": "on build",
+            "prompt": "build",
+            "priority": "low",
+        },
+    )
+    assert timer.signature == ""
+    assert event.signature == ""
+    daemon.run_once(now=now)
+    tasks = {task.name: task for task in store.list_tasks()}
+    assert (tasks["timer-intent"].source, tasks["timer-intent"].origin) == (
+        "self",
+        "timer",
+    )
+    assert (tasks["timer-intent"].delivery, tasks["timer-intent"].priority) == (
+        "speak",
+        "high",
+    )
+    assert (tasks["event-intent"].source, tasks["event-intent"].origin) == (
+        "self",
+        "event",
+    )
+    assert tasks["event-intent"].next_run_at is None
+    assert (tasks["event-intent"].delivery, tasks["event-intent"].priority) == (
+        "fire-and-forget",
+        "low",
+    )
+    timer_submission = store.submission(timer.id)
+    event_submission = store.submission(event.id)
+    assert timer_submission is not None and timer_submission.status == "verified"
+    assert event_submission is not None and event_submission.status == "verified"

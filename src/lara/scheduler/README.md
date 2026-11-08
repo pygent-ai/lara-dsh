@@ -22,6 +22,20 @@ invokes `lara session run <scheduler-session> -m <prompt>` as a child process.
 - `../cli/scheduler.py`: `run`, `add`, `list`, `show`, approval/control,
   `init-keys`, and Windows autostart commands.
 
+## Trigger bus
+
+The `tasks` table is the unified trigger bus. It carries timer triggers, event
+triggers, and agent-registered intents; a user's direct chat message is served
+by the unchanged foreground runtime and never enters the bus.
+
+- `origin` is `user` (signed user/agent registration), `timer`, or `event`
+  (daemon-generated triggers; task `source` becomes `self`).
+- `delivery` is `sync-reply`, `speak`, or `fire-and-forget`. Agent submissions
+  are always fire-and-forget; user submissions default to fire-and-forget.
+- `priority` is `high`, `normal`, or `low`. Due tasks are claimed in priority
+  order, then by `next_run_at`. Agent requests for `high` are normalized to
+  `normal` with an `agent-requested-high normalized` audit note.
+
 ## Trust boundary
 
 CLI and agent writers can only append `submissions`. The daemon verifies the
