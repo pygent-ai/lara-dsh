@@ -1,14 +1,11 @@
 from .models import (
     AgentSession,
     BashCliPreset,
-    CaseDefinition,
     CaseRunRef,
-    CaseRunResult,
     CaseRunStatus,
     ContextEvent,
     DelegationConfig,
     EternalConversationConfig,
-    EvaluationResult,
     MCPServerConfig,
     ModelRetryConfig,
     ResolvedAgentConfig,
@@ -20,7 +17,6 @@ from .models import (
     SchedulerConfig,
     SessionRef,
     SessionSpec,
-    WorkspaceRef,
     default_cli_bash_presets,
     native_model_config_complete,
 )
@@ -28,12 +24,9 @@ from .models import (
 __all__ = [
     "AgentSession",
     "BashCliPreset",
-    "CaseDefinition",
     "CaseRunRef",
-    "CaseRunResult",
     "CaseRunStatus",
     "ContextEvent",
-    "EvaluationResult",
     "DelegationConfig",
     "EternalConversationConfig",
     "MCPServerConfig",
@@ -47,7 +40,6 @@ __all__ = [
     "RunConfig",
     "SessionRef",
     "SessionSpec",
-    "WorkspaceRef",
     "default_cli_bash_presets",
     "native_model_config_complete",
 ]
