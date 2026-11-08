@@ -2,7 +2,7 @@
 
 本仓只保留 agent 运行时相关子系统：agents（ReAct 脚手架）、runtime（前台
 harness、管线、永续会话、实时对话）、sessions、orchestration、schema、
-config、credentials、dispatch、tracing、core。原仓的 evaluation / repair /
+config、credentials、scheduler、dispatch、tracing、core。原仓的 evaluation / repair /
 automations / workflows 与 lara_api 服务层已裁剪，因此这里的顶层导出只剩
 agent 会话相关的名字。
 """

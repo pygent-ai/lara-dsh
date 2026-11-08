@@ -29,7 +29,7 @@ lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent �
 **裁剪（与 agent 实现无关）：** `evaluation`、`repair`、`automations`、
 `workflows` 四个子系统、`lara_api` FastAPI 服务层、桌面端（apps/）、评测
 脚手架（BenchRunner/swe-smoke）。`lara/__init__.py` 与 `cli/main.py` 已相应
-瘦身（CLI 仅保留 session / credentials / projects 子命令）。
+瘦身（CLI 保留 session / credentials / projects / scheduler 子命令）。
 
 **已知的上游残留（未就地修改，以保持副本可对照）：** `src/lara` 的 prompt
 与部分 docstring 仍提到上游的 `lara automation` 子命令、`lara_api` 适配层和
@@ -103,6 +103,10 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   （`Prompt` + `KNOWN_ENVELOPES`），13 个信封站点迁移到流式 Prompt API；
   golden 测试锁定迁移前后字节输出，元测试扫描未登记的标签字面量。
   `summary` 仅登记为 model-generated/parser-contract，不提供渲染函数。
+- 功能演进（scheduler）：新增 `src/lara/scheduler/` 独立守护进程与
+  `lara scheduler` CLI。任务/事件/控制先写入签名 submissions，daemon 验签后
+  才晋升 tasks/runs；支持 every/at/daily/on、租约防重、补跑标 missed、
+  HMAC 来源分离、Windows 登录自启与失败重启。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
   魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 标准接口层"
   的分层。
