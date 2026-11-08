@@ -98,15 +98,22 @@ def validate_path_id(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must not contain path traversal")
 
 
-def load_env_file(path: Path) -> None:
+def parse_env_entries(path: Path) -> list[tuple[str, str]]:
     if not path.exists():
-        return
+        return []
+    entries: list[tuple[str, str]] = []
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+        entries.append((key.strip(), value.strip().strip('"').strip("'")))
+    return entries
+
+
+def load_env_file(path: Path) -> None:
+    for key, value in parse_env_entries(path):
+        os.environ.setdefault(key, value)
 
 
 def non_empty_string(value: object | None) -> str | None:

@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from lara.core.io import load_env_file
+from lara.core.io import load_env_file, parse_env_entries
 from lara.core.io import non_empty_string as _non_empty
 
 try:
@@ -89,18 +89,11 @@ def delete_keyring_credential(env_name: str) -> bool:
 
 
 def read_env_entries(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
     entries: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
+    for key, value in parse_env_entries(path):
         if not key:
             continue
-        entries[key] = value.strip().strip('"').strip("'")
+        entries[key] = value
     return entries
 
 
