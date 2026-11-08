@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from lara.schema import BashCliPreset
-
 from .common import _hash_json
 
 
@@ -78,7 +76,6 @@ class PromptRenderContext:
     tool_names: list[str]
     request_id: str | None = None
     request_type: str = "agent_turn"
-    cli_bash_presets: list[BashCliPreset] = field(default_factory=list)
     user_lara_root: Path | None = None
     project_lara_root: Path | None = None
     user_skills_dir: Path | None = None

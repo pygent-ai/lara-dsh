@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from lara.core.paths import project_lara_root as resolve_project_lara_root
 from lara.runtime.context import LaraContext
-from lara.schema import BashCliPreset
 from lara.tracing import EventStore
 
 from .common import (
@@ -144,18 +143,14 @@ class PromptRegistry:
         *,
         phase: Literal["static", "request_system"] | None = None,
         include: list[str] | None = None,
-        exclude: list[str] | None = None,
         render_context: PromptRenderContext | None = None,
     ) -> list[PromptModule]:
         include_set = set(include) if include is not None else None
-        exclude_set = set(exclude or [])
         modules = []
         for module in self._modules:
             if phase is not None and module.phase != phase:
                 continue
             if include_set is not None and module.id not in include_set:
-                continue
-            if module.id in exclude_set:
                 continue
             if render_context is not None and not module.enabled(render_context):
                 continue
@@ -170,13 +165,8 @@ class PromptComposer:
     def resolve_request_system_modules(
         self,
         ctx: PromptRenderContext,
-        *,
-        include: list[str] | None = None,
-        exclude: list[str] | None = None,
     ) -> list[PromptModule]:
-        return self.registry.resolve(
-            phase="request_system", include=include, exclude=exclude, render_context=ctx
-        )
+        return self.registry.resolve(phase="request_system", render_context=ctx)
 
     def compose_static(
         self, ctx: PromptRenderContext
@@ -256,7 +246,6 @@ class StaticPromptSessionCache:
                 tool_names=[],
                 request_id=None,
                 request_type=ctx.request_type,
-                cli_bash_presets=[],
                 user_lara_root=ctx.user_lara_root,
                 project_lara_root=ctx.project_lara_root,
                 user_skills_dir=ctx.user_skills_dir,
@@ -343,7 +332,6 @@ class AgentContextManager:
         store: EventStore | None = None,
         prompt_registry: PromptRegistry | None = None,
         prompt_composer: PromptComposer | None = None,
-        cli_bash_presets: list[BashCliPreset] | None = None,
         user_lara_root: Path | None = None,
         project_lara_root: Path | None = None,
     ) -> None:
@@ -370,7 +358,6 @@ class AgentContextManager:
             session_dir, self.prompt_composer
         )
         self.injection_policy = PromptInjectionPolicy()
-        self.cli_bash_presets = list(cli_bash_presets or [])
 
     def projection(
         self, history: list[dict[str, Any]], limit: int = 8
@@ -422,7 +409,6 @@ class AgentContextManager:
             tool_names=tool_names,
             request_id=request_id,
             request_type=request_type,
-            cli_bash_presets=self.cli_bash_presets,
             user_lara_root=self.user_lara_root,
             project_lara_root=self.project_lara_root,
             user_skills_dir=self.user_skills_dir,
