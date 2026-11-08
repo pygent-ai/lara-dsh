@@ -18,9 +18,9 @@ from pygent.tool.executors import ToolExecutionContext
 from lara.core.io import plain_object
 from lara.schema import RunConfig
 
-from .keys import load_keys, scheduler_keys_dir, sign
+from .keys import load_secret, sign
 from .schedule import parse_schedule
-from .store import SchedulerStore, scheduler_db_path
+from .store import SchedulerStore, scheduler_db_path, submission_payload
 
 
 def _spec(
@@ -91,11 +91,10 @@ class SchedulerToolExecutor:
         config: RunConfig,
         *,
         store: SchedulerStore | None = None,
-        keys: dict[str, bytes] | None = None,
     ) -> None:
         self.config = config
         self.store = store or SchedulerStore(scheduler_db_path(config.lara_root))
-        self.keys = keys
+        self.user_lara_root = config.user_lara_root
         self.sandbox_support = SandboxExecutorSupport(
             profiles=("agent",),
             durable_reconnect=True,
@@ -110,7 +109,7 @@ class SchedulerToolExecutor:
             raise PermissionError(
                 "agent scheduler tools are disabled; set scheduler.agent_create_enabled"
             )
-        keys = self.keys or load_keys(scheduler_keys_dir(self.config.user_lara_root))
+        secret = load_secret(self.user_lara_root, "agent")
         arguments = plain_object(call.arguments)
         name = spec.definition.name
         submission_id = str(
@@ -130,7 +129,9 @@ class SchedulerToolExecutor:
             if not payload["prompt"].strip():
                 raise ValueError("schedule_task.prompt must be non-empty")
             parse_schedule(payload["schedule"])
-            signature = sign(keys, kind="task", source="agent", payload=payload)
+            signature = sign(
+                submission_payload("task", "agent", payload), secret
+            )
             submission = await asyncio.to_thread(
                 self.store.submit,
                 kind="task",
@@ -147,7 +148,9 @@ class SchedulerToolExecutor:
             }
             if not payload["event"].strip():
                 raise ValueError("emit_event.event must be non-empty")
-            signature = sign(keys, kind="event", source="agent", payload=payload)
+            signature = sign(
+                submission_payload("event", "agent", payload), secret
+            )
             submission = await asyncio.to_thread(
                 self.store.submit,
                 kind="event",

@@ -23,14 +23,15 @@ from typing import Any, Callable, Protocol
 from lara.core.io import append_jsonl
 from lara.schema import RunConfig
 
-from .keys import identify_source, load_keys, scheduler_keys_dir
-from .schedule import matches_event, next_run_at, parse_schedule
+from .keys import load_secret, verify
+from .schedule import advance, next_run, parse_schedule
 from .store import (
     SchedulerStore,
     Task,
     iso,
     prompt_hash,
     scheduler_db_path,
+    submission_payload,
     utc_now,
 )
 
@@ -106,7 +107,6 @@ class SchedulerDaemon:
         config: RunConfig,
         *,
         store: SchedulerStore | None = None,
-        keys: dict[str, bytes] | None = None,
         runner: TaskRunner | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
@@ -116,8 +116,7 @@ class SchedulerDaemon:
     ) -> None:
         self.config = config
         self.store = store or SchedulerStore(scheduler_db_path(config.lara_root))
-        self.keys_root = scheduler_keys_dir(config.user_lara_root)
-        self.keys = keys
+        self.user_lara_root = config.user_lara_root
         self.runner = runner or SubprocessTaskRunner()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.sleeper = sleeper or time.sleep
@@ -151,30 +150,29 @@ class SchedulerDaemon:
 
     def _startup(self) -> None:
         self.store.migrate()
-        if self.keys is None:
-            self.keys = load_keys(self.keys_root)
+        for source in ("user", "agent"):
+            load_secret(self.user_lara_root, source)
         self.alerts_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _process_submissions(self, now: datetime) -> int:
-        assert self.keys is not None
         submissions = self.store.pending_submissions(limit=1000)
         events = []
         processed = 0
         for submission in submissions:
-            source = identify_source(
-                self.keys,
-                kind=submission.kind,
-                payload=submission.payload,
-                signature=submission.signature,
-            )
-            if source is None:
-                self._quarantine(submission.id, "missing or invalid signature")
-                continue
-            if source != submission.source:
+            try:
+                valid = verify(
+                    submission_payload(
+                        submission.kind, submission.source, submission.payload
+                    ),
+                    submission.source,
+                    submission.signature,
+                    self.user_lara_root,
+                )
+            except (OSError, ValueError):
+                valid = False
+            if not valid:
                 self._quarantine(
-                    submission.id,
-                    f"signature source {source!r} does not match claimed source "
-                    f"{submission.source!r}",
+                    submission.id, "missing or invalid signature"
                 )
                 continue
             try:
@@ -225,7 +223,11 @@ class SchedulerDaemon:
         if not prompt.strip():
             raise ValueError("task prompt must be non-empty")
         spec = parse_schedule(schedule_text)
-        next_at = next_run_at(spec, now, allow_past=True)
+        next_at = (
+            spec.at
+            if spec.kind == "once"
+            else next_run(spec, after=now, now=now)
+        )
         status = (
             "approved"
             if source == "user" or self.config.scheduler.agent_create_enabled
@@ -233,7 +235,7 @@ class SchedulerDaemon:
         )
         return self.store.create_task(
             name=name,
-            schedule=spec.raw,
+            schedule=schedule_text,
             prompt=prompt,
             session=str(payload.get("session") or self.session_id),
             source=source,
@@ -275,7 +277,9 @@ class SchedulerDaemon:
     @staticmethod
     def _next_for_resume(task: Task, now: datetime) -> datetime | None:
         spec = parse_schedule(task.schedule)
-        return next_run_at(spec, now, allow_past=True)
+        if spec.kind == "once":
+            return spec.at
+        return next_run(spec, after=now, now=now)
 
     def _consume_event(self, payload: dict[str, Any], now: datetime) -> None:
         event = str(payload.get("event") or "").strip()
@@ -286,7 +290,7 @@ class SchedulerDaemon:
                 spec = parse_schedule(task.schedule)
             except ValueError:
                 continue
-            if not matches_event(spec, event):
+            if spec.kind != "event" or spec.event != event:
                 continue
             claimed = self.store.claim_task(
                 task.id,
@@ -366,7 +370,7 @@ class SchedulerDaemon:
             missed=missed,
         )
         spec = parse_schedule(task.schedule)
-        self.store.update_task_next_run(task.id, next_run_at(spec, finished))
+        self.store.update_task_next_run(task.id, advance(spec, fired_at=finished))
         self.store.release_task(task.id, lease_id=self.owner)
         if status == "failed":
             self._alert(f"task {task.id} failed: {result.error or result.output}")

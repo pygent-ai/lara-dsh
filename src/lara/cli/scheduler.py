@@ -14,14 +14,14 @@ from xml.sax.saxutils import escape
 
 from lara.config import load_run_config
 from lara.scheduler.daemon import SchedulerDaemon
-from lara.scheduler.keys import (
-    init_keys,
-    load_keys,
-    scheduler_keys_dir,
-    sign,
-)
+from lara.scheduler.keys import init_keys, load_secret, sign
 from lara.scheduler.schedule import parse_schedule
-from lara.scheduler.store import SchedulerStore, scheduler_db_path
+from lara.scheduler.store import (
+    SchedulerStore,
+    scheduler_db_path,
+    scheduler_keys_dir,
+    submission_payload,
+)
 from lara.schema import RunConfig
 
 AUTOSTART_TASK_NAME = "LaraScheduler"
@@ -100,12 +100,15 @@ def _scheduler_add(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(args)
     payload = {
         "name": args.name,
-        "schedule": parse_schedule(args.schedule).raw,
+        "schedule": args.schedule.strip(),
         "prompt": args.prompt,
         "session": args.session or config.scheduler.session,
     }
-    keys = load_keys(scheduler_keys_dir(config.user_lara_root))
-    signature = sign(keys, kind="task", source="user", payload=payload)
+    parse_schedule(payload["schedule"])
+    signature = sign(
+        submission_payload("task", "user", payload),
+        load_secret(config.user_lara_root, "user"),
+    )
     return _store(config).submit(
         kind="task",
         source="user",
@@ -134,8 +137,10 @@ def _scheduler_show(args: argparse.Namespace) -> dict[str, Any]:
 def _scheduler_control(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(args)
     payload = {"action": args.action, "task_id": args.task_id}
-    keys = load_keys(scheduler_keys_dir(config.user_lara_root))
-    signature = sign(keys, kind="control", source="user", payload=payload)
+    signature = sign(
+        submission_payload("control", "user", payload),
+        load_secret(config.user_lara_root, "user"),
+    )
     return _store(config).submit(
         kind="control",
         source="user",
@@ -146,12 +151,14 @@ def _scheduler_control(args: argparse.Namespace) -> dict[str, Any]:
 
 def _scheduler_init_keys(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(args)
-    paths = init_keys(
-        scheduler_keys_dir(config.user_lara_root), force=bool(args.force)
-    )
+    init_keys(config.user_lara_root, force=bool(args.force))
+    key_dir = scheduler_keys_dir(config.user_lara_root)
     return {
         "status": "ready",
-        "keys": {source: str(path) for source, path in paths.items()},
+        "keys": {
+            source: str(key_dir / f"{source}.key")
+            for source in ("user", "agent")
+        },
     }
 
 

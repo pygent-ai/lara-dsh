@@ -49,6 +49,18 @@ def scheduler_db_path(lara_root: str | Path) -> Path:
     return Path(lara_root) / "scheduler" / "lara-scheduler.sqlite3"
 
 
+def scheduler_keys_dir(user_lara_root: str | Path) -> Path:
+    return Path(user_lara_root) / "scheduler" / "keys"
+
+
+def submission_payload(
+    kind: str, source: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The exact object signed by ``lara.scheduler.keys``."""
+
+    return {"kind": kind, "source": source, "payload": dict(payload)}
+
+
 def _json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -604,5 +616,7 @@ __all__ = [
     "parse_iso",
     "prompt_hash",
     "scheduler_db_path",
+    "scheduler_keys_dir",
+    "submission_payload",
     "utc_now",
 ]

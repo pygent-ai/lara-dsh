@@ -1,22 +1,16 @@
 """Lara's independent, single-agent scheduler subsystem."""
 
 from .daemon import SchedulerDaemon, SubprocessTaskRunner, TaskResult, TaskRunner
-from .keys import (
-    SchedulerKeysMissing,
-    identify_source,
-    init_keys,
-    load_keys,
-    scheduler_keys_dir,
-    sign,
-    verify,
-)
-from .schedule import ScheduleSpec, is_due, matches_event, next_run_at, parse_schedule
+from .keys import canonical_payload, init_keys, load_secret, sign, verify
+from .schedule import Schedule, advance, next_run, parse_schedule
 from .store import (
     Run,
     SchedulerStore,
     Submission,
     Task,
     scheduler_db_path,
+    scheduler_keys_dir,
+    submission_payload,
 )
 from .tools import (
     EMIT_EVENT_TOOL_SPEC,
@@ -30,9 +24,8 @@ __all__ = [
     "Run",
     "SCHEDULER_TOOL_SPECS",
     "SCHEDULE_TASK_TOOL_SPEC",
-    "ScheduleSpec",
+    "Schedule",
     "SchedulerDaemon",
-    "SchedulerKeysMissing",
     "SchedulerStore",
     "SchedulerToolExecutor",
     "Submission",
@@ -40,15 +33,15 @@ __all__ = [
     "Task",
     "TaskResult",
     "TaskRunner",
-    "identify_source",
+    "advance",
+    "canonical_payload",
     "init_keys",
-    "is_due",
-    "load_keys",
-    "matches_event",
-    "next_run_at",
+    "load_secret",
+    "next_run",
     "parse_schedule",
     "scheduler_db_path",
     "scheduler_keys_dir",
     "sign",
+    "submission_payload",
     "verify",
 ]

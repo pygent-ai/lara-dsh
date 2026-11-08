@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import lara.cli.scheduler as scheduler_cli
 from lara.cli.main import build_parser
-from lara.scheduler.keys import init_keys, scheduler_keys_dir
+from lara.scheduler.keys import init_keys
 from lara.scheduler.store import SchedulerStore, scheduler_db_path
 from lara.schema import RunConfig
 
@@ -49,7 +49,7 @@ def test_cli_add_creates_signed_user_submission(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = _config(tmp_path)
-    init_keys(scheduler_keys_dir(config.user_lara_root))
+    init_keys(config.user_lara_root)
     monkeypatch.setattr(scheduler_cli, "load_run_config", lambda **_: config)
     result = scheduler_cli._scheduler_add(_args(tmp_path))
     assert result["kind"] == "task"

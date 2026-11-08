@@ -7,8 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from lara.scheduler.keys import identify_source, init_keys, load_keys
-from lara.scheduler.store import SchedulerStore, scheduler_db_path
+from lara.scheduler.keys import init_keys, verify
+from lara.scheduler.store import (
+    SchedulerStore,
+    scheduler_db_path,
+    submission_payload,
+)
 from lara.scheduler.tools import (
     EMIT_EVENT_TOOL_SPEC,
     SCHEDULE_TASK_TOOL_SPEC,
@@ -33,7 +37,7 @@ async def test_agent_tools_reject_when_disabled(tmp_path: Path) -> None:
     config = _config(tmp_path, enabled=False)
     store = SchedulerStore(scheduler_db_path(config.lara_root))
     store.migrate()
-    init_keys(tmp_path / "user" / "scheduler" / "keys")
+    init_keys(config.user_lara_root)
     executor = SchedulerToolExecutor(config, store=store)
     with pytest.raises(PermissionError, match="disabled"):
         await executor.execute(
@@ -53,9 +57,8 @@ async def test_schedule_task_signs_as_agent(tmp_path: Path) -> None:
     config = _config(tmp_path, enabled=True)
     store = SchedulerStore(scheduler_db_path(config.lara_root))
     store.migrate()
-    init_keys(tmp_path / "user" / "scheduler" / "keys")
-    keys = load_keys(tmp_path / "user" / "scheduler" / "keys")
-    executor = SchedulerToolExecutor(config, store=store, keys=keys)
+    init_keys(config.user_lara_root)
+    executor = SchedulerToolExecutor(config, store=store)
     result = await executor.execute(
         SCHEDULE_TASK_TOOL_SPEC,
         _call({"name": "agent task", "schedule": "daily 09:00", "prompt": "do it"}),
@@ -65,21 +68,20 @@ async def test_schedule_task_signs_as_agent(tmp_path: Path) -> None:
     submission = store.submission(str(result["id"]))
     assert submission is not None
     assert submission.source == "agent"
-    assert identify_source(
-        keys,
-        kind="task",
-        payload=submission.payload,
-        signature=submission.signature,
-    ) == "agent"
+    assert verify(
+        submission_payload("task", "agent", submission.payload),
+        "agent",
+        submission.signature,
+        config.user_lara_root,
+    )
 
 
 async def test_emit_event_signs_as_agent(tmp_path: Path) -> None:
     config = _config(tmp_path, enabled=True)
     store = SchedulerStore(scheduler_db_path(config.lara_root))
     store.migrate()
-    init_keys(tmp_path / "user" / "scheduler" / "keys")
-    keys = load_keys(tmp_path / "user" / "scheduler" / "keys")
-    executor = SchedulerToolExecutor(config, store=store, keys=keys)
+    init_keys(config.user_lara_root)
+    executor = SchedulerToolExecutor(config, store=store)
     result = await executor.execute(
         EMIT_EVENT_TOOL_SPEC,
         _call({"event": "build.finished", "data": {"ok": True}}),
@@ -90,3 +92,9 @@ async def test_emit_event_signs_as_agent(tmp_path: Path) -> None:
     assert submission is not None
     assert submission.source == "agent"
     assert submission.payload["event"] == "build.finished"
+    assert verify(
+        submission_payload("event", "agent", submission.payload),
+        "agent",
+        submission.signature,
+        config.user_lara_root,
+    )
