@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 import time
 import uuid
@@ -160,67 +158,6 @@ class SessionCollaborationStore:
             Path(lara_root).resolve() / "runtime" / "session-collaboration-v1.sqlite3"
         )
 
-    def reserve(
-        self,
-        *,
-        submission_id: str,
-        fingerprint: str,
-        source_session_id: str | None,
-        target_session_id: str | None,
-        agent_alias: str,
-        case_id: str,
-        message: str,
-        model_group: str | None = None,
-    ) -> CollaborationOperation:
-        if not submission_id.strip():
-            raise ValueError("submission_id must be non-empty")
-        for value, name in (
-            (source_session_id, "source_session_id"),
-            (target_session_id, "target_session_id"),
-        ):
-            if value is not None:
-                validate_path_id(value, name)
-        if model_group is not None and not model_group.strip():
-            raise ValueError("model_group must be non-empty when provided")
-        operation_id = f"op-{uuid.uuid4().hex}"
-        now = utc_now()
-        with closing(self._connect()) as connection, connection:
-            try:
-                connection.execute(
-                    """
-                    INSERT INTO collaboration_operations (
-                        operation_id, submission_id, fingerprint,
-                        source_session_id, target_session_id, agent_alias,
-                        case_id, message, model_group, state, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        operation_id,
-                        submission_id,
-                        fingerprint,
-                        source_session_id,
-                        target_session_id,
-                        agent_alias,
-                        case_id,
-                        message,
-                        model_group,
-                        "queued" if target_session_id is not None else "preparing",
-                        now,
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                pass
-            row = connection.execute(
-                "SELECT * FROM collaboration_operations WHERE submission_id = ?",
-                (submission_id,),
-            ).fetchone()
-        if row is None:
-            raise RuntimeError("collaboration reservation was not persisted")
-        if str(row["fingerprint"]) != fingerprint:
-            raise ValueError("submission_id was already used for a different request")
-        return self._operation(row)
-
     def enqueue_message(
         self,
         *,
@@ -373,57 +310,6 @@ class SessionCollaborationStore:
                 (utc_now(), message_id, claim_id),
             )
 
-    def claim_preparation(
-        self,
-        operation_id: str,
-        *,
-        owner_id: str,
-        lease_seconds: float,
-    ) -> bool:
-        now_epoch = time.time()
-        with closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                """
-                UPDATE collaboration_operations
-                SET owner_id = ?, lease_until_epoch = ?, updated_at = ?
-                WHERE operation_id = ? AND state = 'preparing' AND target_session_id IS NULL
-                  AND (owner_id IS NULL OR owner_id = ? OR lease_until_epoch <= ?)
-                """,
-                (
-                    owner_id,
-                    now_epoch + lease_seconds,
-                    utc_now(),
-                    operation_id,
-                    owner_id,
-                    now_epoch,
-                ),
-            )
-            return cursor.rowcount == 1
-
-    def attach_target(
-        self,
-        operation_id: str,
-        target_session_id: str,
-        *,
-        owner_id: str,
-    ) -> CollaborationOperation:
-        validate_path_id(target_session_id, "target_session_id")
-        with closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                """
-                UPDATE collaboration_operations
-                SET target_session_id = ?, state = 'queued', updated_at = ?
-                WHERE operation_id = ? AND state = 'preparing'
-                  AND target_session_id IS NULL AND owner_id = ?
-                """,
-                (target_session_id, utc_now(), operation_id, owner_id),
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError(
-                    "collaboration operation cannot accept a target session"
-                )
-        return self.get(operation_id)
-
     def get(self, operation_id: str) -> CollaborationOperation:
         with closing(self._connect()) as connection:
             row = connection.execute(
@@ -435,178 +321,6 @@ class SessionCollaborationStore:
                 f"Collaboration operation {operation_id!r} does not exist"
             )
         return self._operation(row)
-
-    def claim(self, operation_id: str, *, owner_id: str, lease_seconds: float) -> bool:
-        now_epoch = time.time()
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT rowid AS operation_sequence, target_session_id, state FROM collaboration_operations WHERE operation_id = ?",
-                (operation_id,),
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                raise FileNotFoundError(
-                    f"Collaboration operation {operation_id!r} does not exist"
-                )
-            state = CollaborationState(str(row["state"]))
-            target_session_id = row["target_session_id"]
-            if state.terminal or target_session_id is None:
-                connection.rollback()
-                return False
-            earlier = connection.execute(
-                """
-                SELECT 1 FROM collaboration_operations
-                WHERE target_session_id = ? AND rowid < ?
-                  AND state NOT IN ('passed', 'failed', 'error', 'skipped')
-                LIMIT 1
-                """,
-                (target_session_id, int(row["operation_sequence"])),
-            ).fetchone()
-            if earlier is not None:
-                connection.rollback()
-                return False
-            blocker = connection.execute(
-                """
-                SELECT 1 FROM collaboration_operations
-                WHERE target_session_id = ? AND operation_id != ?
-                  AND state IN ('starting', 'running')
-                  AND lease_until_epoch > ?
-                LIMIT 1
-                """,
-                (target_session_id, operation_id, now_epoch),
-            ).fetchone()
-            if blocker is not None:
-                connection.rollback()
-                return False
-            cursor = connection.execute(
-                """
-                UPDATE collaboration_operations
-                SET state = 'starting', owner_id = ?, lease_until_epoch = ?, updated_at = ?
-                WHERE operation_id = ?
-                  AND (owner_id IS NULL OR owner_id = ? OR lease_until_epoch <= ?)
-                """,
-                (
-                    owner_id,
-                    now_epoch + lease_seconds,
-                    utc_now(),
-                    operation_id,
-                    owner_id,
-                    now_epoch,
-                ),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                return False
-            connection.commit()
-            return True
-
-    def mark_running(
-        self,
-        operation_id: str,
-        *,
-        owner_id: str,
-        execution_id: str,
-        case_run_id: str,
-        lease_seconds: float,
-    ) -> None:
-        self._owned_update(
-            operation_id,
-            owner_id=owner_id,
-            values={
-                "state": CollaborationState.RUNNING.value,
-                "execution_id": execution_id,
-                "case_run_id": case_run_id,
-                "lease_until_epoch": time.time() + lease_seconds,
-            },
-        )
-
-    def heartbeat(
-        self, operation_id: str, *, owner_id: str, lease_seconds: float
-    ) -> bool:
-        with closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                """
-                UPDATE collaboration_operations
-                SET lease_until_epoch = ?, updated_at = ?
-                WHERE operation_id = ? AND owner_id = ? AND state IN ('starting', 'running')
-                """,
-                (time.time() + lease_seconds, utc_now(), operation_id, owner_id),
-            )
-            return cursor.rowcount == 1
-
-    def finish(
-        self,
-        operation_id: str,
-        *,
-        owner_id: str,
-        state: CollaborationState,
-        final_answer: str = "",
-        error: str | None = None,
-    ) -> AgentMessage | None:
-        if not state.terminal:
-            raise ValueError("finish requires a terminal collaboration state")
-        now = utc_now()
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM collaboration_operations WHERE operation_id = ?",
-                (operation_id,),
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                raise FileNotFoundError(
-                    f"Collaboration operation {operation_id!r} does not exist"
-                )
-            cursor = connection.execute(
-                """
-                UPDATE collaboration_operations
-                SET state = ?, final_answer = ?, error = ?, owner_id = NULL,
-                    lease_until_epoch = NULL, updated_at = ?
-                WHERE operation_id = ? AND owner_id = ?
-                """,
-                (state.value, final_answer, error, now, operation_id, owner_id),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                raise RuntimeError("collaboration operation lease was lost")
-
-            source_session_id = row["source_session_id"]
-            target_session_id = row["target_session_id"]
-            if source_session_id is None or target_session_id is None:
-                connection.commit()
-                return None
-
-            content = json.dumps(
-                {
-                    "type": "session.completed",
-                    "operation_id": operation_id,
-                    "session_id": str(target_session_id),
-                    "case_id": str(row["case_id"]),
-                    "execution_id": row["execution_id"],
-                    "case_run_id": row["case_run_id"],
-                    "status": state.value,
-                    "final_answer": final_answer,
-                    "error": error,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            submission_id = f"operation-completion:{operation_id}"
-            fingerprint = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            message_row = self._enqueue_message(
-                connection,
-                message_id=f"msg-{uuid.uuid4().hex}",
-                submission_id=submission_id,
-                fingerprint=fingerprint,
-                source_session_id=str(target_session_id),
-                source_agent_alias=str(row["agent_alias"]),
-                target_session_id=str(source_session_id),
-                content=content,
-                now=now,
-            )
-            connection.commit()
-            return self._agent_message(message_row)
 
     @staticmethod
     def _enqueue_message(
@@ -653,19 +367,6 @@ class SessionCollaborationStore:
         if str(row["fingerprint"]) != fingerprint:
             raise ValueError("submission_id was already used for a different message")
         return row
-
-    def _owned_update(
-        self, operation_id: str, *, owner_id: str, values: dict[str, Any]
-    ) -> None:
-        assignments = ", ".join(f"{name} = ?" for name in values)
-        parameters = [*values.values(), utc_now(), operation_id, owner_id]
-        with closing(self._connect()) as connection, connection:
-            cursor = connection.execute(
-                f"UPDATE collaboration_operations SET {assignments}, updated_at = ? WHERE operation_id = ? AND owner_id = ?",  # noqa: S608
-                parameters,
-            )
-            if cursor.rowcount != 1:
-                raise RuntimeError("collaboration operation lease was lost")
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
