@@ -140,18 +140,6 @@ class PromptRegistry:
             ),
         ]
 
-    def register(self, module: PromptModule) -> None:
-        if any(existing.id == module.id for existing in self._modules):
-            raise ValueError(f"Prompt module {module.id!r} already registered")
-        self._modules.append(module)
-
-    def replace(self, module: PromptModule) -> None:
-        for index, existing in enumerate(self._modules):
-            if existing.id == module.id:
-                self._modules[index] = module
-                return
-        raise KeyError(f"Prompt module {module.id!r} is not registered")
-
     def resolve(
         self,
         *,
@@ -207,14 +195,6 @@ class PromptComposer:
             phase="request_system", include=module_ids, render_context=ctx
         )
         return self._compose_modules(ctx, modules)
-
-    def compose(self, ctx: PromptRenderContext) -> tuple[str, list[dict[str, Any]]]:
-        static_text, static_modules = self.compose_static(ctx)
-        request_system_text, request_system_modules = self.compose_request_system(ctx)
-        parts = [static_text] if static_text else []
-        if request_system_text:
-            parts.append(request_system_text)
-        return "\n\n".join(parts), [*static_modules, *request_system_modules]
 
     def _compose_modules(
         self,
