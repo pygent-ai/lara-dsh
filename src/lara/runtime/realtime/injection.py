@@ -80,6 +80,7 @@ class RealtimeNudgeModule(Module[ToolMessage, ToolMessage]):
         counter = self.counter
         if counter.turn_id != context.turn_id:
             counter.turn_id = context.turn_id
+            counter.rounds = 0
             counter.first_result_seen = False
             counter.spoke_yet = False
 
