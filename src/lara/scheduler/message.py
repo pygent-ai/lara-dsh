@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any
 
 from lara.core.prompt import Prompt
 from lara.core.timefmt import format_current_time_line

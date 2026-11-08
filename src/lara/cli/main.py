@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, Sequence
+from typing import Sequence
 
 from lara.cli.credentials import register_credentials_parser
 from lara.cli.projects import register_projects_parser
