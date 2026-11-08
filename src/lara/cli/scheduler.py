@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+from lara.cli._base import config_from_args
 from lara.config import load_run_config
 from lara.scheduler.daemon import SchedulerDaemon
 from lara.scheduler.keys import init_keys, load_secret, sign
@@ -83,11 +84,7 @@ def register_scheduler_parser(subparsers: Any) -> None:
 
 
 def _config(args: argparse.Namespace) -> RunConfig:
-    return load_run_config(
-        workspace_root=args.workspace_root,
-        agent_alias=args.agent_alias,
-        max_steps=args.max_steps,
-    )
+    return config_from_args(args, loader=load_run_config)
 
 
 def _store(config: RunConfig) -> SchedulerStore:

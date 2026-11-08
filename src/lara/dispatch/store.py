@@ -1,25 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import sqlite3
 import uuid
 from contextlib import closing
 from pathlib import Path
-from typing import Any
 
+from lara.core.hashing import fingerprint as _fingerprint
 from lara.core.io import validate_path_id
 
 from .models import DispatchItem, DispatchItemKind, DispatchItemState, utc_now
 
 LEGACY_MIGRATION_MARKER = "legacy_automations_migrated_at"
-
-
-def _fingerprint(**values: Any) -> str:
-    payload = json.dumps(
-        values, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 class DispatchStore:

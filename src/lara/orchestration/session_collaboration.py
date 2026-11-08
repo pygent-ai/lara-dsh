@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
+from lara.core.hashing import fingerprint as _fingerprint
 from lara.core.io import validate_path_id
 from lara.dispatch import DispatchOperationView, DispatchStore
 from lara.schema import RunConfig
@@ -306,13 +305,6 @@ class SessionCollaborationService:
     def _directory_for_root(self, lara_root: str | Path) -> SessionDirectory:
         key = str(user_lara_root_for(lara_root))
         return self._directories.setdefault(key, SessionDirectory(key))
-
-
-def _fingerprint(**values: Any) -> str:
-    payload = json.dumps(
-        values, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 __all__ = ["SessionCollaborationService"]

@@ -4,7 +4,7 @@ import argparse
 import os
 from typing import Any
 
-from lara.config import load_run_config
+from lara.cli._base import config_from_args
 from lara.core.io import non_empty_string as _non_empty
 from lara.credentials import (
     DEFAULT_API_KEY_ENV,
@@ -47,7 +47,7 @@ def register_credentials_parser(sub: argparse._SubParsersAction[argparse.Argumen
 
 
 def credentials_list(args: argparse.Namespace) -> dict[str, Any]:
-    config = _base_config(args)
+    config = config_from_args(args)
     user_path = user_credentials_path(config.user_lara_root)
     names = set(list_user_credential_names(config.user_lara_root))
     for env_name in (DEFAULT_API_KEY_ENV,):
@@ -71,7 +71,7 @@ def credentials_set(args: argparse.Namespace) -> dict[str, Any]:
         os.environ[env_name] = value
         return {"status": "stored", "env_name": env_name, "storage": f"keyring:{env_name}"}
 
-    config = _base_config(args)
+    config = config_from_args(args)
     path = set_user_credential(config.user_lara_root, env_name, value)
     return {"status": "stored", "env_name": env_name, "storage": f"file:{path}"}
 
@@ -85,7 +85,7 @@ def credentials_delete(args: argparse.Namespace) -> dict[str, Any]:
         os.environ.pop(env_name, None)
         return {"status": "deleted" if deleted else "missing", "env_name": env_name, "storage": f"keyring:{env_name}"}
 
-    config = _base_config(args)
+    config = config_from_args(args)
     deleted = delete_user_credential(config.user_lara_root, env_name)
     return {
         "status": "deleted" if deleted else "missing",
@@ -95,11 +95,7 @@ def credentials_delete(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
-    config = load_run_config(
-        workspace_root=args.workspace_root,
-        agent_alias=args.agent_alias,
-        max_steps=args.max_steps,
-    )
+    config = config_from_args(args)
     resolved = config.resolved_agent
     native = config.model_config
     if resolved is None or native is None:
@@ -159,14 +155,6 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
         "lookup_source": lookup_source,
         "credentials_file": str(user_credentials_path(config.user_lara_root)),
     }
-
-
-def _base_config(args: argparse.Namespace):
-    return load_run_config(
-        workspace_root=args.workspace_root,
-        agent_alias=args.agent_alias,
-        max_steps=args.max_steps,
-    )
 
 
 def _keyring_available() -> bool:

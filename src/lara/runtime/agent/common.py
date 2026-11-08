@@ -5,13 +5,13 @@ import os
 import time
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
 from pygent import Message as PygentMessage
 from pygent.runtime.codec import context_from_dict, message_from_dict
 
+from lara.core.io import utc_now as _now
 from lara.runtime.context import LARA_CONTEXT_CODECS, LaraContext
 
 DEFAULT_REACT_MAX_STEPS = 500
@@ -117,10 +117,6 @@ def _hash_text(text: str) -> str:
     import hashlib
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @contextmanager
