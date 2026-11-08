@@ -75,6 +75,12 @@ class PygentEngine:
         *,
         prefix: ContextWindow | None = None,
     ) -> AgentResult:
+        """运行一次 ReAct 调用。
+
+        与 ``lara.agents.runner.AgentRunner.run`` 是镜像实现（入参/返回类型
+        不同）；修改任一侧时必须同步另一侧。
+        """
+
         if (prefix is None) == (request.system_prompt is None):
             raise ValueError(
                 "provide exactly one of a prefix ContextWindow or "
