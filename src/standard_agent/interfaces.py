@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from lara.agents.runner import ToolProfile
+
 # 压缩窗口禁用哨兵：远超任何真实模型的上下文窗口。
 DISABLED_COMPRESSION_WINDOW_TOKENS = 1 << 60
 
@@ -35,21 +37,6 @@ class AgentLimits:
     context_window_tokens: int = DISABLED_COMPRESSION_WINDOW_TOKENS
     compression_trigger_ratio: float = 0.9
     max_compressions: int = 1
-
-
-@dataclass(frozen=True)
-class ToolProfile:
-    """工具面的按名引用（G4）。
-
-    agent 只持有 ``surface_id``，不持有工具本身；工具面由组合根注册进
-    ToolRegistry 后经此引用解析。未知 id 在任何模型调用之前即失败。
-    """
-
-    surface_id: str
-
-    def __post_init__(self) -> None:
-        if not self.surface_id.strip():
-            raise ValueError("ToolProfile.surface_id must be non-empty")
 
 
 @dataclass(frozen=True)

@@ -112,6 +112,9 @@ class ToolkitToolSurface:
     post-tool hooks (lara-architecture §6.8).
     """
 
+    # Subclasses may override to keep their own authorization reason code.
+    _AUTHORIZATION_REASON_CODE = "lara-agents-uniform-tool-surface"
+
     def __init__(self, toolkit: ToolKit) -> None:
         self._toolkit = toolkit
 
@@ -128,7 +131,7 @@ class ToolkitToolSurface:
             return ToolAuthorizationDecision(
                 call_id=request.call.call_id,
                 allowed=True,
-                reason_code="lara-agents-uniform-tool-surface",
+                reason_code=self._AUTHORIZATION_REASON_CODE,
             )
 
         return self._toolkit.local_layer(authorization_adapter=authorize)

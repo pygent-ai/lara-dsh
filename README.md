@@ -115,6 +115,9 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   realtime nudge interval 改为读取 `nudge_interval` 配置；turn 切换时重置
   silent-round 计数。验证：137 passed、pyright 0；CLI 两轮 E2E 均
   `status=passed` 且 `final_answer=first-ok`。
+- 重构（去重 X2）：`src/standard_agent` 的工具面、上下文窗口与模型层工厂
+  改为从 `lara.agents` 直接导入并保持同名导出（仅 import 依赖，不反向修改
+  lara 分层）；标准层只保留自己的授权 `reason_code` 常量与 `PygentEngine`。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
   魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 标准接口层"
   的分层。
