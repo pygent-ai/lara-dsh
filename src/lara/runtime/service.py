@@ -75,6 +75,7 @@ from lara.runtime.attachments import (
 from lara.runtime.bash_tasks import BashTaskObservations
 from lara.runtime.mcp import ReadinessRetryingTransport
 from lara.runtime.reminders import ReminderService
+from lara.runtime.reminders.agent_messages import render_agent_message
 from lara.scheduler.tools import SCHEDULER_TOOL_SPECS, SchedulerToolExecutor
 from lara.dispatch import DispatchOperationView, DispatchService, DispatchStore
 from lara.schema import AgentSession, CaseRunRef, RunConfig
@@ -953,25 +954,48 @@ class LaraRuntimeService:
         await self.initialize()
         group_name, selected_model_key = manager.model_selection(run_ref.session_id)
         session = manager.load(run_ref.session_id)
+        realtime_enabled = realtime_enabled_for(session)
         agent = self.new_agent(
             interactive_approvals=interactive_approvals,
             model_group_name=group_name,
             selected_model_key=selected_model_key,
             eternal_memory_enabled=eternal_enabled_for(session, self.config),
-            realtime_interaction_enabled=realtime_enabled_for(session),
+            realtime_interaction_enabled=realtime_enabled,
         )
-        turn_message, turn_context = await self._prepare_turn(
-            manager=manager,
-            run_ref=run_ref,
-            message=message,
-            config=self.config,
-            turn_id=turn_id,
-            message_kind=message_kind,
-            message_data=message_data,
-            attachments=attachments,
+        # Envelopes queued after the previous turn ended (including an
+        # interrupt that lost the race with turn completion) must reach this
+        # turn's opening context, not wait for a tool boundary that may never
+        # come. The internal finalizer round belongs to the same turn and
+        # leaves pending messages for the next user turn.
+        initial_claim_id = (
+            f"agent-messages:initial:{run_ref.session_id}:{turn_id}"
         )
-        bound = await self.bind(agent, agent)
+        initial_agent_messages: tuple[AgentMessage, ...] = ()
+        if realtime_enabled and message_kind != "lara.realtime.finalizer":
+            initial_agent_messages = await self.reminders.claim_agent_messages(
+                run_ref.session_id,
+                claim_id=initial_claim_id,
+            )
+        initial_agent_context = (
+            "\n".join(
+                render_agent_message(item) for item in initial_agent_messages
+            )
+            if initial_agent_messages
+            else None
+        )
         try:
+            turn_message, turn_context = await self._prepare_turn(
+                manager=manager,
+                run_ref=run_ref,
+                message=message,
+                config=self.config,
+                turn_id=turn_id,
+                message_kind=message_kind,
+                message_data=message_data,
+                attachments=attachments,
+                initial_agent_context=initial_agent_context,
+            )
+            bound = await self.bind(agent, agent)
             handle = await self._start_agent_execution(
                 bound,
                 turn_message,
@@ -992,10 +1016,20 @@ class LaraRuntimeService:
             )
         except BaseException:
             await self.reminders.release_initial(run_ref.session_id, turn_id)
+            for item in initial_agent_messages:
+                await self.reminders.release_agent_message(
+                    item.message_id, claim_id=initial_claim_id
+                )
             raise
         await self.reminders.acknowledge_initial(
             run_ref.session_id, turn_id, handle.execution_id
         )
+        for item in initial_agent_messages:
+            await self.reminders.acknowledge_agent_message(
+                item.message_id,
+                claim_id=initial_claim_id,
+                execution_id=handle.execution_id,
+            )
         self._record_execution_id(run_ref, handle.execution_id)
         self._track_turn_context(handle.execution_id, turn_context)
         return handle
@@ -1276,6 +1310,7 @@ class LaraRuntimeService:
         message_kind: str = "lara.chat.turn",
         message_data: dict[str, object] | None = None,
         attachments: Sequence[str] = (),
+        initial_agent_context: str | None = None,
     ) -> tuple[UserMessage, LaraContext]:
         if session is None:
             session = manager.load(run_ref.session_id)
@@ -1309,6 +1344,12 @@ class LaraRuntimeService:
         if dynamic_reminder:
             reminder = (
                 f"{reminder}\n\n{dynamic_reminder}" if reminder else dynamic_reminder
+            )
+        if initial_agent_context:
+            reminder = (
+                f"{reminder}\n\n{initial_agent_context}"
+                if reminder
+                else initial_agent_context
             )
         if reminder:
             wrapped = f"{wrapped}\n\n{reminder}"
