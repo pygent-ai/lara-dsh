@@ -111,6 +111,10 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
 - 功能演进（realtime supersede）：实时 fork-reply 采用每会话
   `SessionForkState`，in-flight 连发会取消旧 handle 并以编号合并消息重发；
   generation 守卫阻止迟到结果写入孤儿信封。
+- 维护（死代码清理 + nudge 修复）：删除 11 项确认无用的 helper/re-export；
+  realtime nudge interval 改为读取 `nudge_interval` 配置；turn 切换时重置
+  silent-round 计数。验证：137 passed、pyright 0；CLI 两轮 E2E 均
+  `status=passed` 且 `final_answer=first-ok`。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
   魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 标准接口层"
   的分层。
