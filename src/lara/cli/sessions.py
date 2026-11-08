@@ -143,7 +143,7 @@ def _session_send(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _session_start(args: argparse.Namespace) -> dict[str, Any]:
-    config, _manager = _collaboration_config_and_manager(args)
+    config, _manager = _config_and_manager(args)
     item = _dispatch_service(config).submit_start(
         config=config,
         message=args.message,
@@ -155,7 +155,7 @@ def _session_start(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _session_fork(args: argparse.Namespace) -> dict[str, Any]:
-    config, manager = _collaboration_config_and_manager(args)
+    config, manager = _config_and_manager(args)
     if not args.message:
         return manager.fork(args.session_id, mode="chat").to_dict()
     item = _dispatch_service(config).submit_fork(
@@ -176,7 +176,7 @@ def _dispatch_service(config: RunConfig) -> DispatchService:
 
 
 async def _enqueue_agent_message(args: argparse.Namespace) -> dict[str, Any]:
-    config, manager = _collaboration_config_and_manager(args)
+    config, manager = _config_and_manager(args)
     async with LocalExecutionHost() as host:
         message = await host.collaboration.send(
             config=config,
@@ -195,7 +195,7 @@ def _session_status(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _read_collaboration_status(args: argparse.Namespace) -> dict[str, Any]:
-    config, _manager = _collaboration_config_and_manager(args)
+    config, _manager = _config_and_manager(args)
     async with LocalExecutionHost() as host:
         item = await host.collaboration.item_status(
             config=config,
@@ -209,7 +209,7 @@ def _session_wait(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _wait_for_collaboration(args: argparse.Namespace) -> dict[str, Any]:
-    config, _manager = _collaboration_config_and_manager(args)
+    config, _manager = _config_and_manager(args)
     async with LocalExecutionHost() as host:
         if args.collaboration_id.startswith("msg-"):
             message = await host.collaboration.wait_message(
@@ -227,7 +227,7 @@ async def _wait_for_collaboration(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _run_session_turn(args: argparse.Namespace) -> dict[str, Any]:
-    config, manager = _chat_config_and_manager(args)
+    config, manager = _config_and_manager(args, session_id=args.session_id)
     async with LocalExecutionHost() as host:
         turn = await host.turns.submit(
             config=config,
@@ -247,7 +247,7 @@ def _session_chat(args: argparse.Namespace) -> None:
 
 
 async def _interactive_session_chat(args: argparse.Namespace) -> None:
-    config, manager = _chat_config_and_manager(args)
+    config, manager = _config_and_manager(args, session_id=args.session_id)
     session_id = args.session_id
     if session_id is None:
         session_id = manager.create("chat", mode="chat").session_id
@@ -340,23 +340,14 @@ def _turn_result_payload(turn: ManagedSessionTurn, output: Any) -> dict[str, Any
     return payload
 
 
-def _chat_config_and_manager(
+def _config_and_manager(
     args: argparse.Namespace,
+    *,
+    session_id: str | None = None,
 ) -> tuple[RunConfig, SessionManager]:
     config = load_run_config(
         workspace_root=args.workspace_root,
-        session_id=args.session_id,
-        agent_alias=args.agent_alias,
-        max_steps=args.max_steps,
-    )
-    return config, SessionManager(config)
-
-
-def _collaboration_config_and_manager(
-    args: argparse.Namespace,
-) -> tuple[RunConfig, SessionManager]:
-    config = load_run_config(
-        workspace_root=args.workspace_root,
+        session_id=session_id,
         agent_alias=args.agent_alias,
         max_steps=args.max_steps,
     )
