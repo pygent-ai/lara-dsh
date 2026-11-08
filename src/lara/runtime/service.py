@@ -79,6 +79,7 @@ from lara.runtime.attachments import (
 from lara.runtime.bash_tasks import BashTaskObservations
 from lara.runtime.mcp import ReadinessRetryingTransport
 from lara.runtime.reminders import ReminderService
+from lara.scheduler.tools import SCHEDULER_TOOL_SPECS, SchedulerToolExecutor
 from lara.dispatch import DispatchOperationView, DispatchService, DispatchStore
 from lara.schema import AgentSession, CaseRunRef, RunConfig
 from lara.sessions import (
@@ -357,6 +358,9 @@ class LaraRuntimeService:
         )
         for spec in AGENT_COLLABORATION_TOOL_SPECS:
             self.runtime.register_tool(spec, collaboration_executor)
+        scheduler_executor = SchedulerToolExecutor(config)
+        for spec in SCHEDULER_TOOL_SPECS:
+            self.runtime.register_tool(spec, scheduler_executor)
         self.bash_tasks = BashTaskObservations(
             config,
             self.runtime,
@@ -403,9 +407,12 @@ class LaraRuntimeService:
             ),
             durability=DurabilityPolicy(DurabilityMode(config.runtime_durability.mode)),
         )
-        self.external_tools: tuple[ToolSpec, ...] = visible_agent_collaboration_specs(
-            config,
-            collaboration_available=collaboration is not None,
+        self.external_tools: tuple[ToolSpec, ...] = (
+            *visible_agent_collaboration_specs(
+                config,
+                collaboration_available=collaboration is not None,
+            ),
+            *SCHEDULER_TOOL_SPECS,
         )
         self._turn_contexts: dict[str, LaraContext] = {}
         self._fork_agents: dict[tuple, ForkReplyModule] = {}

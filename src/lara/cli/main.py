@@ -1,4 +1,4 @@
-"""lara CLI（抽取版）：仅保留会话相关子命令。
+"""lara CLI（抽取版）：会话、凭据、项目与调度器子命令。
 
 原仓的 case / regression / test / repair / optimize / automations 子命令依赖
 已裁剪的 evaluation / repair / automations / workflows 子系统，故不在此仓。
@@ -13,6 +13,7 @@ from typing import Any, Sequence
 
 from lara.cli.credentials import register_credentials_parser
 from lara.cli.projects import register_projects_parser
+from lara.cli.scheduler import register_scheduler_parser
 from lara.cli.sessions import register_session_parser
 from lara.config import load_run_config
 from lara.sessions import SessionManager
@@ -66,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_session_parser(sub)
     register_credentials_parser(sub)
     register_projects_parser(sub)
+    register_scheduler_parser(sub)
     return parser
 
 
