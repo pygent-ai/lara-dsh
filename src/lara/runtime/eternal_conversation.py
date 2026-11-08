@@ -32,18 +32,6 @@ def eternal_enabled_for(session: AgentSession, config: RunConfig) -> bool:
         session.metadata.get("eternal_memory")
     )
 
-# Compact-output contract for the extractor's proposal; enforced by the
-# memory CLI's publish-pending gate (content-addressed hashes travel in the
-# fork snapshot, never this text).
-PROPOSAL_FIELD_LIMITS: dict[str, int] = {
-    "resident_memory": 4,
-    "recent_context": 4,
-    "current_state": 6,
-    "completed": 4,
-    "next_actions": 4,
-    "constraints": 6,
-}
-
 
 @dataclass(frozen=True)
 class MemoryJobContext:
@@ -92,10 +80,6 @@ class MemoryJobRequest:
 
 MemoryJobRunner = Callable[[MemoryJobRequest], Awaitable[str]]
 
-# Commands a memory job may run through the allowlisted CLI tool. Publishing,
-# building, and state reads only — the harness itself drives freeze/search.
-MEMORY_CLI_ALLOWED_COMMANDS = ("get-state", "publish-pending", "build-pending")
-
 # Old sessions created before rendered prompts were persisted back may carry
 # an empty system prompt; the extractor still needs a non-empty block-1 prompt.
 MEMORY_JOB_FALLBACK_FOREGROUND_PROMPT = (
@@ -104,50 +88,6 @@ MEMORY_JOB_FALLBACK_FOREGROUND_PROMPT = (
     "system prompt of the frozen turns is unavailable; judge the frozen "
     "working memory on its own content."
 )
-
-
-def memory_cli_handler(
-    context: MemoryJobContext,
-) -> Callable[[str, dict[str, Any] | None], Awaitable[dict[str, Any]]]:
-    """Build the allowlisted memory-CLI handler for one memory job.
-
-    This is the *entire* execution surface a memory job has besides read-only
-    workspace verification: no bash, no writes outside the memory root, no
-    arbitrary commands. Publishing writes the proposal into the memory jobs
-    directory; the CLI's own revision checks remain the authority.
-    """
-
-    cli = DynamicMemoryCli(context.memory_script, context.memory_root)
-
-    async def handler(
-        command: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        if command not in MEMORY_CLI_ALLOWED_COMMANDS:
-            raise ValueError(
-                f"unsupported memory CLI command {command!r}; allowed: "
-                f"{list(MEMORY_CLI_ALLOWED_COMMANDS)}"
-            )
-        if command == "publish-pending":
-            if not isinstance(payload, dict):
-                raise ValueError("publish-pending requires the proposal payload object")
-            jobs = context.memory_root / "jobs"
-            jobs.mkdir(parents=True, exist_ok=True)
-            proposal_path = (
-                jobs
-                / f"proposal-{context.covered_through + 1}-{context.target_cursor}.json"
-            )
-            write_json(proposal_path, payload)
-            return await cli.file_command(
-                "publish-pending", payload, proposal_path.name
-            )
-        if command == "build-pending":
-            assert context.build_batch_path is not None
-            return await cli.call(
-                "build-pending", "--file", str(context.build_batch_path)
-            )
-        return await cli.call("get-state")
-
-    return handler
 
 
 EXTRACTOR_GUIDANCE = """You are the same agent, forked from the foreground conversation to
@@ -233,13 +173,6 @@ class DynamicMemoryCli:
         self.root.mkdir(parents=True, exist_ok=True)
         return await self.call("init", "--path", str(self.root))
 
-    async def file_command(
-        self, command: str, payload: dict[str, Any], name: str
-    ) -> dict[str, Any]:
-        path = self.root / "jobs" / name
-        write_json(path, payload)
-        return await self.call(command, "--file", str(path))
-
 
 def load_projection(session_dir: str | Path) -> dict[str, Any]:
     return read_json(
@@ -294,9 +227,6 @@ def render_memory_snapshot(projection: dict[str, Any]) -> str:
         )
     )
 
-
-def render_memory_context(session_dir: str | Path, projection: dict[str, Any]) -> str:
-    return f"{render_memory_access_instruction(session_dir, projection)}\n{render_memory_snapshot(projection)}"
 
 
 def estimate_context_tokens(
@@ -428,30 +358,6 @@ class EternalConversationHarness:
         return estimate >= int(
             context_window_tokens * self.config.extraction_trigger_ratio
         )
-
-    async def retry_pending(self, session: AgentSession) -> bool:
-        """Restart a failed extractor job without replaying a foreground turn."""
-
-        if not self.config.enabled or self._closed or not self._accepting:
-            return False
-        existing = self._workers.get(session.session_id)
-        if existing is not None and not existing.done():
-            return False
-        session_dir = Path(session.session_dir)
-        state = read_json(session_dir / "state" / "eternal-harness.json", default={})
-        requested = int(state.get("requested_cursor") or 0)
-        projection = read_json(
-            session_dir / "state" / "eternal-conversation.json", default={}
-        )
-        if requested <= int(projection.get("covered_through") or 0):
-            return False
-        self._set_job_state(session_dir, "extractor", status="queued", error=None)
-        self._workers[session.session_id] = asyncio.create_task(
-            self._guarded_extract_loop(session.session_id, session_dir),
-            name=f"eternal-extractor-retry:{session.session_id}",
-            context=Context(),
-        )
-        return True
 
     async def _guarded_extract_loop(self, session_id: str, session_dir: Path) -> None:
         await self._guarded_job(
@@ -733,23 +639,6 @@ class EternalConversationHarness:
         self._workers.clear()
         self._builders.clear()
 
-    async def wait_idle(self) -> None:
-        while True:
-            active = [
-                task
-                for task in (*self._workers.values(), *self._builders.values())
-                if not task.done()
-            ]
-            if active:
-                await asyncio.gather(*active, return_exceptions=True)
-                continue
-            for task in (*self._workers.values(), *self._builders.values()):
-                if task.done() and not task.cancelled():
-                    task.exception()  # Consume isolated background failures.
-            self._workers.clear()
-            self._builders.clear()
-            return
-
     @staticmethod
     def _set_job_state(
         session_dir: Path, role: str, *, status: str, error: str | None
@@ -857,6 +746,5 @@ __all__ = [
     "EternalConversationHarness",
     "load_projection",
     "render_memory_access_instruction",
-    "render_memory_context",
     "render_memory_snapshot",
 ]
