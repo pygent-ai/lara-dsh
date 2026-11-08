@@ -217,7 +217,7 @@ async def _wait_for_collaboration(args: argparse.Namespace) -> dict[str, Any]:
                 message_id=args.collaboration_id,
             )
             return message.to_dict()
-        # Dispatched items are driven by the dispatch scheduler; waiting is
+        # Dispatched items are driven by an external scheduler; waiting is
         # pure polling, there is no in-process resume anymore.
         operation = await host.collaboration.wait(
             config=config,
