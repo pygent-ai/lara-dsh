@@ -16,8 +16,6 @@ The agent works silently: content/thinking stay out of the user-facing stream an
 
 Wiring: the envelope rides the existing agent-message queue (claimed by the
 runtime's reminder boundary); the nudge module composes into
-``PreparedToolModule`` behind ``realtime_interaction_enabled``; the fork reply
-runs as a pygent managed execution via ``LaraRuntimeService.send_interrupt``;
-the finalizer round is queued by the session coordinator's lane at turn
-completion.
+``PreparedToolModule`` behind ``realtime_interaction_enabled``; the finalizer
+round is queued by the session coordinator's lane at turn completion.
 """

@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, cast
 
 from pygent import (
-    AIMessage,
     ModelGroup,
     ToolKit,
     UserMessage,
@@ -91,16 +90,7 @@ from .agent.common import (
     DEFAULT_REACT_MAX_STEPS,
     _to_pygent_message,
 )
-from .agent.core import (
-    LARA_PROJECTION_READY_KIND,
-    LaraAgent,
-    model_retry_policy,
-)
-from .realtime.fork_agent import ForkReplyModule, outcome_from_result
-from .realtime.fork_reply import build_fork_context
-from .realtime.fork_state import SessionForkState
-from .realtime.envelope import format_user_asked
-from .realtime.posting import queue_exchange_envelope
+from .agent.core import LARA_PROJECTION_READY_KIND, LaraAgent
 from .realtime.feishu import load_feishu_channels
 from .realtime.speak import SILENT_ACKNOWLEDGEMENT, SPEAK_TOOL_SPEC, parse_speak_args
 from .agent_collaboration import (
@@ -408,8 +398,6 @@ class LaraRuntimeService:
             *SCHEDULER_TOOL_SPECS,
         )
         self._turn_contexts: dict[str, LaraContext] = {}
-        self._fork_agents: dict[tuple, ForkReplyModule] = {}
-        self._fork_states: dict[str, SessionForkState] = {}
         self.warnings: list[str] = []
         self._initialized = False
         self._initializing_task: asyncio.Task[None] | None = None
@@ -999,184 +987,6 @@ class LaraRuntimeService:
         self._record_execution_id(run_ref, handle.execution_id)
         self._track_turn_context(handle.execution_id, turn_context)
         return handle
-
-    async def send_interrupt(
-        self,
-        execution_id: str,
-        *,
-        manager: SessionManager,
-        run_ref: CaseRunRef,
-        session_id: str,
-        input_id: str,
-        message: str,
-    ) -> Any:
-        """Fork-reply path for a user message arriving mid-turn (D-RT2/3).
-
-        A session-level :class:`SessionForkState` supersedes an in-flight
-        fork when another interrupt arrives: the old handle is cancelled, the
-        messages are merged into a numbered batch, and a new generation starts
-        with a fresh deadline. A late result from an older generation is
-        discarded before it can queue an exchange envelope.
-        """
-
-        await self.initialize()
-        config = self.config
-        session = manager.load(session_id)
-        if not realtime_enabled_for(session):
-            raise RuntimeError("realtime interaction is not enabled for this session")
-        state = self._fork_states.setdefault(session_id, SessionForkState())
-        async with state.lock:
-            if state.handle is not None and not state.finished:
-                state.pending.append(message)
-                state.generation += 1
-                generation = state.generation
-                fork_messages = list(state.pending)
-                await state.handle.cancel()
-                fork_input_id = f"{input_id}:g{generation}"
-                request_message = format_user_asked(fork_messages)
-            else:
-                was_idle = state.handle is None
-                state.generation += 1
-                generation = state.generation
-                state.pending = [message]
-                fork_messages = [message]
-                fork_input_id = (
-                    input_id
-                    if was_idle and generation == 1
-                    else f"{input_id}:g{generation}"
-                )
-                request_message = message
-            state.finished = False
-            handle = await self._start_fork_reply(
-                session=session,
-                run_ref=run_ref,
-                config=config,
-                input_id=fork_input_id,
-                message=request_message,
-            )
-            state.handle = handle
-
-        try:
-            output, _ = await handle.result()
-        except asyncio.CancelledError:
-            output = None
-        except BaseException:
-            async with state.lock:
-                if state.generation == generation:
-                    state.handle = None
-                    state.finished = False
-                    state.pending = []
-            raise
-        if output is None:
-            return None
-        assert isinstance(output, AIMessage)
-        outcome = outcome_from_result(output)
-        async with state.lock:
-            if state.generation != generation:
-                return None
-            state.finished = True
-            if outcome.speak_args is not None and outcome.speak_args.say_nothing:
-                response_text = "(decided not to speak)"
-            elif outcome.speak_args is not None:
-                response_text = outcome.speak_args.text or ""
-            else:
-                response_text = outcome.text or ""
-            queue_exchange_envelope(
-                self.reminders.message_store,
-                session_id=session_id,
-                submission_id=f"realtime-exchange:{fork_input_id}",
-                user_asked=tuple(fork_messages),
-                response=response_text or "(no verbal reply)",
-            )
-            state.handle = None
-            state.finished = False
-            state.pending = []
-        return outcome
-
-    async def _start_fork_reply(
-        self,
-        *,
-        session: AgentSession,
-        run_ref: CaseRunRef,
-        config: RunConfig,
-        input_id: str,
-        message: str,
-    ) -> Any:
-        main_agent = self.new_agent(
-            interactive_approvals=False,
-            model_group_name=session.model_group_name,
-            selected_model_key=session.selected_model_key,
-            eternal_memory_enabled=eternal_enabled_for(session, config),
-            realtime_interaction_enabled=True,
-        )
-        fork_window = session_fork_window(
-            mode="live",
-            config=config,
-            session=session,
-            run_ref=run_ref,
-            turn_id=f"fork:{input_id}",
-        )
-        request = build_fork_context(
-            system_prompt=fork_window.system_prompt,
-            messages=fork_window.messages,
-            tools=main_agent.tool_definitions,
-        )
-        fork_agent = self._fork_agent(
-            model_group_name=session.model_group_name,
-            selected_model_key=session.selected_model_key,
-            tools=main_agent.tool_definitions,
-        )
-        bound = await self.bind(fork_agent, fork_agent)
-        group_name = session.model_group_name or config.resolved_agent.default_model_group
-        model_calls = (
-            self._model_calls_option(group_name, session.selected_model_key)
-            if main_agent.llm is not None
-            else {}
-        )
-        return await bound.start(
-            UserMessage(content=message, kind="lara.user.interrupt"),
-            request,
-            execution=ExecutionOptions(
-                request_id=f"fork:{input_id}",
-                idempotency_key=f"fork:{input_id}",
-                identity=run_ref.session_id,
-                model_calls=model_calls,
-                deadline=time.monotonic()
-                + config.realtime_interaction.fork_deadline_seconds,
-            ),
-        )
-
-    def _fork_agent(
-        self,
-        *,
-        model_group_name: str | None,
-        selected_model_key: str | None,
-        tools: tuple,
-    ) -> ForkReplyModule:
-        """One cached fork-reply graph per configuration shape."""
-
-        group_name = (
-            model_group_name or self.config.resolved_agent.default_model_group
-        )
-        key = (id(self.config), group_name, selected_model_key, tools)
-        existing = self._fork_agents.get(key)
-        if existing is not None:
-            return existing
-        invoker = (
-            self._model_invokers.get(self.config.resolved_agent.alias)
-            if self.config.resolved_agent is not None
-            else None
-        )
-        retry = self.config.model_retry
-        agent = ForkReplyModule(
-            config=self.config,
-            model_group_name=group_name,
-            llm=invoker,
-            tools=tools,
-            retry_policy=model_retry_policy(retry),
-        )
-        self._fork_agents[key] = agent
-        return agent
 
     async def recover_turn(
         self,
