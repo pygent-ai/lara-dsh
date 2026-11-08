@@ -109,18 +109,6 @@ def _initial_lara_context(
     return replace(context, messages=tuple(converted_messages)), False
 
 
-def _latest_user_input_hash(history: list[dict[str, Any]]) -> str | None:
-    for message in reversed(history):
-        data = message.get("data")
-        is_automation = (
-            message.get("kind") == "lara.automation.trigger"
-            or isinstance(data, dict) and data.get("origin") == "automation"
-        )
-        if message.get("role") == "user" and not is_automation:
-            return _hash_text(str(message.get("content", "")))
-    return None
-
-
 def _hash_json(data: Any) -> str:
     return _hash_text(json.dumps(data, ensure_ascii=False, sort_keys=True, default=str))
 

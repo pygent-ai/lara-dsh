@@ -13,7 +13,6 @@ from .common import (
     _file_lock,
     _hash_json,
     _hash_text,
-    _latest_user_input_hash,
     _now,
     _write_json_atomic,
     _write_text_atomic,
@@ -285,7 +284,6 @@ class StaticPromptSessionCache:
                 text=text,
                 prompt_hash=prompt_hash,
                 modules=modules,
-                metadata=metadata,
                 created=True,
             )
 
@@ -314,7 +312,6 @@ class StaticPromptSessionCache:
             text=text,
             prompt_hash=prompt_hash,
             modules=list(metadata.get("modules") or []),
-            metadata=metadata,
             created=False,
         )
 
@@ -326,49 +323,14 @@ class PromptInjectionPolicy:
         request_context: PromptRequestContext,
         dynamic_modules: list[PromptModule],
     ) -> PromptInjectionDecision:
-        if request_context.request_stage != "before_model_request":
-            return PromptInjectionDecision(
-                inject_dynamic=False,
-                module_ids=[],
-                skipped_module_ids=[module.id for module in dynamic_modules],
-                reason="not_before_model_request",
-                request_stage=request_context.request_stage,
-            )
-
-        if not dynamic_modules:
-            return PromptInjectionDecision(
-                inject_dynamic=False, module_ids=[], reason="no_dynamic_modules"
-            )
-
-        if request_context.request_type == "summary":
-            module_ids = [
-                module.id for module in dynamic_modules if module.type == "memory"
-            ]
-            return PromptInjectionDecision(
-                inject_dynamic=bool(module_ids),
-                module_ids=module_ids,
-                skipped_module_ids=[
-                    module.id
-                    for module in dynamic_modules
-                    if module.id not in module_ids
-                ],
-                reason="summary_memory_modules"
-                if module_ids
-                else "summary_no_memory_modules",
-            )
-
-        if request_context.request_type in {"agent_turn", "case_run", "evaluation"}:
-            return PromptInjectionDecision(
-                inject_dynamic=True,
-                module_ids=[module.id for module in dynamic_modules],
-                reason="before_model_request",
-            )
-
+        # Production only reaches this policy at the before-model-request
+        # stage of an agent turn, and the request-system selection is always
+        # the full registry set, so the decision is fixed.
         return PromptInjectionDecision(
-            inject_dynamic=False,
-            module_ids=[],
-            skipped_module_ids=[module.id for module in dynamic_modules],
-            reason="unsupported_request_type",
+            inject_dynamic=True,
+            module_ids=[module.id for module in dynamic_modules],
+            reason="before_model_request",
+            request_stage=request_context.request_stage,
         )
 
 
@@ -471,19 +433,8 @@ class AgentContextManager:
             render_ctx
         )
         request_context = PromptRequestContext(
-            session_id=context.session_id,
-            case_run_id=context.case_run_id or None,
-            turn_id=context.turn_id,
-            request_id=request_id,
             request_stage="before_model_request",
             request_type=request_type,
-            history_message_count=len(context.history),
-            latest_user_input_hash=_latest_user_input_hash(context.history),
-            tool_names=tool_names,
-            file_state_hash=_hash_json(projection.get("file_status") or []),
-            projection_hash=_hash_json(projection),
-            runtime_state_hash=_hash_json({"tool_count": len(tool_names)}),
-            dynamic_input_hash=_hash_json(dynamic_inputs),
         )
         decision = self.injection_policy.decide(
             request_context=request_context,
@@ -510,16 +461,7 @@ class AgentContextManager:
         prompt = "\n\n".join(part for part in prompt_parts if part)
         prompt_hash = _hash_text(prompt)
         modules = [*static_prompt.modules, *request_system_rendered_modules]
-        model_prompt = ModelRequestPrompt(
-            text=prompt,
-            static_text=static_prompt.text,
-            request_system_text=request_system_text,
-            prompt_hash=prompt_hash,
-            static_prompt_hash=static_prompt.prompt_hash,
-            request_system_prompt_hash=request_system_prompt_hash,
-            modules=modules,
-            injection_decision=decision,
-        )
+        model_prompt = ModelRequestPrompt(text=prompt)
         if self.store is not None:
             self.store.append(
                 "prompt.rendered",
