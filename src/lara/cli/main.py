@@ -14,9 +14,8 @@ from typing import Sequence
 from lara.cli.credentials import register_credentials_parser
 from lara.cli.projects import register_projects_parser
 from lara.cli.scheduler import register_scheduler_parser
+from lara.cli.sessions import _manager as _manager
 from lara.cli.sessions import register_session_parser
-from lara.config import load_run_config
-from lara.sessions import SessionManager
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -69,13 +68,3 @@ def build_parser() -> argparse.ArgumentParser:
     register_projects_parser(sub)
     register_scheduler_parser(sub)
     return parser
-
-
-def _manager(args: argparse.Namespace) -> SessionManager:
-    return SessionManager(
-        load_run_config(
-            workspace_root=args.workspace_root,
-            agent_alias=args.agent_alias,
-            max_steps=args.max_steps,
-        )
-    )
