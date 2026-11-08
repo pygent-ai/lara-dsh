@@ -463,29 +463,9 @@ class SessionCollaborationStore:
 
     @staticmethod
     def _agent_message(row: sqlite3.Row) -> AgentMessage:
-        return AgentMessage(
-            message_id=str(row["message_id"]),
-            submission_id=str(row["submission_id"]),
-            source_session_id=None
-            if row["source_session_id"] is None
-            else str(row["source_session_id"]),
-            source_agent_alias=None
-            if row["source_agent_alias"] is None
-            else str(row["source_agent_alias"]),
-            target_session_id=str(row["target_session_id"]),
-            content=str(row["content"]),
-            state=AgentMessageState(str(row["state"])),
-            created_at=str(row["created_at"]),
-            updated_at=str(row["updated_at"]),
-            delivered_at=None
-            if row["delivered_at"] is None
-            else str(row["delivered_at"]),
-            delivered_execution_id=(
-                None
-                if row["delivered_execution_id"] is None
-                else str(row["delivered_execution_id"])
-            ),
-        )
+        value = dict(row)
+        value["status"] = value.pop("state")
+        return AgentMessage.from_dict(value)
 
 
 __all__ = [
