@@ -62,7 +62,7 @@ def canonical_payload(obj: Any) -> bytes:
     ).encode("utf-8")
 
 
-def sign(payload: Any, secret: [REDACTED]) -> str:
+def sign(payload: Any, secret: bytes) -> str:
     return hmac.new(secret, canonical_payload(payload), hashlib.sha256).hexdigest()
 
 

@@ -1,5 +1,14 @@
 """Two-layer SQLite store for scheduler submissions and daemon-owned state.
 
+The ``tasks`` table is the unified trigger bus. Each promoted row records an
+``origin`` (``user``/``timer``/``event``), a ``delivery`` mode, and a
+``priority``. ``origin`` classifies how an intent entered the bus: signed
+user/agent registrations are ``user`` (authorship stays in ``source``), while
+daemon timer and event triggers are ``timer`` / ``event``. The bus only
+carries timer triggers, event triggers, and agent-registered intents; a user's
+direct chat message is served by the foreground runtime and never enters this
+store.
+
 Writers only append signed rows to ``submissions``. The daemon verifies and
 promotes them into ``tasks``/``runs``; those tables are never updated by tool
 or CLI writers. SQLite is opened with WAL and a busy timeout so the daemon,
@@ -27,6 +36,13 @@ TASK_STATUSES = (
 )
 SUBMISSION_STATUSES = ("unverified", "verified", "quarantined", "rejected")
 RUN_STATUSES = ("success", "failed", "rejected")
+SUBMISSION_SOURCES = ("user", "agent", "timer", "event")
+INTERNAL_SOURCES = ("timer", "event")
+TASK_ORIGINS = ("user", "timer", "event")
+TASK_DELIVERIES = ("sync-reply", "speak", "fire-and-forget")
+TASK_PRIORITIES = ("high", "normal", "low")
+DEFAULT_DELIVERY = "fire-and-forget"
+DEFAULT_PRIORITY = "normal"
 
 
 def utc_now() -> datetime:
@@ -116,6 +132,9 @@ class Task:
     instructions: str = ""
     lease_id: str | None = None
     lease_expires_at: datetime | None = None
+    origin: str = "user"
+    delivery: str = DEFAULT_DELIVERY
+    priority: str = DEFAULT_PRIORITY
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -135,6 +154,9 @@ class Task:
             "lease_expires_at": (
                 None if self.lease_expires_at is None else iso(self.lease_expires_at)
             ),
+            "origin": self.origin,
+            "delivery": self.delivery,
+            "priority": self.priority,
         }
 
 
@@ -180,6 +202,18 @@ def _submission(row: sqlite3.Row) -> Submission:
 
 
 def _task(row: sqlite3.Row) -> Task:
+    keys = row.keys()
+    origin = str(row["origin"] or "user") if "origin" in keys else "user"
+    delivery = (
+        str(row["delivery"] or DEFAULT_DELIVERY)
+        if "delivery" in keys
+        else DEFAULT_DELIVERY
+    )
+    priority = (
+        str(row["priority"] or DEFAULT_PRIORITY)
+        if "priority" in keys
+        else DEFAULT_PRIORITY
+    )
     return Task(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -195,6 +229,9 @@ def _task(row: sqlite3.Row) -> Task:
         instructions=str(row["instructions"] or ""),
         lease_id=None if row["lease_id"] is None else str(row["lease_id"]),
         lease_expires_at=parse_iso(row["lease_expires_at"]),
+        origin=origin,
+        delivery=delivery,
+        priority=priority,
     )
 
 
@@ -264,7 +301,10 @@ class SchedulerStore:
                 updated_at TEXT NOT NULL,
                 instructions TEXT NOT NULL DEFAULT '',
                 lease_id TEXT,
-                lease_expires_at TEXT
+                lease_expires_at TEXT,
+                origin TEXT NOT NULL DEFAULT 'user',
+                delivery TEXT NOT NULL DEFAULT 'fire-and-forget',
+                priority TEXT NOT NULL DEFAULT 'normal'
             );
             CREATE INDEX IF NOT EXISTS tasks_due
                 ON tasks(status, next_run_at, lease_expires_at);
@@ -291,6 +331,16 @@ class SchedulerStore:
             connection.execute(
                 "ALTER TABLE tasks ADD COLUMN instructions TEXT NOT NULL DEFAULT ''"
             )
+        trigger_columns = {
+            "origin": "TEXT NOT NULL DEFAULT 'user'",
+            "delivery": "TEXT NOT NULL DEFAULT 'fire-and-forget'",
+            "priority": "TEXT NOT NULL DEFAULT 'normal'",
+        }
+        for name, definition in trigger_columns.items():
+            if name not in columns:
+                connection.execute(
+                    f"ALTER TABLE tasks ADD COLUMN {name} {definition}"
+                )
 
     def migrate(self) -> None:
         """Create or upgrade the schema. Only the daemon calls this."""
@@ -311,6 +361,8 @@ class SchedulerStore:
     ) -> Submission:
         if kind not in {"task", "event", "control"}:
             raise ValueError(f"unsupported scheduler submission kind: {kind!r}")
+        if source not in SUBMISSION_SOURCES:
+            raise ValueError(f"unsupported scheduler submission source: {source!r}")
         identifier = submission_id or f"sub-{uuid.uuid4().hex}"
         created = iso(created_at or utc_now())
         with self._connect() as connection:
@@ -326,6 +378,35 @@ class SchedulerStore:
             ).fetchone()
         assert row is not None
         return _submission(row)
+
+    def submit_internal(
+        self,
+        *,
+        kind: str,
+        origin: str,
+        payload: Mapping[str, Any],
+        submission_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> Submission:
+        """Append an unsigned submission generated inside the daemon.
+
+        Timer and event triggers are daemon-owned, so they carry no HMAC
+        signature; promotion marks their task ``source`` as ``self`` while
+        ``origin`` keeps the trigger channel.
+        """
+
+        if origin not in ("timer", "event"):
+            raise ValueError(
+                f"internal submission origin must be timer or event: {origin!r}"
+            )
+        return self.submit(
+            kind=kind,
+            source=origin,
+            payload=payload,
+            signature="",
+            submission_id=submission_id,
+            created_at=created_at,
+        )
 
     def submission(self, submission_id: str) -> Submission | None:
         with self._connect() as connection:
@@ -387,19 +468,30 @@ class SchedulerStore:
         status: str,
         next_run_at: datetime | None,
         instructions: str = "",
+        origin: str = "user",
+        delivery: str = DEFAULT_DELIVERY,
+        priority: str = DEFAULT_PRIORITY,
         created_at: datetime | None = None,
         task_id: str | None = None,
     ) -> Task:
         if status not in TASK_STATUSES:
             raise ValueError(f"unsupported scheduler task status: {status!r}")
+        if origin not in TASK_ORIGINS:
+            raise ValueError(f"unsupported scheduler task origin: {origin!r}")
+        if delivery not in TASK_DELIVERIES:
+            raise ValueError(f"unsupported scheduler task delivery: {delivery!r}")
+        if priority not in TASK_PRIORITIES:
+            raise ValueError(f"unsupported scheduler task priority: {priority!r}")
         now = created_at or utc_now()
         identifier = task_id or f"task-{uuid.uuid4().hex}"
         with self._connect() as connection:
+            self._ensure_schema(connection)
             connection.execute(
                 "INSERT INTO tasks "
                 "(id, name, schedule, prompt, prompt_hash, session, source, status, "
-                "next_run_at, created_at, updated_at, instructions) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "next_run_at, created_at, updated_at, instructions, origin, delivery, "
+                "priority) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     identifier,
                     name,
@@ -413,6 +505,9 @@ class SchedulerStore:
                     iso(now),
                     iso(now),
                     instructions,
+                    origin,
+                    delivery,
+                    priority,
                 ),
             )
             row = connection.execute(
@@ -503,7 +598,9 @@ class SchedulerStore:
             rows = connection.execute(
                 "SELECT * FROM tasks WHERE status='approved' AND next_run_at IS NOT NULL "
                 "AND next_run_at <= ? AND (lease_expires_at IS NULL OR lease_expires_at <= ?) "
-                "ORDER BY next_run_at, id LIMIT ?",
+                "ORDER BY CASE priority "
+                "WHEN 'high' THEN 0 WHEN 'normal' THEN 1 WHEN 'low' THEN 2 ELSE 1 END, "
+                "next_run_at, id LIMIT ?",
                 (now_text, now_text, limit),
             ).fetchall()
             claimed: list[Task] = []
@@ -619,8 +716,15 @@ class SchedulerStore:
 
 
 __all__ = [
+    "DEFAULT_DELIVERY",
+    "DEFAULT_PRIORITY",
+    "INTERNAL_SOURCES",
     "RUN_STATUSES",
+    "SUBMISSION_SOURCES",
     "SUBMISSION_STATUSES",
+    "TASK_DELIVERIES",
+    "TASK_ORIGINS",
+    "TASK_PRIORITIES",
     "TASK_STATUSES",
     "Run",
     "SchedulerStore",

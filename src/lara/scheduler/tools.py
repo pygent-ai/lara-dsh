@@ -65,6 +65,14 @@ SCHEDULE_TASK_TOOL_SPEC = _spec(
                 "type": "string",
                 "description": "Optional scheduler session name override.",
             },
+            "priority": {
+                "type": "string",
+                "enum": ["high", "normal", "low"],
+                "description": (
+                    "Bus priority; agent requests for high are normalized to normal. "
+                    "Delivery is always fire-and-forget for agent submissions."
+                ),
+            },
         },
         "required": ["name", "schedule", "prompt"],
         "additionalProperties": False,
@@ -128,6 +136,7 @@ class SchedulerToolExecutor:
                 "session": str(
                     arguments.get("session") or self.config.scheduler.session
                 ),
+                "priority": str(arguments.get("priority") or "normal"),
             }
             if not payload["name"].strip():
                 raise ValueError("schedule_task.name must be non-empty")

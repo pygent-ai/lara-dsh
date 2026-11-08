@@ -4,6 +4,14 @@ The daemon is the only process allowed to write ``tasks`` and ``runs``. It
 polls every ``scheduler.poll_seconds``, claims due tasks with an expiring
 lease, and invokes the Lara CLI in a child process with the inherited
 environment (no scheduler-specific variables are injected).
+
+Promoted ``tasks`` are the unified trigger bus. The bus carries timer
+triggers, event triggers, and agent-registered intents; a user's direct chat
+message never enters it and keeps using the unchanged foreground path. User
+and agent submissions are HMAC-verified, while ``source=timer``/``source=event``
+submissions are generated inside the daemon and are accepted unsigned. Agent
+intents always deliver fire-and-forget, and an agent request for ``high``
+priority is normalized to ``normal`` with an audit note on the submission.
 """
 
 from __future__ import annotations
@@ -27,7 +35,12 @@ from .keys import load_secret, verify
 from .message import build_task_message
 from .schedule import advance, next_run, parse_schedule
 from .store import (
+    DEFAULT_DELIVERY,
+    DEFAULT_PRIORITY,
+    INTERNAL_SOURCES,
+    TASK_ORIGINS,
     SchedulerStore,
+    Submission,
     Task,
     iso,
     prompt_hash,
@@ -172,17 +185,20 @@ class SchedulerDaemon:
         events = []
         processed = 0
         for submission in submissions:
-            try:
-                valid = verify(
-                    submission_payload(
-                        submission.kind, submission.source, submission.payload
-                    ),
-                    submission.source,
-                    submission.signature,
-                    self.user_lara_root,
-                )
-            except (OSError, ValueError):
-                valid = False
+            if submission.source in INTERNAL_SOURCES:
+                valid = True
+            else:
+                try:
+                    valid = verify(
+                        submission_payload(
+                            submission.kind, submission.source, submission.payload
+                        ),
+                        submission.source,
+                        submission.signature,
+                        self.user_lara_root,
+                    )
+                except (OSError, ValueError):
+                    valid = False
             if not valid:
                 self._quarantine(
                     submission.id, "missing or invalid signature"
@@ -190,9 +206,9 @@ class SchedulerDaemon:
                 continue
             try:
                 if submission.kind == "task":
-                    task = self._promote_task(submission.source, submission.payload, now)
+                    task, note = self._promote_task(submission, now)
                     self.store.mark_submission(
-                        submission.id, "verified", task_id=task.id
+                        submission.id, "verified", task_id=task.id, error=note
                     )
                 elif submission.kind == "control":
                     task_id = self._apply_control(submission.payload, now)
@@ -227,7 +243,11 @@ class SchedulerDaemon:
         self.store.mark_submission(submission_id, "quarantined", error=reason)
         self._alert(f"quarantined submission {submission_id}: {reason}")
 
-    def _promote_task(self, source: str, payload: dict[str, Any], now: datetime) -> Task:
+    def _promote_task(
+        self, submission: Submission, now: datetime
+    ) -> tuple[Task, str | None]:
+        source = submission.source
+        payload = submission.payload
         name = str(payload.get("name") or "").strip()
         schedule_text = str(payload.get("schedule") or "").strip()
         prompt = str(payload.get("prompt") or "")
@@ -246,17 +266,30 @@ class SchedulerDaemon:
             if source == "user" or self.config.scheduler.agent_create_enabled
             else "needs_review"
         )
-        return self.store.create_task(
+        priority = str(payload.get("priority") or DEFAULT_PRIORITY).strip().lower()
+        delivery = str(payload.get("delivery") or DEFAULT_DELIVERY).strip().lower()
+        note: str | None = None
+        if source == "agent":
+            delivery = DEFAULT_DELIVERY
+            if priority == "high":
+                priority = DEFAULT_PRIORITY
+                note = "agent-requested-high normalized"
+        origin = source if source in TASK_ORIGINS else "user"
+        task = self.store.create_task(
             name=name,
             schedule=schedule_text,
             prompt=prompt,
             session=str(payload.get("session") or self.session_id),
-            source=source,
+            source="self" if source in INTERNAL_SOURCES else source,
             status=status,
             next_run_at=next_at,
             instructions=str(payload.get("instructions") or ""),
+            origin=origin,
+            delivery=delivery,
+            priority=priority,
             created_at=now,
         )
+        return task, note
 
     def _apply_control(self, payload: dict[str, Any], now: datetime) -> str | None:
         action = str(payload.get("action") or "").strip()
