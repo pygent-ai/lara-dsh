@@ -123,18 +123,12 @@ class Prompt(str):
         return Prompt(_escape_text(str(self)))
 
     @staticmethod
-    def self_closing(
-        tag: str,
-        *,
-        space_before_slash: bool = True,
-        **attrs: Any,
-    ) -> "Prompt":
-        """Render a self-closing tag, preserving the repo's slash spacing."""
+    def self_closing(tag: str, **attrs: Any) -> "Prompt":
+        """Render a self-closing tag with the repo's slash spacing."""
 
         _validate_tag(tag)
         rendered_attrs = _render_attrs(attrs)
-        gap = " " if space_before_slash else ""
-        return Prompt(f"<{tag}{rendered_attrs}{gap}/>")
+        return Prompt(f"<{tag}{rendered_attrs} />")
 
     def __add__(self, other: object) -> "Prompt":
         if isinstance(other, str):

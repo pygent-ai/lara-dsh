@@ -48,10 +48,7 @@ def test_escape_returns_prompt_without_quote_escaping() -> None:
 def test_self_closing_matches_repo_spacing() -> None:
     assert Prompt.self_closing("session", id="s-1") == '<session id="s-1" />'
     assert Prompt.self_closing("session") == "<session />"
-    assert (
-        Prompt.self_closing("attachment", space_before_slash=False, name="a")
-        == '<attachment name="a"/>'
-    )
+    assert Prompt.self_closing("session", id="") == '<session id="" />'
 
 
 def test_add_operators_return_prompt() -> None:
