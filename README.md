@@ -44,15 +44,17 @@ lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent �
 
 `lara_sdk` 是 lara 的**对外使用契约与入口**：`lara` 是完整实现（agent 构造、
 runner、运行时），`lara_sdk` 只描述调用方如何**使用** agent——标准协议与数据
-契约在 `interfaces.py`，真实运行时入口在 `lara_rt.py`。
+契约在 `interfaces.py`，真实运行时入口在 `lara_rt.py`，完整 Agent 门面在
+`agent.py`。
 
 | 模块 | 说明 |
 | --- | --- |
 | `interfaces.py` | 框架无关标准协议：`Agent` / `AgentInput` / `AgentResult` / `ToolProfile` / `AgentLimits` |
 | `lara_rt.py` | **lara 真实运行时适配**：主 harness + 上下文 + 永续会话 + 实时对话 → 标准接口 |
+| `agent.py` | **完整 Agent 门面**：`Lara` / `LaraConfig` / `SchedulerSettings`，一次装配运行时会话、永续会话、实时对话与内嵌调度器 |
 
 agent 构造留在 `lara` 实现层（`lara.agents.runner.AgentRunner`、
-`lara.agents.ChildAgent` 等）；`lara_sdk` 不再提供 `PygentEngine` /
+`lara.agents.ChildAgent` 等）；`lara_sdk` 不提供 `PygentEngine` /
 `SimpleAgent` 之类的构造或试点实现。
 
 ### 三大能力的 lara 原生机制
@@ -72,6 +74,32 @@ async with LaraSessionAgent(eternal_memory=True) as agent:
 # 实时对话会话（speak 是唯一可见输出通道）
 async with LaraSessionAgent(mode=REALTIME_SESSION_MODE) as rt: ...
 ```
+
+完整门面把运行时会话、永续开关、实时 speak 与内嵌调度器装进一个生命周期：
+
+```python
+from lara_sdk import Lara, LaraConfig, SchedulerSettings
+
+lara = Lara(
+    LaraConfig(
+        workspace_root="C:/Projects/my-app",
+        model_group="default",          # 哨兵：沿用配置里的默认模型组
+        eternal_memory=False,
+        realtime=True,                  # lara-says 会话，自动装配 speak 工具
+        scheduler=SchedulerSettings(enabled=True, poll_seconds=10),
+    )
+)
+await lara.start()
+result = await lara.run("你好")
+task = await lara.schedule_task("daily-check", "daily 09:00", "检查构建")
+assert task.status == "needs_review"    # agent 任务默认需要用户审批
+await lara.tasks().approve(task.id)
+await lara.emit_event("deploy", {"version": "1.2.3"})
+await lara.stop()
+```
+
+内嵌调度器与独立 `lara scheduler` 守护进程共享同一 SQLite store；两者通过
+到期租约互斥，因此可以并存运行。
 
 也可以直接用抽取版 CLI（会话聊天驱动）：
 
@@ -126,6 +154,12 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
   按"只负责使用、不负责构造"删除 `engine.py`（`PygentEngine` 与 `AgentRunner`
   完全镜像）与 `simple_agent.py`（试点实现），构造职责归 `lara`，SDK 仅保留
   `interfaces` 契约与 `lara_rt` 运行时适配器。
+- 功能演进（完整 Agent 门面）：新增 `src/lara_sdk/agent.py`。`Lara` 复用
+  `LaraSessionAgent` 管理运行时会话，按 `LaraConfig` 装配永续会话与
+  `lara-says` 实时 speak 工具，并以内嵌 asyncio 循环驱动与独立 daemon 共享
+  SQLite store 的调度器（到期租约互斥）。`schedule_task` 以 agent 签名提交，
+  默认落为 `needs_review`，经 `tasks().approve/pause/resume/reject/delete`
+  审批控制；`emit_event` 触发 `on <event>` 任务。
 - 后续同步策略：以原仓为上游，按模块对照搬运变更；副本内避免无记录的就地
   魔改，有意的功能演进需在本节记录（见上条），以保持"梳理副本 + 对外使用层"
   的分层。

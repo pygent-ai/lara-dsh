@@ -15,6 +15,7 @@
 | E4 定时任务全链 | `test_e4_scheduler_daemon.py` | `scheduler init-keys` → `scheduler add`（user 签名）→ `scheduler run --once` → 专属会话轮次 → `runs` 落盘 |
 | E5 触发总线门禁 | `test_e5_trigger_bus_gate.py` | agent 来源提交进入 `needs_review`；用户 `approve` 后才可触发；agent 请求 `high` 归一为 `normal` 并留下审计说明 |
 | E6 事件触发 | `test_e6_event_trigger.py` | agent 签名 `emit_event` → daemon 消费事件 → 仅匹配的 `on <event>` 任务触发 |
+| E7 完整门面 | `test_e7_lara_facade.py` | 从零 `LaraConfig` → `Lara.start` → `run` 对话 → `schedule_task` → 内嵌调度循环执行 → `stop`；另含可选真实模型冒烟 |
 
 ### 实时交互矩阵（R1-R13）
 
@@ -127,6 +128,15 @@ E3 还顺带覆盖了 Windows 路径安全性：supersede 轮次 id 形如
 
 默认实现全部使用脚本化模型：不访问网络、不需要凭据、结果确定。脚本化
 invoker 只替换模型边界，CLI、会话、工具管线、pygent 执行、调度器、SQLite
-持久化都是真实实现。若后续需要增加“真实模型冒烟”场景，可复用
-`_e2e_support.make_config` 的 workspace 隔离，并在有凭据时注入真实 invoker；
-不要为了真实模型调用破坏本目录现有场景的确定性与零凭据依赖。
+持久化都是真实实现。
+
+E7 另有一个显式开启的真实模型冒烟场景（不进入默认断言集）：
+
+```bash
+LARA_E2E_REAL_MODEL=1 uv run pytest tests/e2e/test_e7_lara_facade.py -q
+```
+
+它使用 `~/.lara` 的真实配置与凭据，通过门面发起一次真实对话调用；未设置该
+环境变量时自动跳过。若后续需要增加更多“真实模型冒烟”场景，可复用
+`_e2e_support.make_config` 的 workspace 隔离；不要为了真实模型调用破坏本目录
+现有场景的确定性与零凭据依赖。
