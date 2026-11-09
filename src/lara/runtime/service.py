@@ -97,6 +97,7 @@ from .agent.core import (
     model_retry_policy,
 )
 from .realtime.fork_agent import ForkReplyModule, outcome_from_result
+from .realtime.fork_reasoning import ForkModelProfile, fork_model_profiles
 from .realtime.fork_reply import build_fork_context
 from .realtime.fork_state import SessionForkState
 from .realtime.envelope import format_user_asked
@@ -842,7 +843,13 @@ class LaraRuntimeService:
                 f"{child_config.agent_alias!r}"
             )
 
-    async def bind(self, module: Any, agent: LaraAgent) -> Any:
+    async def bind(
+        self,
+        module: Any,
+        agent: LaraAgent,
+        *,
+        fork_profiles: Mapping[str, ForkModelProfile] | None = None,
+    ) -> Any:
         await self.initialize()
         bound = self.binding.bind(module)
         if agent.llm is not None and (
@@ -865,9 +872,22 @@ class LaraRuntimeService:
             ).hexdigest()
             self.model_resolver.register(revision, agent.llm)
             for index, entry in enumerate(group.models):
+                fork_profile = (
+                    None if fork_profiles is None else fork_profiles.get(entry.key)
+                )
                 await handle.ensure_profile(
-                    profile=preferred_profile_name(entry.key),
-                    models=preferred_models(native, agent.model_group_name, entry.key),
+                    profile=(
+                        fork_profile.profile
+                        if fork_profile is not None
+                        else preferred_profile_name(entry.key)
+                    ),
+                    models=(
+                        fork_profile.models
+                        if fork_profile is not None
+                        else preferred_models(
+                            native, agent.model_group_name, entry.key
+                        )
+                    ),
                     invoker=agent.llm,
                     resource_ref=ModelResourceRef(
                         resolver_id=self.model_resolver.resolver_id,
@@ -878,7 +898,9 @@ class LaraRuntimeService:
                             Path(self.config.workspace_root).resolve()
                         ),
                     ),
-                    make_default=index == 0,
+                    # Fork profiles are selected per execution; publishing one
+                    # as the group default would change the main turn's fallback.
+                    make_default=fork_profile is None and index == 0,
                     deadline=time.monotonic() + 60,
                 )
         return bound
@@ -923,13 +945,21 @@ class LaraRuntimeService:
         return handle
 
     def _model_calls_option(
-        self, group_name: str, selected_model_key: str | None
+        self,
+        group_name: str,
+        selected_model_key: str | None,
+        *,
+        profile_name: str | None = None,
     ) -> dict[str, dict[str, str]]:
         """The ExecutionOptions ``model_calls`` entry for one group/profile."""
 
         return {
             f"lara:{group_name}": {
-                "profile": preferred_profile_name(selected_model_key)
+                "profile": (
+                    preferred_profile_name(selected_model_key)
+                    if profile_name is None
+                    else profile_name
+                )
             }
         }
 
@@ -1155,10 +1185,36 @@ class LaraRuntimeService:
             selected_model_key=session.selected_model_key,
             tools=main_agent.tool_definitions,
         )
-        bound = await self.bind(fork_agent, fork_agent)
-        group_name = session.model_group_name or config.resolved_agent.default_model_group
+        group_name = (
+            session.model_group_name or config.resolved_agent.default_model_group
+        )
+        fork_profiles = (
+            fork_model_profiles(
+                config.model_config,
+                group_name,
+                config.realtime_interaction.fork_reasoning_effort,
+            )
+            if config.model_config is not None
+            else {}
+        )
+        bound = await self.bind(
+            fork_agent, fork_agent, fork_profiles=fork_profiles
+        )
+        selected_fork_profile = (
+            fork_profiles.get(session.selected_model_key)
+            if session.selected_model_key is not None
+            else None
+        )
         model_calls = (
-            self._model_calls_option(group_name, session.selected_model_key)
+            self._model_calls_option(
+                group_name,
+                session.selected_model_key,
+                profile_name=(
+                    None
+                    if selected_fork_profile is None
+                    else selected_fork_profile.profile
+                ),
+            )
             if main_agent.llm is not None
             else {}
         )
