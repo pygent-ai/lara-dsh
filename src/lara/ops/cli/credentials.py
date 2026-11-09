@@ -4,7 +4,7 @@ import argparse
 import os
 from typing import Any
 
-from lara.cli._base import config_from_args
+from lara.ops.cli._base import config_from_args
 from lara.core.io import non_empty_string as _non_empty
 from lara.credentials import (
     DEFAULT_API_KEY_ENV,

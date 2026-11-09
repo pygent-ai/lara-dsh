@@ -27,7 +27,7 @@ credentials = [
 dynamic-memory-cli = { git = "https://github.com/pygent-ai/memory-cli", branch = "codex/dynamic-memory-cli" }
 
 [project.scripts]
-lara = "lara.cli:main"
+lara = "lara.ops.cli.main:main"
 
 [build-system]
 requires = ["hatchling"]

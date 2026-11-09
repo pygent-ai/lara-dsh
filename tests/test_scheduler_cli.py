@@ -6,8 +6,8 @@ import argparse
 from pathlib import Path
 from types import SimpleNamespace
 
-import lara.cli.scheduler as scheduler_cli
-from lara.cli.main import build_parser
+import lara.ops.cli.scheduler as scheduler_cli
+from lara.ops.cli.main import build_parser
 from lara.scheduler.keys import init_keys
 from lara.scheduler.store import SchedulerStore, scheduler_db_path
 from lara.schema import RunConfig

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from lara.cli._base import config_from_args
+from lara.ops.cli._base import config_from_args
 from lara.config import load_run_config
 from lara.scheduler.daemon import SchedulerDaemon
 from lara.scheduler.keys import init_keys, load_secret, sign

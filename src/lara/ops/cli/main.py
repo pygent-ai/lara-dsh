@@ -11,11 +11,11 @@ import json
 import sys
 from typing import Sequence
 
-from lara.cli.credentials import register_credentials_parser
-from lara.cli.projects import register_projects_parser
-from lara.cli.scheduler import register_scheduler_parser
-from lara.cli.sessions import _manager as _manager
-from lara.cli.sessions import register_session_parser
+from lara.ops.cli.credentials import register_credentials_parser
+from lara.ops.cli.projects import register_projects_parser
+from lara.ops.cli.scheduler import register_scheduler_parser
+from lara.ops.cli.sessions import _manager as _manager
+from lara.ops.cli.sessions import register_session_parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
