@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import importlib.util
 import json
 import os
 import sys
@@ -13,12 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from lara.agents.context import system_reminder
 from lara.core.io import append_jsonl, read_json, utc_now, write_json
 from lara.core.prompt import Prompt
 from lara.core.redaction import redact_secrets
 from lara.schema import AgentSession, EternalConversationConfig, RunConfig
-from lara.skills.provision import ensure_dynamic_memory_skill
+from lara.clis.provision import ensure_dynamic_memory_cli
 
 MAX_MEMORY_JOB_ATTEMPTS = 3
 
@@ -258,12 +256,12 @@ class EternalConversationHarness:
         config: EternalConversationConfig,
         *,
         run_memory_job: MemoryJobRunner,
-        user_skills_root: Path | None = None,
+        user_clis_root: Path | None = None,
     ) -> None:
         self.config = config
         self.run_memory_job = run_memory_job
-        self._user_skills_root = (
-            (user_skills_root or Path.home() / ".lara" / "skills")
+        self._user_clis_root = (
+            (user_clis_root or Path.home() / ".lara" / "clis")
             .expanduser()
             .resolve()
         )
@@ -277,24 +275,19 @@ class EternalConversationHarness:
             path = Path(self.config.dynamic_memory_cli_path)
             if path.is_file():
                 return path
-        # The declared dependency (single module, canonical source = the
-        # mounted skill file) resolves ahead of skill-directory guesses.
-        spec = importlib.util.find_spec("dynamic_memory_cli")
-        if spec is not None and spec.origin and Path(spec.origin).is_file():
-            return Path(spec.origin)
         try:
-            ensure_dynamic_memory_skill(self._user_skills_root)
+            ensure_dynamic_memory_cli(self._user_clis_root)
         except OSError as exc:
             warnings.warn(
-                f"dynamic-memory-cli skill provisioning failed: {exc}",
+                f"dynamic-memory-cli provisioning failed: {exc}",
                 RuntimeWarning,
                 stacklevel=2,
             )
         for root in (
-            session_dir.parents[1] / "skills",
-            self._user_skills_root,
+            session_dir.parents[1] / "clis",
+            self._user_clis_root,
         ):
-            path = root / "dynamic-memory-cli" / "scripts" / "dynamic_memory_cli.py"
+            path = root / "dynamic-memory-cli" / "dynamic_memory_cli.py"
             if path.is_file():
                 return path
         env = os.environ.get("LARA_DYNAMIC_MEMORY_CLI")
@@ -725,7 +718,7 @@ def _extractor_directive(
             "The prior memory job published nothing. Correct this exact failure before "
             f"submitting: {previous_failure}"
         )
-    return system_reminder("\n".join(lines))
+    return str(Prompt("\n".join(lines)).wrap("memory-extract-instruction"))
 
 
 def _builder_directive(*, context: MemoryJobContext, batch: dict[str, Any]) -> str:
@@ -742,7 +735,7 @@ def _builder_directive(*, context: MemoryJobContext, batch: dict[str, Any]) -> s
         "",
         BUILDER_GUIDANCE,
     ]
-    return system_reminder("\n".join(lines))
+    return str(Prompt("\n".join(lines)).wrap("memory-build-instruction"))
 
 
 def _memory_query(messages: list[dict[str, Any]]) -> str:

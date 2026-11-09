@@ -21,10 +21,10 @@ SOURCE_ROOTS = (
     Path(__file__).resolve().parents[1] / "src" / "lara",
     Path(__file__).resolve().parents[1] / "src" / "lara_sdk",
 )
-# The bundled dynamic-memory-cli skill is vendored third-party data; its
+# The bundled dynamic-memory-cli tool is vendored third-party data; its
 # output tags are its own wire format, not the prompt envelope layer.
 _VENDORED_DATA_ROOTS = (
-    Path(__file__).resolve().parents[1] / "src" / "lara" / "skills" / "dynamic-memory-cli",
+    Path(__file__).resolve().parents[1] / "src" / "lara" / "clis" / "dynamic-memory-cli",
 )
 _TAG_START = re.compile(r"(?m)^\s*(</?)([a-z][a-z-]*)")
 _PROMPT_METHODS = {"wrap", "wrap_escaped", "self_closing"}

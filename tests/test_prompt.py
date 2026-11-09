@@ -82,6 +82,8 @@ def test_known_envelopes_register_all_classes() -> None:
         "file-read",
         "file",
         "memory-access-instruction",
+        "memory-extract-instruction",
+        "memory-build-instruction",
         "attachments",
         "reply-instruction",
         "task-context",

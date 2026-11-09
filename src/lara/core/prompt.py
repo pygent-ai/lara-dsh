@@ -50,6 +50,12 @@ KNOWN_ENVELOPES: dict[str, EnvelopeInfo] = {
     "memory-access-instruction": EnvelopeInfo(
         False, "Eternal conversation memory access instructions."
     ),
+    "memory-extract-instruction": EnvelopeInfo(
+        False, "Extractor memory job directive inside the fork's user message."
+    ),
+    "memory-build-instruction": EnvelopeInfo(
+        False, "Builder memory job directive inside the child's user message."
+    ),
     "attachments": EnvelopeInfo(False, "Attachment metadata inside user-context."),
     "reply-instruction": EnvelopeInfo(
         False, "Realtime turn-start speak-first directive inside user-context."

@@ -433,6 +433,7 @@ class LaraRuntimeService:
         self.memory_harness = EternalConversationHarness(
             config.eternal_conversation,
             run_memory_job=self._run_memory_job,
+            user_clis_root=Path(config.user_lara_root) / "clis",
         )
         template = (
             LaraAgent(
