@@ -10,6 +10,50 @@ Lara 的完整实现——主 agent harness、会话上下文、永续会话、�
 lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent 运行时的完整代码
 梳理副本，`src/lara_sdk` 是其上的对外使用层（契约与入口）。统一 src 布局。
 
+## 架构与分层
+
+包内按**未来拆仓边界**组织为三层（自下而上的职责划分）：
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 接入运维 ops（人机入口）                                      │
+│   lara/ops/cli —— lara session / credentials / projects /     │
+│                   scheduler 子命令、JSON 渲染与 CLI 错误边界  │
+└────────────────────────────┬─────────────────────────────────┘
+                             │  ops → 一切
+┌────────────────────────────▼─────────────────────────────────┐
+│ 运行托管（会话生命周期与执行编排）                            │
+│   orchestration · sessions · dispatch · scheduler             │
+└────────────────────────────┬─────────────────────────────────┘
+                             │
+┌────────────────────────────▼─────────────────────────────────┐
+│ Agent 核心                                                    │
+│   agents（ReAct 脚手架、fork/child、统一工具面）              │
+│   runtime（主 harness、永续会话、实时对话、模型层）           │
+│   基础契约与设施：schema · config · credentials ·             │
+│                   tracing · core                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+依赖方向（架构不变量）：
+
+- **`lara.ops.cli` → 一切**：接入运维层可以依赖 agent 核心、运行托管与基础件。
+- **Agent 核心 → 绝不 import `lara.ops`**：`lara.agents` 与 `lara.runtime`（含
+  `runtime/agent`）不得知道 CLI 或运维入口的存在；运行托管同样不反向依赖
+  `lara.ops`。
+
+`credentials` 虽有 CLI 子命令，但包本体是 agent 构造链的输入库（`config` 与
+`runtime/model_configuration` 依赖其凭据查找），因此留在 agent 核心侧，详见
+`src/lara/credentials/README.md`。
+
+### 未来拆仓映射
+
+| 目标仓 | 目录 |
+| --- | --- |
+| **lara 主体仓** | `agents`、`runtime`、`orchestration`、`sessions`、`dispatch`、`scheduler`、`schema`、`config`、`credentials`、`tracing`、`core` |
+| **lara_sdk 仓** | `src/lara_sdk`（对外 SDK：契约与使用入口） |
+| **ops 仓** | `src/lara/ops`（CLI 等人机接入/运维适配） |
+
 ## 抽取范围
 
 **保留（lara agent 实现的完整链路）：**
@@ -25,11 +69,13 @@ lara 仓（无路径依赖、无 import 引用），`src/lara` 是 lara agent �
 | `lara/config` | `load_run_config`：用户配置合并、模型配置解析 |
 | `lara/credentials` | 凭据存取（keyring 可选组） |
 | `lara/dispatch`、`lara/tracing`、`lara/core` | 分发服务、事件存储、IO/路径/脱敏等基础件 |
+| `lara/ops` | 接入运维层：`ops/cli` 的 session / credentials / projects / scheduler 命令 |
 
 **裁剪（与 agent 实现无关）：** `evaluation`、`repair`、`automations`、
 `workflows` 四个子系统、`lara_api` FastAPI 服务层、桌面端（apps/）、评测
-脚手架（BenchRunner/swe-smoke）。`lara/__init__.py` 与 `cli/main.py` 已相应
-瘦身（CLI 保留 session / credentials / projects / scheduler 子命令）。
+脚手架（BenchRunner/swe-smoke）。`lara/__init__.py` 与
+`lara/ops/cli/main.py` 已相应瘦身（CLI 保留 session / credentials / projects /
+scheduler 子命令）。
 
 **已知的上游残留（未就地修改，以保持副本可对照）：** `src/lara` 的 prompt
 与部分 docstring 仍提到上游的 `lara automation` 子命令、`lara_api` 适配层和
@@ -126,7 +172,8 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
 ## 溯源
 
 - 抽取自 `C:\Projects\lara`（lara 0.3.3，pygent-ai 0.3.33）。
-- 抽取时修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与 `cli/main.py`、
+- 抽取时修改仅限：删除被裁剪子系统、瘦身 `lara/__init__.py` 与
+  `ops/cli/main.py`、
   新增 `src/lara_sdk/`、tests 与示例；`src/lara` 其余代码为抽取时的
   原样副本。
 - 功能演进（有意偏离上游忠实副本）：新增
