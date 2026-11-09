@@ -145,6 +145,12 @@ set PYTHONPATH=src && C:\Projects\lara\.venv\Scripts\python.exe -m examples.run_
 - 功能演进（realtime supersede）：实时 fork-reply 采用每会话
   `SessionForkState`，in-flight 连发会取消旧 handle 并以编号合并消息重发；
   generation 守卫阻止迟到结果写入孤儿信封。
+- 功能演进（fork 低思考强度）：`realtime_interaction.fork_reasoning_effort`
+  默认 `low`；fork 路径为可控制 reasoning 的 OpenAI Chat Completions 模型
+  发布 `fork:<model-key>` 专属 profile，并在 `provider_options` 注入
+  `reasoning_effort`，主轮 profile 不受影响。Responses/Anthropic 协议暂不
+  注入（分别需要嵌套 `reasoning` 与 `thinking` 映射），决策记录在
+  `ForkModelProfile.decisions` 供审计。
 - 维护（死代码清理 + nudge 修复）：删除 11 项确认无用的 helper/re-export；
   realtime nudge interval 改为读取 `nudge_interval` 配置；turn 切换时重置
   silent-round 计数。验证：137 passed、pyright 0；CLI 两轮 E2E 均

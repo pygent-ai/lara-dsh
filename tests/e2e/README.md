@@ -17,7 +17,7 @@
 | E6 事件触发 | `test_e6_event_trigger.py` | agent 签名 `emit_event` → daemon 消费事件 → 仅匹配的 `on <event>` 任务触发 |
 | E7 完整门面 | `test_e7_lara_facade.py` | 从零 `LaraConfig` → `Lara.start` → `run` 对话 → `schedule_task` → 内嵌调度循环执行 → `stop`；另含可选真实模型冒烟 |
 
-### 实时交互矩阵（R1-R13）
+### 实时交互矩阵（R1-R14）
 
 `test_realtime_matrix.py` 复用 E3 的进程内骨架：真实 `LaraRuntimeService` +
 真实 managed turn，只把模型替换为可门控的脚本化 invoker。R2/R3 直接由 E3
@@ -38,6 +38,7 @@
 | R11 非实时会话 | `test_r11_non_realtime_session_has_no_speak_or_reminders` | 普通 `chat` 会话无 `speak` 工具，三类实时提醒均不注入，也不排 finalizer |
 | R12 fork 超时 | `test_r12_fork_deadline_cancels_fork_without_envelope` | `fork_deadline_seconds` 到期取消 fork 模型调用，不产生信封，后续插话可重新开始 |
 | R13 插话到达时主轮即将结束 | `test_r13_pending_envelope_survives_into_next_turn_context` | 无后续工具边界时信封保持待领，下一轮 `start_turn` 通过 `claim_agent_messages` 拾取并进入开场上下文 |
+| R14 fork 低思考强度 | `test_r14_fork_reply_uses_low_reasoning_effort_profile` | 可控制 reasoning 的模型上，fork 走专属 profile 并携带 `provider_options.reasoning_effort="low"`；主轮 profile 不变 |
 
 共享门控/记录工具在 `_realtime_support.py`：`ScriptedRealtimeInvoker` 记录每次
 主轮与 fork 模型调用，测试用 `asyncio.Event` 精确控制“主轮运行中”“fork 已

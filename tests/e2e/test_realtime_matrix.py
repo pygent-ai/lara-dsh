@@ -1,4 +1,4 @@
-"""Realtime interaction matrix (R1-R13).
+"""Realtime interaction matrix (R1-R14).
 
 Every scenario starts from the real ``LaraRuntimeService`` and drives a real
 managed turn through ``LocalExecutionHost``. Only the model boundary is
@@ -20,7 +20,7 @@ import pytest
 from pygent import AIMessage, ToolCall
 from pygent.runtime import ExecutionDeadlineExceeded
 
-from _e2e_support import content_text
+from _e2e_support import content_text, reasoning_controllable_model_config_mapping
 from _realtime_support import (
     RealtimeScenario,
     assert_no_extra_main_call,
@@ -792,3 +792,60 @@ async def test_r13_pending_envelope_survives_into_next_turn_context(
     assert count_occurrences(
         scenario.invoker.main_calls[2].text, "fork reply"
     ) == 1
+
+
+@pytest.mark.e2e
+async def test_r14_fork_reply_uses_low_reasoning_effort_profile(
+    tmp_path: Path,
+) -> None:
+    """R14: the fork reply runs on its dedicated low-effort model profile.
+
+    Anchor: with a reasoning-controllable model, ``fork_reasoning_effort``
+    defaults to ``low``; ``send_interrupt`` admits the fork with a fork-only
+    profile whose model entries carry ``provider_options.reasoning_effort``.
+    The main turn keeps its preferred profile and is not changed.
+    """
+
+    main_started = asyncio.Event()
+    main_release = asyncio.Event()
+
+    async def responder(call):
+        if call.is_fork:
+            return AIMessage(
+                content="",
+                tool_calls=(speak_call("fork-1", "低思考回复"),),
+            )
+        main_started.set()
+        await main_release.wait()
+        return AIMessage(content="main done")
+
+    scenario = build_scenario(
+        tmp_path,
+        responder,
+        model_config_mapping=reasoning_controllable_model_config_mapping(),
+    )
+    async with LocalExecutionHost(runtime_pool=scenario.pool) as host:
+        turn = await _submit(host, scenario, "开始长任务", "turn-1")
+        await asyncio.wait_for(main_started.wait(), timeout=10)
+
+        outcome = await asyncio.wait_for(
+            _interrupt(
+                scenario,
+                turn,
+                input_id="user-1",
+                message="快速回答我",
+            ),
+            timeout=10,
+        )
+        assert outcome is not None
+        assert outcome.speak_args is not None
+        assert outcome.speak_args.text == "低思考回复"
+
+        main_entry = scenario.invoker.main_calls[0].model_group.models[0]
+        fork_entry = scenario.invoker.fork_calls[0].model_group.models[0]
+        assert dict(main_entry.spec.provider_options) == {}
+        assert fork_entry.spec.provider_options["reasoning_effort"] == "low"
+        assert fork_entry is not main_entry
+
+        main_release.set()
+        await asyncio.wait_for(turn.result(), timeout=10)

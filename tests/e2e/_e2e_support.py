@@ -7,6 +7,7 @@ invoker, so every scenario is deterministic and needs no credentials.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 from collections.abc import Awaitable, Callable
@@ -56,11 +57,23 @@ MODEL_CONFIG_MAPPING: dict[str, Any] = {
 }
 
 
+def reasoning_controllable_model_config_mapping() -> dict[str, Any]:
+    """A scripted model whose reasoning effort can be steered externally."""
+
+    mapping = copy.deepcopy(MODEL_CONFIG_MAPPING)
+    mapping["models"]["scripted"]["capabilities"]["reasoning"] = {
+        "supported": True,
+        "controllable": True,
+    }
+    return mapping
+
+
 def make_config(
     tmp_path: Path,
     *,
     realtime: bool = False,
     scheduler_agent_create: bool = False,
+    model_config_mapping: dict[str, Any] | None = None,
 ) -> RunConfig:
     """Create one isolated workspace/user-root pair for a scenario."""
 
@@ -71,7 +84,11 @@ def make_config(
     return RunConfig(
         workspace_root=str(workspace),
         user_lara_root=str(user_root),
-        model_config_mapping=MODEL_CONFIG_MAPPING,
+        model_config_mapping=(
+            MODEL_CONFIG_MAPPING
+            if model_config_mapping is None
+            else model_config_mapping
+        ),
         resolved_agent=ResolvedAgentConfig(
             alias="default", default_model_group="e2e"
         ),

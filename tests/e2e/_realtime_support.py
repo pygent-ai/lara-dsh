@@ -37,6 +37,7 @@ class RealtimeModelCall:
     context: Context
     generation: GenerationConfig
     tools: tuple[Any, ...]
+    model_group: Any
 
     @property
     def is_fork(self) -> bool:
@@ -80,12 +81,13 @@ class ScriptedRealtimeInvoker:
         deadline: float | None = None,
         cancel_event: Any | None = None,
     ) -> ModelExecution:
-        del model_group, retry_policy, deadline, cancel_event
+        del retry_policy, deadline, cancel_event
         call = RealtimeModelCall(
             message=message,
             context=context,
             generation=generation,
             tools=tools,
+            model_group=model_group,
         )
         self.calls.append(call)
 
@@ -96,6 +98,11 @@ class ScriptedRealtimeInvoker:
             return ModelProviderResponse(message=answer, finish_reason="stop")
 
         return ModelExecution(operation)
+
+    def validate_model(self, entry: Any) -> None:
+        """The scripted boundary accepts provider options validated by the adapter."""
+
+        del entry
 
     @property
     def main_calls(self) -> list[RealtimeModelCall]:
@@ -130,10 +137,15 @@ def build_scenario(
     mode: str = "lara-says",
     fork_deadline_seconds: float | None = None,
     nudge_interval: int | None = None,
+    model_config_mapping: dict[str, Any] | None = None,
 ) -> RealtimeScenario:
     """Create one isolated realtime (or negative-control) scenario."""
 
-    config = make_config(tmp_path, realtime=realtime)
+    config = make_config(
+        tmp_path,
+        realtime=realtime,
+        model_config_mapping=model_config_mapping,
+    )
     if fork_deadline_seconds is not None or nudge_interval is not None:
         current = config.realtime_interaction
         config.realtime_interaction = RealtimeInteractionConfig(
