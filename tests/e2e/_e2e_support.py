@@ -84,6 +84,7 @@ def make_config(
     return RunConfig(
         workspace_root=str(workspace),
         user_lara_root=str(user_root),
+        system_prompt="E2E scenario agent system prompt.",
         model_config_mapping=(
             MODEL_CONFIG_MAPPING
             if model_config_mapping is None

@@ -33,6 +33,7 @@ def _fixture(tmp_path: Path) -> tuple[RunConfig, AgentSession, CaseRunRef]:
     config = RunConfig(
         workspace_root=str(workspace),
         user_lara_root=str(user_root),
+        system_prompt="persisted session prompt",
     )
     session_dir = tmp_path / "sessions" / "session-1"
     (session_dir / "state").mkdir(parents=True)

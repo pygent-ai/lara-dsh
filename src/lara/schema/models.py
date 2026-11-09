@@ -320,6 +320,10 @@ class RunConfig:
     case_file: str | None = None
     max_steps: int = -1
     agent_alias: str = "default"
+    # The configured static system prompt: the composition root's text, kept
+    # as data. The prompt registry ships empty; modules are injected by the
+    # composition root on top of this base.
+    system_prompt: str = ""
     resolved_agent: ResolvedAgentConfig | None = field(
         default=None, repr=False, compare=False
     )
@@ -652,6 +656,7 @@ def build_run_config(
     session_id: str | None = None,
     user_lara_root: str | Path | None = None,
     max_steps: int | None = None,
+    system_prompt: str = "",
 ) -> RunConfig:
     """Programmatic :class:`RunConfig` entry: no config file, no credentials.
 
@@ -675,6 +680,7 @@ def build_run_config(
         agent_alias=agent_alias,
         user_lara_root="" if user_lara_root is None else str(user_lara_root),
         max_steps=-1 if max_steps is None else int(max_steps),
+        system_prompt=str(system_prompt),
         resolved_agent=ResolvedAgentConfig(
             alias=agent_alias,
             default_model_group=default_model_group,

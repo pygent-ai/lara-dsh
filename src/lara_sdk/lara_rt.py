@@ -29,6 +29,7 @@ from lara_shell.config import load_run_config
 from lara_shell.credentials import build_credential_environment
 from lara.core.io import plain_object
 from lara.orchestration import LocalExecutionHost
+from lara.runtime.agent.prompts import PromptRegistry
 from lara.runtime.eternal_conversation import eternal_enabled_for, load_projection
 from lara.schema import AgentSession, RunConfig
 from lara.sessions import SessionManager, realtime_enabled_for
@@ -69,8 +70,14 @@ class LaraSessionAgent:
         interactive_approvals: bool = False,
         eternal_memory: bool | None = None,
         config: RunConfig | None = None,
+        system_prompt: str | None = None,
+        prompt_registry: "PromptRegistry | None" = None,
     ) -> None:
         self._config = config or load_run_config(workspace_root=workspace_root)
+        if system_prompt is not None:
+            if not system_prompt.strip():
+                raise ValueError("system_prompt must be a non-empty string")
+            self._config.system_prompt = system_prompt
         if eternal_memory is not None:
             # 部署总开关覆写：标准适配层作为部署方决定是否启用永续会话；
             # 会话级 opt-in 仍由 enable_eternal_memory() 显式控制。
@@ -80,6 +87,7 @@ class LaraSessionAgent:
         self._manager = SessionManager(self._config)
         self._mode = mode
         self._interactive = interactive_approvals
+        self._prompt_registry = prompt_registry
         self._host: LocalExecutionHost | None = None
         self._session_id = session_id
         self._turn_seq = 0
@@ -100,6 +108,7 @@ class LaraSessionAgent:
                 self._config.user_lara_root
             ),
             run_config_loader=load_run_config,
+            prompt_registry=self._prompt_registry,
         )
         await self._host.__aenter__()
         await self._host.turns.prewarm_session(

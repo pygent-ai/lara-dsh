@@ -25,90 +25,22 @@ from .prompt_models import (
     RenderedPromptModule,
     StaticPromptResult,
 )
-from .prompt_sources import (
-    _prompt_render_context_payload,
-    _render_available_tools_prompt,
-    _render_system_action_safety_prompt,
-    _render_system_coding_rules_prompt,
-    _render_system_identity_prompt,
-    _render_system_injection_guard_prompt,
-    _render_system_output_style_prompt,
-    _render_system_path_policy_prompt,
-    _render_system_tool_policy_prompt,
-)
+from .prompt_sources import _prompt_render_context_payload
 
 
 class PromptRegistry:
     def __init__(self) -> None:
-        self._modules: list[PromptModule] = [
-            PromptModule(
-                id="system.identity",
-                phase="static",
-                type="system",
-                cache_scope="session",
-                order=10,
-                render=_render_system_identity_prompt,
-                required=True,
-            ),
-            PromptModule(
-                id="system.tool_policy",
-                phase="static",
-                type="policy",
-                cache_scope="session",
-                order=20,
-                render=_render_system_tool_policy_prompt,
-                required=True,
-            ),
-            PromptModule(
-                id="system.injection_guard",
-                phase="static",
-                type="policy",
-                cache_scope="session",
-                order=30,
-                render=_render_system_injection_guard_prompt,
-            ),
-            PromptModule(
-                id="system.action_safety",
-                phase="static",
-                type="policy",
-                cache_scope="session",
-                order=32,
-                render=_render_system_action_safety_prompt,
-            ),
-            PromptModule(
-                id="system.path_policy",
-                phase="static",
-                type="policy",
-                cache_scope="session",
-                order=35,
-                render=_render_system_path_policy_prompt,
-            ),
-            PromptModule(
-                id="system.coding_rules",
-                phase="static",
-                type="system",
-                cache_scope="session",
-                order=40,
-                render=_render_system_coding_rules_prompt,
-            ),
-            PromptModule(
-                id="system.output_style",
-                phase="static",
-                type="system",
-                cache_scope="session",
-                order=50,
-                render=_render_system_output_style_prompt,
-            ),
-            PromptModule(
-                id="tool.available",
-                phase="request_system",
-                type="tool",
-                cache_scope="turn",
-                order=120,
-                render=_render_available_tools_prompt,
-                required=True,
-            ),
-        ]
+        # Mechanism only: the registry ships empty. The composition root
+        # injects prompt modules on top of RunConfig.system_prompt; the
+        # kernel carries no built-in prompt content.
+        self._modules: list[PromptModule] = []
+
+    def register(self, module: PromptModule) -> None:
+        """Composition-root injection: add one prompt module by stable id."""
+
+        if any(existing.id == module.id for existing in self._modules):
+            raise ValueError(f"prompt module {module.id!r} is already registered")
+        self._modules.append(module)
 
     def resolve(
         self,
@@ -304,11 +236,15 @@ class AgentContextManager:
         store: EventStore | None = None,
         prompt_registry: PromptRegistry | None = None,
         prompt_composer: PromptComposer | None = None,
+        system_prompt: str = "",
         user_lara_root: Path | None = None,
         project_lara_root: Path | None = None,
     ) -> None:
         self.session_dir = session_dir
         self.workspace_root = workspace_root
+        # The composition root's configured static system prompt; the prompt
+        # registry ships empty and only carries injected modules on top.
+        self.system_prompt = system_prompt
         self.user_lara_root = (
             (user_lara_root or Path.home() / ".lara").expanduser().resolve()
         )
@@ -413,10 +349,15 @@ class AgentContextManager:
                 _hash_text(request_system_text) if request_system_text else None
             )
 
-        prompt_parts = [static_prompt.text]
+        prompt_parts = [self.system_prompt, static_prompt.text]
         if request_system_text:
             prompt_parts.append(request_system_text)
         prompt = "\n\n".join(part for part in prompt_parts if part)
+        if not prompt.strip():
+            raise ValueError(
+                "system prompt is empty: configure RunConfig.system_prompt "
+                "or inject prompt modules via the composition root"
+            )
         prompt_hash = _hash_text(prompt)
         modules = [*static_prompt.modules, *request_system_rendered_modules]
         model_prompt = ModelRequestPrompt(text=prompt)

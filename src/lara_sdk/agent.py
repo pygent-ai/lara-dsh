@@ -42,10 +42,12 @@ from lara.scheduler import (
     submission_payload,
 )
 from lara.schema import RunConfig, SchedulerConfig
+from lara.runtime.agent.prompts import PromptRegistry
 from lara.scheduler.store import utc_now
 from lara.sessions import SessionManager
 
 from .interfaces import AgentInput, AgentResult
+from .lara_profile import lara_prompt_modules
 from .lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
 
 
@@ -92,6 +94,11 @@ class LaraConfig:
     eternal_memory: bool = False
     realtime: bool = True
     scheduler: SchedulerSettings = SchedulerSettings()
+    # Prompt content is composition-side: the kernel registry ships empty.
+    # ``system_prompt`` is the configured static base text; enable
+    # ``lara_prompt_profile`` to register the stock Lara modules on top.
+    system_prompt: str | None = None
+    lara_prompt_profile: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -102,8 +109,22 @@ class LaraConfig:
         object.__setattr__(self, "model_group", str(self.model_group))
         object.__setattr__(self, "eternal_memory", bool(self.eternal_memory))
         object.__setattr__(self, "realtime", bool(self.realtime))
+        object.__setattr__(
+            self, "system_prompt", None if self.system_prompt is None else str(self.system_prompt)
+        )
+        object.__setattr__(self, "lara_prompt_profile", bool(self.lara_prompt_profile))
         if not isinstance(self.scheduler, SchedulerSettings):
             raise TypeError("scheduler must be a SchedulerSettings instance")
+
+    def _prompt_registry(self) -> "PromptRegistry | None":
+        from lara.runtime.agent.prompts import PromptRegistry
+
+        if not self.lara_prompt_profile:
+            return None
+        registry = PromptRegistry()
+        for module in lara_prompt_modules():
+            registry.register(module)
+        return registry
 
 
 class _InProcessTaskRunner:
@@ -315,6 +336,8 @@ class Lara:
             session_id=session_id,
             mode=mode,
             eternal_memory=self.config.eternal_memory,
+            system_prompt=self.config.system_prompt,
+            prompt_registry=self.config._prompt_registry(),
         )
         await agent.__aenter__()
         if self.config.eternal_memory:
@@ -505,6 +528,8 @@ class Lara:
                 config=config,
                 session_id=task.session,
                 eternal_memory=self.config.eternal_memory,
+                system_prompt=self.config.system_prompt,
+                prompt_registry=self.config._prompt_registry(),
             )
             await agent.__aenter__()
             try:

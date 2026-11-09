@@ -6,9 +6,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "pygent-ai[video]==0.3.33",
-    "python-dateutil>=2.9.0",
-    "tzdata>=2025.2",
-    "tzlocal>=5.2",
 ]
 
 [dependency-groups]

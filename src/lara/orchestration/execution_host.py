@@ -22,10 +22,12 @@ class LocalExecutionHost:
         coordinator: SessionExecutionCoordinator | None = None,
         credential_environ: Mapping[str, str] | None = None,
         run_config_loader: Callable[..., RunConfig] | None = None,
+        prompt_registry: "PromptRegistry | None" = None,
     ) -> None:
         self.runtime_pool = runtime_pool or WorkspaceRuntimePool(
             credential_environ=credential_environ,
             run_config_loader=run_config_loader,
+            prompt_registry=prompt_registry,
         )
         self.coordinator = coordinator or SessionExecutionCoordinator()
         self.turns = SessionTurnService(

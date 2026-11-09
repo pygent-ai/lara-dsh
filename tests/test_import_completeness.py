@@ -82,9 +82,9 @@ def test_every_lara_shell_module_imports() -> None:
 def test_lara_sdk_modules_import() -> None:
     from lara_sdk import agent, interfaces, lara_rt  # noqa: F401
 
-    # SDK 只保留使用契约、运行时适配器与完整门面，不再暴露构造/试点模块。
+    # SDK 只保留使用契约、运行时适配器、完整门面与可选 Lara 提示词 profile。
     modules = {name for _, name, _ in pkgutil.iter_modules(lara_sdk.__path__)}
-    assert modules == {"agent", "interfaces", "lara_rt"}
+    assert modules == {"agent", "interfaces", "lara_profile", "lara_rt"}
     for removed in ("engine", "simple_agent"):
         assert importlib.util.find_spec(f"lara_sdk.{removed}") is None
 

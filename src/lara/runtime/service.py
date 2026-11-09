@@ -95,13 +95,13 @@ from .agent.core import (
     LaraAgent,
     model_retry_policy,
 )
+from .agent.prompts import PromptRegistry
 from .realtime.fork_agent import ForkReplyModule, outcome_from_result
 from .realtime.fork_reasoning import ForkModelProfile, fork_model_profiles
 from .realtime.fork_reply import build_fork_context
 from .realtime.fork_state import SessionForkState
 from .realtime.envelope import format_user_asked
 from .realtime.posting import queue_exchange_envelope
-from .realtime.feishu import load_feishu_channels
 from .realtime.speak import (
     SILENT_ACKNOWLEDGEMENT,
     SPEAK_TOOL_SPEC,
@@ -196,8 +196,10 @@ class _SpeakExecutor:
     The event (``lara.realtime.speak``) is the bubble the desktop renders;
     ``say_nothing`` emits nothing and acknowledges silently. Attachments are
     validated against the workspace and reported as workspace-relative paths.
-    Configured external channels (e.g. Feishu) receive the same text
-    fire-and-forget — channel failures never affect the tool result.
+    Configured external channels receive the same text fire-and-forget —
+    channel failures never affect the tool result. Channels are supplied by
+    the host application through the speak channel slot; the kernel ships
+    none by default.
     """
 
     def __init__(self, service: "LaraRuntimeService", channels: Sequence[Any] = ()) -> None:
@@ -282,12 +284,14 @@ class LaraRuntimeService:
         dispatch: DispatchService | None = None,
         credential_environ: Mapping[str, str] | None = None,
         run_config_loader: Callable[..., RunConfig] | None = None,
+        prompt_registry: "PromptRegistry | None" = None,
     ) -> None:
         self.config = config
         self.collaboration = collaboration
         self._dispatch = dispatch
         self._credential_environ = credential_environ
         self._run_config_loader = run_config_loader
+        self._prompt_registry = prompt_registry
         self.reminders = reminders or ReminderService(config)
         self._owns_reminders = (
             reminders is None if own_reminders is None else own_reminders
@@ -349,7 +353,10 @@ class LaraRuntimeService:
             SPEAK_TOOL_SPEC,
             _SpeakExecutor(
                 self,
-                channels=load_feishu_channels(self.config.user_lara_root),
+                # The speak channel slot stays generic; delivery channels are
+                # host-provided integrations (e.g. a standalone Feishu
+                # package) and the kernel ships none by default.
+                channels=(),
             ),
         )
         collaboration_executor = AgentToolExecutor(
@@ -434,10 +441,12 @@ class LaraRuntimeService:
             config.eternal_conversation,
             run_memory_job=self._run_memory_job,
             user_clis_root=Path(config.user_lara_root) / "clis",
+            foreground_system_prompt=config.system_prompt,
         )
         template = (
             LaraAgent(
                 config,
+                prompt_registry=self._prompt_registry,
                 external_tools=self.external_tools,
                 managed_model=True,
                 model_group_name=config.resolved_agent.default_model_group,
@@ -817,6 +826,7 @@ class LaraRuntimeService:
         agent = LaraAgent(
             effective_config,
             resolved_agent=effective_config.resolved_agent,
+            prompt_registry=self._prompt_registry,
             external_tools=self.external_tools,
             managed_model=True,
             model_group_name=selected_group,

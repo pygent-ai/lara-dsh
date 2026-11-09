@@ -80,15 +80,6 @@ class MemoryJobRequest:
 
 MemoryJobRunner = Callable[[MemoryJobRequest], Awaitable[str]]
 
-# Old sessions created before rendered prompts were persisted back may carry
-# an empty system prompt; the extractor still needs a non-empty block-1 prompt.
-MEMORY_JOB_FALLBACK_FOREGROUND_PROMPT = (
-    "You are Lara, an interactive coding agent for software engineering work. "
-    "This session predates rendered-prompt persistence, so the original "
-    "system prompt of the frozen turns is unavailable; judge the frozen "
-    "working memory on its own content."
-)
-
 
 EXTRACTOR_GUIDANCE = """You are the same agent, forked from the foreground conversation to
 maintain its memory. The conversation above is the frozen Working Memory; use it plus the
@@ -257,9 +248,11 @@ class EternalConversationHarness:
         *,
         run_memory_job: MemoryJobRunner,
         user_clis_root: Path | None = None,
+        foreground_system_prompt: str | None = None,
     ) -> None:
         self.config = config
         self.run_memory_job = run_memory_job
+        self._foreground_system_prompt = (foreground_system_prompt or "").strip()
         self._user_clis_root = (
             (user_clis_root or Path.home() / ".lara" / "clis")
             .expanduser()
@@ -445,14 +438,25 @@ class EternalConversationHarness:
                 published_uts=conflict_reference,
                 previous_failure=previous_failure,
             )
+            # Binding order: the session's persisted prompt governed the
+            # frozen turns (historically accurate); the composition root's
+            # configured prompt covers sessions without one. No kernel
+            # fallback content — an empty result is a configuration error.
+            bound_system_prompt = (
+                str(session.get("system_prompt") or "").strip()
+                or self._foreground_system_prompt
+            )
+            if not bound_system_prompt:
+                raise RuntimeError(
+                    "no system prompt available for the memory extractor: "
+                    "the session has no persisted prompt and none was "
+                    "configured by the composition root"
+                )
             request = MemoryJobRequest(
                 role="extractor",
                 alias=self.config.extractor_agent_alias or "default",
                 label=f"lara-fork.extractor:{covered + 1}-{target}",
-                system_prompt=(
-                    str(session.get("system_prompt") or "").strip()
-                    or MEMORY_JOB_FALLBACK_FOREGROUND_PROMPT
-                ),
+                system_prompt=bound_system_prompt,
                 history_range=tuple(history),
                 directive=directive,
                 context=job_context,

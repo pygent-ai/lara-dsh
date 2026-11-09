@@ -33,11 +33,13 @@ class WorkspaceRuntimePool:
         collaboration: Any | None = None,
         credential_environ: Mapping[str, str] | None = None,
         run_config_loader: Callable[..., RunConfig] | None = None,
+        prompt_registry: "PromptRegistry | None" = None,
     ) -> None:
         self._runtime_factory = runtime_factory
         self._collaboration = collaboration
         self._credential_environ = credential_environ
         self._run_config_loader = run_config_loader
+        self._prompt_registry = prompt_registry
         self._entries: dict[str, _RuntimeEntry] = {}
         self._active: dict[RuntimeScopeKey, str] = {}
         self._lock = asyncio.Lock()
@@ -84,6 +86,7 @@ class WorkspaceRuntimePool:
                     collaboration=self._collaboration,
                     credential_environ=self._credential_environ,
                     run_config_loader=self._run_config_loader,
+                    prompt_registry=self._prompt_registry,
                 )
                 runtime = SessionRuntime(
                     generation_key=generation,

@@ -132,6 +132,7 @@ def configure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
                 eternal_memory=eternal_memory,
                 realtime=realtime,
                 scheduler=scheduler or SchedulerSettings(enabled=False),
+                system_prompt="Test agent system prompt for facade suites.",
             )
         )
         return facade, invoker
