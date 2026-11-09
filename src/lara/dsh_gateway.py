@@ -29,10 +29,16 @@ class DshGatewayConfig:
 
     @classmethod
     def from_env(cls, dsh_home: str | Path, cwd: str | Path) -> "DshGatewayConfig":
-        """Read provider credentials from the process environment."""
+        """Read provider credentials from the process environment.
+
+        ``DEEPSEEK_BASE_URL`` / ``DEEPSEEK_API_KEY`` select any
+        OpenAI-compatible endpoint (the dsh runtime speaks the DeepSeek
+        wire protocol against it); ``DSH_MODEL`` overrides the model id.
+        """
         return cls(
             dsh_home=Path(dsh_home),
             cwd=Path(cwd),
+            model=os.environ.get("DSH_MODEL") or DEFAULT_DSH_MODEL,
             api_key=os.environ.get("DEEPSEEK_API_KEY") or None,
             base_url=os.environ.get("DEEPSEEK_BASE_URL") or None,
         )
