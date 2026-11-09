@@ -51,8 +51,9 @@ class GatedRealtimeInvoker:
         tools: tuple[object, ...] = (),
         deadline: float | None = None,
         cancel_event: asyncio.Event | None = None,
+        provider_options: object | None = None,
     ) -> ModelExecution:
-        del model_group, retry_policy, tools, deadline, cancel_event
+        del model_group, retry_policy, tools, deadline, cancel_event, provider_options
         if generation.tool_choice == "speak":
             index = len(self.fork_requests)
             self.fork_requests.append(content_text(message))

@@ -70,8 +70,9 @@ class RecordingInvoker:
         tools: tuple[Any, ...] = (),
         deadline: float | None = None,
         cancel_event: Any | None = None,
+        provider_options: Any | None = None,
     ) -> ModelExecution:
-        del model_group, retry_policy, generation, deadline, cancel_event
+        del model_group, retry_policy, generation, deadline, cancel_event, provider_options
         self.requests.append((message, context, tools))
 
         async def operation(_emit: Any) -> ModelProviderResponse:

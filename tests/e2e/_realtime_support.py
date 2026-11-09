@@ -80,8 +80,9 @@ class ScriptedRealtimeInvoker:
         tools: tuple[Any, ...] = (),
         deadline: float | None = None,
         cancel_event: Any | None = None,
+        provider_options: Any | None = None,
     ) -> ModelExecution:
-        del retry_policy, deadline, cancel_event
+        del retry_policy, deadline, cancel_event, provider_options
         call = RealtimeModelCall(
             message=message,
             context=context,

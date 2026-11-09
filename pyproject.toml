@@ -5,7 +5,7 @@ description = "Lara — a standalone agent implementation: the complete agent ru
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "pygent-ai[video]==0.3.33",
+    "pygent-ai[video]==0.3.34",
 ]
 
 [dependency-groups]
