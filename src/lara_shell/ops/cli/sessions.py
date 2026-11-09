@@ -35,10 +35,12 @@ def register_session_parser(subparsers: Any) -> None:
     run = commands.add_parser("run", help="Run one agent turn and return JSON")
     _add_session_target(run)
     run.add_argument("-m", "--message", required=True, help="Message for the agent")
+    _add_turn_attachments(run)
     run.set_defaults(handler=_session_run)
 
     chat = commands.add_parser("chat", help="Open an interactive agent chat")
     _add_session_target(chat)
+    _add_turn_attachments(chat)
     chat.set_defaults(handler=_session_chat)
 
     send = commands.add_parser("send", help="Queue a message for an existing session")
@@ -97,6 +99,20 @@ def register_session_parser(subparsers: Any) -> None:
 def _add_session_target(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("session_id", nargs="?", help="Existing session ID")
     parser.add_argument("--new", action="store_true", help="Create a new chat session")
+
+
+def _add_turn_attachments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-a",
+        "--attachment",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Workspace-relative file to attach to the submitted turn"
+            " (repeatable)"
+        ),
+    )
 
 
 def _add_collaboration_submission(parser: argparse.ArgumentParser) -> None:
@@ -237,6 +253,7 @@ async def _run_session_turn(args: argparse.Namespace) -> dict[str, Any]:
             message=args.message,
             turn_id="turn-0001",
             interactive_approvals=False,
+            attachments=tuple(args.attachment or ()),
         )
         output, _ = await turn.result()
         return _turn_result_payload(turn, output)
@@ -280,6 +297,7 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
                 message=user_input,
                 turn_id=f"turn-{turn_index:04d}",
                 interactive_approvals=True,
+                attachments=tuple(args.attachment or ()),
             )
             await turn.wait_ready()
             streamed = await _render_turn_events(turn)

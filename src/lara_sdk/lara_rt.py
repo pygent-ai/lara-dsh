@@ -135,6 +135,7 @@ class LaraSessionAgent:
             message=request.message,
             turn_id=f"turn-{self._turn_seq:04d}",
             interactive_approvals=self._interactive,
+            attachments=tuple(request.attachments),
         )
         output, _ = await turn.result()
         payload = plain_object(plain_object(output.data).get("result"))

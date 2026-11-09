@@ -329,3 +329,40 @@ async def test_unknown_model_group_fails_at_start(configure) -> None:
 
     with pytest.raises(ValueError, match="unknown model group"):
         await facade.start()
+
+
+async def test_run_delivers_attachments(configure) -> None:
+    facade, invoker = configure(
+        lambda _message, _context: AIMessage(content="attached"),
+    )
+
+    await facade.start()
+    assert facade._run_config is not None
+    workspace = Path(facade._run_config.workspace_root)
+    (workspace / "notes.txt").write_text("hello", encoding="utf-8")
+    try:
+        result = await facade.run("check notes", attachments=["notes.txt"])
+    finally:
+        await facade.stop()
+
+    assert result.text == "attached"
+    assert invoker.requests
+    model_text = _message_text(*invoker.requests[0][:2])
+    assert "<attachments>" in model_text
+    assert 'delivery="inline" name="notes.txt"' in model_text
+    assert "hello</attachment>" in model_text
+
+
+async def test_run_rejects_missing_attachment(configure) -> None:
+    facade, invoker = configure(
+        lambda _message, _context: AIMessage(content="never"),
+    )
+
+    await facade.start()
+    try:
+        with pytest.raises(ValueError, match="attachment file not found"):
+            await facade.run("hello", attachments=["missing.txt"])
+    finally:
+        await facade.stop()
+
+    assert invoker.requests == []

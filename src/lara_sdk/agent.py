@@ -19,7 +19,7 @@ Agent-originated tasks are signed with the agent key and default to
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Coroutine, Iterator, Mapping
+from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -45,7 +45,7 @@ from lara.schema import RunConfig, SchedulerConfig
 from lara.scheduler.store import utc_now
 from lara.sessions import SessionManager
 
-from .interfaces import AgentResult
+from .interfaces import AgentInput, AgentResult
 from .lara_rt import REALTIME_SESSION_MODE, LaraSessionAgent
 
 
@@ -358,12 +358,19 @@ class Lara:
 
     # —— runtime session ——
 
-    async def run(self, message: str) -> AgentResult:
-        """Run one foreground conversation turn."""
+    async def run(
+        self, message: str, *, attachments: Sequence[str] = ()
+    ) -> AgentResult:
+        """Run one foreground conversation turn.
+
+        ``attachments`` are workspace-relative paths delivered with this turn.
+        """
 
         self._require_started()
         assert self._session_agent is not None
-        return await self._session_agent.run(message)
+        return await self._session_agent.run(
+            AgentInput(message=message, attachments=tuple(attachments))
+        )
 
     def history(self) -> tuple[Mapping[str, Any], ...]:
         """The main session's durable conversation history."""

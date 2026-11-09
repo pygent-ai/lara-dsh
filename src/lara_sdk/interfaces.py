@@ -32,7 +32,9 @@ class AgentInput:
 
     ``system_prompt`` 用于全新会话；延续既有上下文走实现层的 ``prefix``
     （``lara.agents.context.ContextWindow``），两者互斥。``tools`` / ``limits``
-    省略时分别回退到实现层的默认工具面与默认预算。
+    省略时分别回退到实现层的默认工具面与默认预算。``attachments`` 是本轮
+    随消息交付的工作区相对文件路径（最多 10 个，图片/视频走原生多模态，
+    文本内嵌，其余按引用交付）。
     """
 
     message: str
@@ -40,6 +42,7 @@ class AgentInput:
     tools: ToolProfile | None = None
     limits: AgentLimits | None = None
     label: str | None = None
+    attachments: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
