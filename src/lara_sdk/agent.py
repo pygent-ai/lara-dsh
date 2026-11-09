@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from lara.config import load_run_config
+from lara_shell.config import load_run_config
 from lara.scheduler import (
     Run,
     SchedulerDaemon,

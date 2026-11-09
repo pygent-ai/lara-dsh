@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from lara.config import load_run_config
+from lara_shell.config import load_run_config
 from lara.core.io import plain_object
 from lara.dispatch import DispatchOperationView, DispatchService, DispatchStore
 from lara.orchestration import LocalExecutionHost, ManagedSessionTurn
@@ -177,7 +177,7 @@ def _dispatch_service(config: RunConfig) -> DispatchService:
 
 async def _enqueue_agent_message(args: argparse.Namespace) -> dict[str, Any]:
     config, manager = _config_and_manager(args)
-    async with LocalExecutionHost() as host:
+    async with _execution_host(config) as host:
         message = await host.collaboration.send(
             config=config,
             manager=manager,
@@ -196,7 +196,7 @@ def _session_status(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _read_collaboration_status(args: argparse.Namespace) -> dict[str, Any]:
     config, _manager = _config_and_manager(args)
-    async with LocalExecutionHost() as host:
+    async with _execution_host(config) as host:
         item = await host.collaboration.item_status(
             config=config,
             collaboration_id=args.collaboration_id,
@@ -210,7 +210,7 @@ def _session_wait(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _wait_for_collaboration(args: argparse.Namespace) -> dict[str, Any]:
     config, _manager = _config_and_manager(args)
-    async with LocalExecutionHost() as host:
+    async with _execution_host(config) as host:
         if args.collaboration_id.startswith("msg-"):
             message = await host.collaboration.wait_message(
                 config=config,
@@ -228,7 +228,7 @@ async def _wait_for_collaboration(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _run_session_turn(args: argparse.Namespace) -> dict[str, Any]:
     config, manager = _config_and_manager(args, session_id=args.session_id)
-    async with LocalExecutionHost() as host:
+    async with _execution_host(config) as host:
         turn = await host.turns.submit(
             config=config,
             manager=manager,
@@ -254,7 +254,7 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
     else:
         manager.load(session_id)
 
-    async with LocalExecutionHost() as host:
+    async with _execution_host(config) as host:
         await host.turns.prewarm_session(
             config=config,
             manager=manager,
@@ -338,6 +338,12 @@ def _turn_result_payload(turn: ManagedSessionTurn, output: Any) -> dict[str, Any
     if result.get("error"):
         payload["error"] = str(result["error"])
     return payload
+
+
+def _execution_host(config: RunConfig) -> LocalExecutionHost:
+    """Compose the CLI execution host with the shell-owned config loader."""
+
+    return LocalExecutionHost(run_config_loader=load_run_config)
 
 
 def _config_and_manager(

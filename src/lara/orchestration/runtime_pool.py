@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from lara.runtime.service import LaraRuntimeService
 from lara.schema import RunConfig
@@ -30,9 +31,13 @@ class WorkspaceRuntimePool:
         *,
         runtime_factory: Callable[..., Any] = LaraRuntimeService,
         collaboration: Any | None = None,
+        credential_environ: Mapping[str, str] | None = None,
+        run_config_loader: Callable[..., RunConfig] | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory
         self._collaboration = collaboration
+        self._credential_environ = credential_environ
+        self._run_config_loader = run_config_loader
         self._entries: dict[str, _RuntimeEntry] = {}
         self._active: dict[RuntimeScopeKey, str] = {}
         self._lock = asyncio.Lock()
@@ -77,6 +82,8 @@ class WorkspaceRuntimePool:
                     reminders=reminders,
                     own_reminders=reminders is None,
                     collaboration=self._collaboration,
+                    credential_environ=self._credential_environ,
+                    run_config_loader=self._run_config_loader,
                 )
                 runtime = SessionRuntime(
                     generation_key=generation,

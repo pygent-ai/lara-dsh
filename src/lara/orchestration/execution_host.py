@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from lara.schema import RunConfig
@@ -19,8 +20,13 @@ class LocalExecutionHost:
         *,
         runtime_pool: WorkspaceRuntimePool | None = None,
         coordinator: SessionExecutionCoordinator | None = None,
+        credential_environ: Mapping[str, str] | None = None,
+        run_config_loader: Callable[..., RunConfig] | None = None,
     ) -> None:
-        self.runtime_pool = runtime_pool or WorkspaceRuntimePool()
+        self.runtime_pool = runtime_pool or WorkspaceRuntimePool(
+            credential_environ=credential_environ,
+            run_config_loader=run_config_loader,
+        )
         self.coordinator = coordinator or SessionExecutionCoordinator()
         self.turns = SessionTurnService(
             coordinator=self.coordinator,

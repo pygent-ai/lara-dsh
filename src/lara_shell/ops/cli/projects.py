@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from lara.config import load_run_config
+from lara_shell.config import load_run_config
 from lara.sessions import SessionDirectory, user_lara_root_for
 
 

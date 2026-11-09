@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 
-from lara.config import load_run_config
+from lara_shell.config import load_run_config
 from lara.core.io import plain_object
 from lara.orchestration import LocalExecutionHost
 from lara.runtime.eternal_conversation import eternal_enabled_for, load_projection
@@ -94,7 +94,7 @@ class LaraSessionAgent:
             ).session_id
         else:
             self._manager.load(self._session_id)
-        self._host = LocalExecutionHost()
+        self._host = LocalExecutionHost(run_config_loader=load_run_config)
         await self._host.__aenter__()
         await self._host.turns.prewarm_session(
             config=self._config, manager=self._manager, session_id=self._session_id

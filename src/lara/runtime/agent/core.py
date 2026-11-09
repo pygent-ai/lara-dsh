@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -198,6 +199,7 @@ class LaraAgent(Agent[UserMessage, AIMessage]):
         selected_model_key: str | None = None,
         eternal_memory_enabled: bool | None = None,
         realtime_interaction_enabled: bool = False,
+        credential_environ: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -233,9 +235,12 @@ class LaraAgent(Agent[UserMessage, AIMessage]):
             self.llm = model_invoker
         else:
             try:
+                environment = credential_environ or CredentialEnvironment(
+                    config.user_lara_root
+                )
                 self.llm = build_model_invoker(
                     native,
-                    credential_environ=CredentialEnvironment(config.user_lara_root),
+                    credential_environ=environment,
                     media_resolver=workspace_media_resolver(self.workspace_root),
                 )
             except LookupError:

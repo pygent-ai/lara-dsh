@@ -5,7 +5,7 @@ import hashlib
 import os
 import time
 import warnings
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from html import escape
 from pathlib import Path
@@ -50,7 +50,6 @@ from pygent.tool import (
 from pygent.tool.executors import ToolExecutionContext
 from pygent.tool.mcp import MCPClientPool
 
-from lara.config import load_run_config
 from lara.agents import (
     AgentLimits,
     AgentRunner,
@@ -276,10 +275,14 @@ class LaraRuntimeService:
         own_reminders: bool | None = None,
         collaboration: SessionCollaborationService | None = None,
         dispatch: DispatchService | None = None,
+        credential_environ: Mapping[str, str] | None = None,
+        run_config_loader: Callable[..., RunConfig] | None = None,
     ) -> None:
         self.config = config
         self.collaboration = collaboration
         self._dispatch = dispatch
+        self._credential_environ = credential_environ
+        self._run_config_loader = run_config_loader
         self.reminders = reminders or ReminderService(config)
         self._owns_reminders = (
             reminders is None if own_reminders is None else own_reminders
@@ -435,6 +438,7 @@ class LaraRuntimeService:
                 memory_harness=self.memory_harness,
                 reminders=self.reminders,
                 bash_tasks=self.bash_tasks,
+                credential_environ=self._credential_environ,
             )
             if config.resolved_agent is not None and config.model_config is not None
             else None
@@ -817,6 +821,7 @@ class LaraRuntimeService:
             bash_tasks=self.bash_tasks,
             selected_model_key=selected_model_key,
             eternal_memory_enabled=eternal_memory,
+            credential_environ=self._credential_environ,
             realtime_interaction_enabled=realtime_interaction,
         )
         if resolved is not None and agent.llm is not None:
@@ -836,7 +841,11 @@ class LaraRuntimeService:
     def _child_agent_config(self, alias: str) -> RunConfig:
         if alias == self.config.agent_alias:
             return RunConfig.from_dict(self.config.to_dict())
-        return load_run_config(
+        if self._run_config_loader is None:
+            raise RuntimeError(
+                "child agent configuration requires an injected run-config loader"
+            )
+        return self._run_config_loader(
             workspace_root=self.config.workspace_root,
             agent_alias=alias,
             max_steps=self.config.max_steps,
@@ -1510,6 +1519,7 @@ class LaraRuntimeService:
             child_config,
             managed_model=False,
             model_group_name=child_config.resolved_agent.default_model_group,
+            credential_environ=self._credential_environ,
         )
         try:
             if agent.llm is None:

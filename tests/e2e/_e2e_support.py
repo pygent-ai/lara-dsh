@@ -150,8 +150,8 @@ def install_scripted_model(monkeypatch: Any, invoker: ScriptedModelInvoker) -> N
 def install_cli_config(monkeypatch: Any, config: RunConfig) -> None:
     """Point the CLI session and scheduler adapters at the scenario config."""
 
-    import lara.ops.cli.scheduler as scheduler_cli
-    import lara.ops.cli.sessions as sessions_cli
+    import lara_shell.ops.cli.scheduler as scheduler_cli
+    import lara_shell.ops.cli.sessions as sessions_cli
 
     monkeypatch.setattr(sessions_cli, "load_run_config", lambda **_kwargs: config)
     monkeypatch.setattr(scheduler_cli, "load_run_config", lambda **_kwargs: config)
@@ -160,7 +160,7 @@ def install_cli_config(monkeypatch: Any, config: RunConfig) -> None:
 def run_cli(capsys: Any, argv: list[str]) -> tuple[int, Any, str]:
     """Invoke the real CLI entry point and parse its JSON stdout."""
 
-    from lara.ops.cli.main import main
+    from lara_shell.ops.cli.main import main
 
     code = main(argv)
     captured = capsys.readouterr()

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable
 
-from lara.config import load_run_config
+from lara_shell.config import load_run_config
 from lara.schema import RunConfig
 
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import lara.config.loader as loader
-from lara.config import load_run_config
+import lara_shell.config.loader as loader
+from lara_shell.config import load_run_config
 from lara.scheduler.store import scheduler_db_path
 from lara.schema import RunConfig
 

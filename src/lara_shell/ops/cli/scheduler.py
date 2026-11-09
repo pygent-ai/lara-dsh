@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from lara.ops.cli._base import config_from_args
-from lara.config import load_run_config
+from lara_shell.ops.cli._base import config_from_args
+from lara_shell.config import load_run_config
 from lara.scheduler.daemon import SchedulerDaemon
 from lara.scheduler.keys import init_keys, load_secret, sign
 from lara.scheduler.schedule import parse_schedule

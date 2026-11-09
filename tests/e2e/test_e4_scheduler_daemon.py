@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from pygent import AIMessage
 
-import lara.ops.cli.scheduler as scheduler_cli
+import lara_shell.ops.cli.scheduler as scheduler_cli
 from _e2e_support import (
     ScriptedModelInvoker,
     install_cli_config,
@@ -23,7 +23,7 @@ from _e2e_support import (
     make_config,
     run_cli,
 )
-from lara.ops.cli.main import main as cli_main
+from lara_shell.ops.cli.main import main as cli_main
 from lara.scheduler.daemon import SchedulerDaemon, TaskResult
 from lara.scheduler.message import build_task_message
 from lara.scheduler.store import SchedulerStore, scheduler_db_path
