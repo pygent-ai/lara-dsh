@@ -641,3 +641,49 @@ class AgentSession:
             history=list(data.get("history") or []),
             metadata=dict(data.get("metadata") or {}),
         )
+
+
+def build_run_config(
+    *,
+    workspace_root: str | Path,
+    model_config_mapping: dict[str, Any],
+    default_model_group: str,
+    agent_alias: str = "default",
+    session_id: str | None = None,
+    user_lara_root: str | Path | None = None,
+    max_steps: int | None = None,
+) -> RunConfig:
+    """Programmatic :class:`RunConfig` entry: no config file, no credentials.
+
+    The shape-only construction path: callers provide the native model
+    mapping (``connections`` / ``models`` / ``model_groups``) directly.
+    File reading, merging, and credential injection stay with the shell
+    loader. Binding and agent resolution follow the same rules as
+    ``load_run_config``: the mapping must be complete
+    (:func:`native_model_config_complete`), and the agent alias must
+    reference an existing model group.
+    """
+    if not native_model_config_complete(model_config_mapping):
+        raise ValueError(
+            "model configuration incomplete: connections, models and "
+            "model_groups are required"
+        )
+    _require(default_model_group, "default_model_group")
+    config = RunConfig(
+        workspace_root=str(workspace_root),
+        session_id=session_id,
+        agent_alias=agent_alias,
+        user_lara_root="" if user_lara_root is None else str(user_lara_root),
+        max_steps=-1 if max_steps is None else int(max_steps),
+        resolved_agent=ResolvedAgentConfig(
+            alias=agent_alias,
+            default_model_group=default_model_group,
+        ),
+        model_config_mapping=dict(model_config_mapping),
+    )
+    if default_model_group not in config.model_config.model_groups:
+        raise ValueError(
+            f"Agent alias {agent_alias!r} references unknown model group "
+            f"{default_model_group!r}"
+        )
+    return config

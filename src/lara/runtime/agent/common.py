@@ -20,14 +20,9 @@ DEFAULT_REACT_MAX_STEPS = 500
 def _to_pygent_message(message: dict[str, Any]) -> PygentMessage | None:
     if message.get("role") == "system":
         return None
-    # Pygent's continuation field is now part of the assistant wire contract.
-    # Historical Lara sessions predate that field, so normalize only the
-    # missing value while preserving any provider-scoped continuation that was
-    # captured by newer runs.
-    normalized = message
-    if message.get("role") == "assistant" and "continuation" not in message:
-        normalized = {**message, "continuation": None}
-    return message_from_dict(normalized)
+    # Session entries are pygent wire dicts; sessions persisted before the
+    # continuation field joined the assistant wire contract are not restored.
+    return message_from_dict(message)
 
 
 def _serialize_tool_payload_for_model(payload: dict[str, Any]) -> str:

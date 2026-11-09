@@ -16,9 +16,9 @@ from typing import Protocol, runtime_checkable
 
 from pygent import AIMessage, Message, ToolMessage, UserMessage
 from pygent.core import JsonValue
+from pygent.runtime.codec import message_from_dict
 
 from lara.core.prompt import Prompt
-from lara.runtime.agent.common import _to_pygent_message
 
 
 def _hash_text(text: str) -> str:
@@ -46,16 +46,19 @@ def messages_from_history(
 ) -> tuple[Message, ...]:
     """Convert persisted conversation entries into pygent messages.
 
-    Uses the same converter the foreground agent applies to session history,
-    so a fork prefix built from a session range matches what the foreground
-    actually saw, including assistant tool calls and tool results.
+    Applies the same conversion the foreground agent applies to session
+    history — pygent's wire codec plus the frame rule that system entries
+    are not conversation frames — so a fork prefix built from a session
+    range matches what the foreground actually saw, including assistant
+    tool calls and tool results.
     """
 
     converted: list[Message] = []
     for item in history:
-        message = _to_pygent_message(dict(item))
-        if message is not None:
-            converted.append(message)
+        entry = dict(item)
+        if entry.get("role") == "system":
+            continue
+        converted.append(message_from_dict(entry))
     return tuple(converted)
 
 

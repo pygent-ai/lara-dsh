@@ -17,6 +17,7 @@ from .models import (
     SchedulerConfig,
     SessionRef,
     SessionSpec,
+    build_run_config,
     default_cli_bash_presets,
     native_model_config_complete,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "RunConfig",
     "SessionRef",
     "SessionSpec",
+    "build_run_config",
     "default_cli_bash_presets",
     "native_model_config_complete",
 ]
