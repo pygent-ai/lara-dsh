@@ -16,7 +16,6 @@ priority is normalized to ``normal`` with an audit note on the submission.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import threading
@@ -64,9 +63,13 @@ class TaskRunner(Protocol):
 
 
 def lara_command() -> tuple[str, ...]:
-    executable = shutil.which("lara")
-    if executable:
-        return (executable,)
+    """Launch Lara through the module entry point.
+
+    A console script may still point at the pre-split ``lara.cli`` module after
+    the kernel/shell split; ``python -m lara`` always resolves the package
+    layout that owns the scheduler's session command.
+    """
+
     return (sys.executable, "-m", "lara")
 
 
