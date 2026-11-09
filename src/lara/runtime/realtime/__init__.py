@@ -7,6 +7,7 @@ The agent works silently: content/thinking stay out of the user-facing stream an
 - ``speak``          — the user-visible channel tool + renderer/source abstraction
 - ``fork_reply``     — fork-snapshot request construction and speak extraction
 - ``fork_agent``     — the fork reply as a minimal managed execution graph
+- ``fork_reasoning`` — fork-only model profiles with reduced reasoning effort
 - ``fork_state``     — per-session supersede-and-merge state
 - ``envelope``       — conversation-exchange injection at the next tool-result boundary
 - ``posting``        — envelope delivery through the agent-message channel

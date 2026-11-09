@@ -184,6 +184,7 @@ class RealtimeInteractionConfig:
     enabled: bool = False
     nudge_interval: int = 5
     fork_deadline_seconds: float = 60.0
+    fork_reasoning_effort: str | None = "low"
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
@@ -197,6 +198,10 @@ class RealtimeInteractionConfig:
             or self.fork_deadline_seconds <= 0
         ):
             raise ValueError("fork_deadline_seconds must be positive")
+        if self.fork_reasoning_effort is not None:
+            self.fork_reasoning_effort = _require(
+                self.fork_reasoning_effort, "fork_reasoning_effort"
+            )
 
 
 @dataclass(slots=True)
