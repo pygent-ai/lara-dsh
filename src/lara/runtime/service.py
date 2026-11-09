@@ -102,7 +102,12 @@ from .realtime.fork_state import SessionForkState
 from .realtime.envelope import format_user_asked
 from .realtime.posting import queue_exchange_envelope
 from .realtime.feishu import load_feishu_channels
-from .realtime.speak import SILENT_ACKNOWLEDGEMENT, SPEAK_TOOL_SPEC, parse_speak_args
+from .realtime.speak import (
+    SILENT_ACKNOWLEDGEMENT,
+    SPEAK_TOOL_SPEC,
+    parse_speak_args,
+    render_reply_instruction,
+)
 from .agent_collaboration import (
     AGENT_COLLABORATION_TOOL_SPECS,
     visible_agent_collaboration_specs,
@@ -1407,6 +1412,10 @@ class LaraRuntimeService:
             ]
             if resolved_attachments:
                 body_lines.append(render_attachments_xml(resolved_attachments))
+            # Realtime sessions must open with a speak acknowledgment before
+            # any tool work (D-RT5); plain-text sessions answer directly.
+            if realtime_enabled_for(session):
+                body_lines.append(render_reply_instruction())
             wrapped = str(Prompt("\n".join(body_lines)).wrap("user-context"))
         reminder = await self.reminders.claim_initial(session.session_id, turn_id)
         dynamic_reminder = await self.reminders.collect_pending(session.session_id)

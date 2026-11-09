@@ -83,6 +83,7 @@ def test_known_envelopes_register_all_classes() -> None:
         "file",
         "memory-access-instruction",
         "attachments",
+        "reply-instruction",
         "task-context",
         "summary",
     }

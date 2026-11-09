@@ -17,11 +17,33 @@ from typing import Protocol
 from pygent import IdempotencyPolicy, ToolDefinition, ToolSideEffect
 from pygent.tool import ToolSpec
 
+from lara.core.prompt import Prompt
 from lara.runtime.attachments import resolve_attachments
 
 SPEAK_TOOL_ID = "lara.realtime.speak"
 SPEAK_RESOURCE_KEY = "lara-realtime-speak"
 SPEAK_TOOL_NAME = "speak"
+
+# Turn-start directive injected into <user-context> for realtime sessions
+# (D-RT5): the user sees nothing until the first speak call, so the turn must
+# open with a short acknowledgment before any tool work. Plain-text sessions
+# never receive it; FIRST_RESULT_SPEAK_REMINDER then only covers the case
+# where the agent ignored this directive and went silent into tool calls.
+REPLY_INSTRUCTION_BODY = """Open this turn by calling speak with one short reassurance line to the
+user before any tool call or long work. The acknowledgment is in addition to
+the work, never a replacement: after speaking, carry the task through. Even
+if you end up needing to do nothing, still speak before finishing."""
+
+
+def render_reply_instruction() -> str:
+    """Render the ``<reply-instruction>`` envelope for one user turn."""
+
+    return "\n".join(
+        f"  {line}"
+        for line in str(
+            Prompt(REPLY_INSTRUCTION_BODY).wrap("reply-instruction", indent="  ")
+        ).splitlines()
+    )
 
 # The tool result for a deliberate ``say_nothing`` decision. It must steer the
 # model back to a plain-text turn ending: after every tool result pygent runs
@@ -182,5 +204,6 @@ __all__ = [
     "SpeakRenderer",
     "execute_speak",
     "parse_speak_args",
+    "render_reply_instruction",
     "resolve_speak_attachments",
 ]

@@ -51,6 +51,9 @@ KNOWN_ENVELOPES: dict[str, EnvelopeInfo] = {
         False, "Eternal conversation memory access instructions."
     ),
     "attachments": EnvelopeInfo(False, "Attachment metadata inside user-context."),
+    "reply-instruction": EnvelopeInfo(
+        False, "Realtime turn-start speak-first directive inside user-context."
+    ),
     "task-context": EnvelopeInfo(False, "Scheduled task execution message."),
     "summary": EnvelopeInfo(
         True, "model-generated compression summary; no renderer is owned by Lara."

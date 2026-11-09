@@ -26,6 +26,7 @@ from lara.runtime.context import LaraContext
 from lara.runtime.context_compression import FileReadRecord, render_file_read_block
 from lara.runtime.eternal_conversation import render_memory_access_instruction
 from lara.runtime.realtime.envelope import render_exchange_envelope
+from lara.runtime.realtime.speak import render_reply_instruction
 from lara.runtime.reminders.agent_messages import render_agent_message
 from lara.runtime.reminders.bootstrap import build_initial_snapshot
 from lara.runtime.reminders.cli_context import collect_initial_cli
@@ -37,6 +38,7 @@ from lara.runtime.service import LaraRuntimeService
 from lara.schema import AgentSession, BashCliPreset, CaseRunRef, RunConfig
 from lara.sessions import AgentMessage
 from lara.sessions.collaboration import AgentMessageState
+from lara.sessions.manager import LARA_SAYS_SESSION_MODE
 
 
 def _assert_exact(actual: str, expected: str) -> None:
@@ -65,6 +67,18 @@ what changed?
 I fixed it.
 </your-response-in-another-session>
 </system-reminder>""",
+    )
+
+
+def test_reply_instruction_golden() -> None:
+    _assert_exact(
+        render_reply_instruction(),
+        """  <reply-instruction>
+    Open this turn by calling speak with one short reassurance line to the
+    user before any tool call or long work. The acknowledgment is in addition to
+    the work, never a replacement: after speaking, carry the task through. Even
+    if you end up needing to do nothing, still speak before finishing.
+  </reply-instruction>""",
     )
 
 
@@ -451,6 +465,62 @@ async def test_user_context_golden(tmp_path: Path) -> None:
   <attachments>
     <attachment delivery="inline" name="notes.txt" path="notes.txt" size="5" mime="text/plain" truncated="false">hello</attachment>
   </attachments>
+</user-context>""",
+    )
+
+
+async def test_user_context_realtime_reply_instruction_golden(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_dir = tmp_path / "sessions" / "session-1"
+    (session_dir / "state").mkdir(parents=True)
+    run_dir = session_dir / "runs" / "run-1"
+    run_dir.mkdir(parents=True)
+    config = RunConfig(
+        workspace_root=str(workspace),
+        user_lara_root=str(tmp_path / "user"),
+    )
+    session = AgentSession(
+        session_id="session-1",
+        workspace_root=str(workspace),
+        session_dir=str(session_dir),
+        created_at="2026-01-01T00:00:00+00:00",
+        updated_at="2026-01-01T00:00:00+00:00",
+        system_prompt="persisted prompt",
+        history=[
+            message_to_dict(UserMessage(content="earlier")),
+            message_to_dict(AIMessage(content="reply")),
+        ],
+        metadata={"mode": LARA_SAYS_SESSION_MODE},
+    )
+    write_json(session_dir / "session.json", session.to_dict())
+    run_ref = CaseRunRef(
+        session_id="session-1",
+        case_id="case-1",
+        case_run_id="run-1",
+        run_dir=str(run_dir),
+    )
+    service = object.__new__(LaraRuntimeService)
+    service.reminders = _NoReminders()  # type: ignore[assignment]
+    message, _ = await service._prepare_turn(
+        manager=None,  # type: ignore[arg-type]
+        run_ref=run_ref,
+        message="please <inspect> & fix",
+        config=config,
+        turn_id="turn-1",
+        session=session,
+    )
+    _assert_exact(
+        message.content,
+        """<user-context>
+  <user-identity>default</user-identity>
+  <user-message>please &lt;inspect&gt; &amp; fix</user-message>
+  <reply-instruction>
+    Open this turn by calling speak with one short reassurance line to the
+    user before any tool call or long work. The acknowledgment is in addition to
+    the work, never a replacement: after speaking, carry the task through. Even
+    if you end up needing to do nothing, still speak before finishing.
+  </reply-instruction>
 </user-context>""",
     )
 
