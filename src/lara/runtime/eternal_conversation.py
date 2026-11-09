@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import sys
+import warnings
 from collections.abc import Awaitable, Callable
 from contextvars import Context
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from lara.core.io import append_jsonl, read_json, utc_now, write_json
 from lara.core.prompt import Prompt
 from lara.core.redaction import redact_secrets
 from lara.schema import AgentSession, EternalConversationConfig, RunConfig
+from lara.skills.provision import ensure_dynamic_memory_skill
 
 MAX_MEMORY_JOB_ATTEMPTS = 3
 
@@ -252,10 +254,19 @@ def estimate_context_tokens(
 
 class EternalConversationHarness:
     def __init__(
-        self, config: EternalConversationConfig, *, run_memory_job: MemoryJobRunner
+        self,
+        config: EternalConversationConfig,
+        *,
+        run_memory_job: MemoryJobRunner,
+        user_skills_root: Path | None = None,
     ) -> None:
         self.config = config
         self.run_memory_job = run_memory_job
+        self._user_skills_root = (
+            (user_skills_root or Path.home() / ".lara" / "skills")
+            .expanduser()
+            .resolve()
+        )
         self._workers: dict[str, asyncio.Task[None]] = {}
         self._builders: dict[str, asyncio.Task[None]] = {}
         self._closed = False
@@ -271,9 +282,17 @@ class EternalConversationHarness:
         spec = importlib.util.find_spec("dynamic_memory_cli")
         if spec is not None and spec.origin and Path(spec.origin).is_file():
             return Path(spec.origin)
+        try:
+            ensure_dynamic_memory_skill(self._user_skills_root)
+        except OSError as exc:
+            warnings.warn(
+                f"dynamic-memory-cli skill provisioning failed: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         for root in (
             session_dir.parents[1] / "skills",
-            Path.home() / ".lara" / "skills",
+            self._user_skills_root,
         ):
             path = root / "dynamic-memory-cli" / "scripts" / "dynamic_memory_cli.py"
             if path.is_file():

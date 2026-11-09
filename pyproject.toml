@@ -5,7 +5,6 @@ description = "Lara — a standalone agent implementation: the complete agent ru
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "dynamic-memory-cli",
     "pygent-ai[video]==0.3.33",
     "python-dateutil>=2.9.0",
     "tzdata>=2025.2",
@@ -21,10 +20,6 @@ dev = [
 credentials = [
     "keyring>=25.0.0",
 ]
-
-[tool.uv.sources]
-# 永续会话的动态记忆 CLI 依赖（与原仓一致的分支锁定）。
-dynamic-memory-cli = { git = "https://github.com/pygent-ai/memory-cli", branch = "codex/dynamic-memory-cli" }
 
 [project.scripts]
 lara = "lara_shell.ops.cli.main:main"

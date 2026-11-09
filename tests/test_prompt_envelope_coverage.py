@@ -21,6 +21,11 @@ SOURCE_ROOTS = (
     Path(__file__).resolve().parents[1] / "src" / "lara",
     Path(__file__).resolve().parents[1] / "src" / "lara_sdk",
 )
+# The bundled dynamic-memory-cli skill is vendored third-party data; its
+# output tags are its own wire format, not the prompt envelope layer.
+_VENDORED_DATA_ROOTS = (
+    Path(__file__).resolve().parents[1] / "src" / "lara" / "skills" / "dynamic-memory-cli",
+)
 _TAG_START = re.compile(r"(?m)^\s*(</?)([a-z][a-z-]*)")
 _PROMPT_METHODS = {"wrap", "wrap_escaped", "self_closing"}
 
@@ -97,6 +102,10 @@ def test_every_envelope_tag_is_registered() -> None:
     scanned = 0
     for root in SOURCE_ROOTS:
         for path in sorted(root.rglob("*.py")):
+            if any(
+                path.is_relative_to(vendored) for vendored in _VENDORED_DATA_ROOTS
+            ):
+                continue
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for tag, line in [
                 *_iter_literal_tags(tree),
