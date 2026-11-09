@@ -126,19 +126,6 @@ def _render_system_output_style_prompt(ctx: PromptRenderContext) -> str | None:
     )
 
 
-def _render_system_lara_control_plane_prompt(ctx: PromptRenderContext) -> str:
-    return "\n".join(
-        [
-            "# Lara Control Plane",
-            "",
-            "- For capabilities managed by Lara, use the corresponding `uv run lara ...` CLI.",
-            "- Treat an unqualified scheduled or recurring task request as a Lara automation.",
-            "- Do not substitute schtasks, cron, systemd timers, or background loops unless the user explicitly requests an operating-system scheduler.",
-            "- Do not claim that a Lara resource was created or changed until the command succeeds and its list or show command confirms the persisted state.",
-        ]
-    )
-
-
 def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
     tools = ", ".join(ctx.tool_names) if ctx.tool_names else "none"
     lines = [
@@ -173,28 +160,6 @@ def _render_available_tools_prompt(ctx: PromptRenderContext) -> str:
             ]
         )
     return "\n".join(lines)
-
-
-def _render_tool_result_reminders_prompt(ctx: PromptRenderContext) -> str | None:
-    return "\n".join(
-        [
-            "# Tool Result Handling",
-            "",
-            "Important observations from tool results should be carried forward in your own response when they matter, because older raw tool results may be summarized or omitted later.",
-            "If a result is partial, stale, or an error, account for that uncertainty before acting on it.",
-        ]
-    )
-
-
-def _render_token_budget_prompt(ctx: PromptRenderContext) -> str | None:
-    return "\n".join(
-        [
-            "# Context Budget",
-            "",
-            "Keep the model-visible context useful. Summarize repetitive evidence, avoid restating long tool outputs, and focus the next action on the user's current objective.",
-            "A context summary continues the same task; use it with the remaining messages and do not wrap up early solely because older context was compressed.",
-        ]
-    )
 
 
 def _prompt_render_context_payload(ctx: PromptRenderContext) -> dict[str, Any]:

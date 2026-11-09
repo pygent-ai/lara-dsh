@@ -32,12 +32,9 @@ from .prompt_sources import (
     _render_system_coding_rules_prompt,
     _render_system_identity_prompt,
     _render_system_injection_guard_prompt,
-    _render_system_lara_control_plane_prompt,
     _render_system_output_style_prompt,
     _render_system_path_policy_prompt,
     _render_system_tool_policy_prompt,
-    _render_token_budget_prompt,
-    _render_tool_result_reminders_prompt,
 )
 
 
@@ -103,15 +100,6 @@ class PromptRegistry:
                 render=_render_system_output_style_prompt,
             ),
             PromptModule(
-                id="system.lara_control_plane",
-                phase="request_system",
-                type="policy",
-                cache_scope="request",
-                order=110,
-                render=_render_system_lara_control_plane_prompt,
-                required=True,
-            ),
-            PromptModule(
                 id="tool.available",
                 phase="request_system",
                 type="tool",
@@ -119,22 +107,6 @@ class PromptRegistry:
                 order=120,
                 render=_render_available_tools_prompt,
                 required=True,
-            ),
-            PromptModule(
-                id="system.tool_result_reminders",
-                phase="request_system",
-                type="runtime",
-                cache_scope="request",
-                order=140,
-                render=_render_tool_result_reminders_prompt,
-            ),
-            PromptModule(
-                id="system.token_budget",
-                phase="request_system",
-                type="runtime",
-                cache_scope="request",
-                order=150,
-                render=_render_token_budget_prompt,
             ),
         ]
 
