@@ -29,7 +29,7 @@ from lara.config import load_run_config
 from lara.core.io import plain_object
 from lara.orchestration import LocalExecutionHost
 from lara.runtime.eternal_conversation import eternal_enabled_for, load_projection
-from lara.schema import AgentSession
+from lara.schema import AgentSession, RunConfig
 from lara.sessions import SessionManager, realtime_enabled_for
 from lara.sessions.manager import LARA_SAYS_SESSION_MODE
 
@@ -55,7 +55,8 @@ class LaraSessionAgent:
 
     工具、系统提示词与运行预算来自 lara 原生配置（agent profile、外部工具、
     max_steps），``AgentInput`` 的对应字段在 lara 路径下不生效；``label``
-    用于结果的 ``label`` 字段。
+    用于结果的 ``label`` 字段。``config`` 供上层门面复用同一份已解析配置
+    （模型组、scheduler、永续会话开关等）；省略时按 ``workspace_root`` 加载。
     """
 
     def __init__(
@@ -66,8 +67,9 @@ class LaraSessionAgent:
         mode: str = "chat",
         interactive_approvals: bool = False,
         eternal_memory: bool | None = None,
+        config: RunConfig | None = None,
     ) -> None:
-        self._config = load_run_config(workspace_root=workspace_root)
+        self._config = config or load_run_config(workspace_root=workspace_root)
         if eternal_memory is not None:
             # 部署总开关覆写：标准适配层作为部署方决定是否启用永续会话；
             # 会话级 opt-in 仍由 enable_eternal_memory() 显式控制。
