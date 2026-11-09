@@ -1,10 +1,10 @@
-# Config
+# Config (kernel)
 
-Loads runtime/project behavior and agent/model settings from user-level
-`~/.lara/config.yaml`, and credentials from user-level and workspace fallback
-sources.
+Kernel-side configuration surface. It owns only pure shape validation of the
+raw configuration mapping (`validate_config_mapping`); the typed settings live
+in `lara.schema` (`RunConfig` and friends).
 
-This repository intentionally uses one user config source; when user config does
-not define a setting it is loaded from built-in defaults.
-
-`loader.py` may depend on schema and credentials, but not on runtime, evaluation, CLI, or API adapters.
+The configuration *mechanism* — reading `~/.lara/config.yaml`, merging
+defaults, parsing the YAML subset, and editing files — lives in
+`lara_shell.config`. The kernel never imports that module; the shell loader
+calls `lara.config.validate_config_mapping` before constructing `RunConfig`.
