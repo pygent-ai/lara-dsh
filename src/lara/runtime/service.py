@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from html import escape
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, cast
+from typing import TYPE_CHECKING, Any, Mapping, Protocol, TypeAlias, cast
 
 from pygent import (
     AIMessage,
@@ -136,6 +136,18 @@ RECOVERY_CLAIM_WAIT_SECONDS = 31.0
 # deadline is rejected at admission; this ceiling is the practical maximum.
 TURN_DEADLINE_SECONDS = 24 * 60 * 60
 
+AgentDefinitionKey: TypeAlias = tuple[
+    int, bool, str, str | None, bool, bool
+]
+
+
+class ModelBoundAgent(Protocol):
+    """The model-facing surface shared by LaraAgent and ForkReplyModule."""
+
+    config: RunConfig
+    model_group_name: str
+    llm: Any | None
+
 
 # Non-durable (interruptible) turns resolve their context from this registry;
 # durable turns keep reading the SQLite history record.
@@ -204,13 +216,11 @@ class _SpeakExecutor:
                 args.attachments, self.service.config.workspace_root
             )
             attachments = [item.relative for item in resolved]
-        await context.emit(
-            kind="lara.realtime.speak",
-            data={
-                "text": args.text or "",
-                "attachments": attachments,
-            },
-        )
+        speak_event: Mapping[str, Any] = {
+            "text": args.text or "",
+            "attachments": attachments,
+        }
+        await context.emit("lara.realtime.speak", speak_event)
         if self.channels:
             text = args.text or ""
             if attachments:
@@ -429,9 +439,7 @@ class LaraRuntimeService:
             if config.resolved_agent is not None and config.model_config is not None
             else None
         )
-        self._agent_definitions: dict[
-            tuple[int, bool, str, str | None, bool], LaraAgent
-        ] = (
+        self._agent_definitions: dict[AgentDefinitionKey, LaraAgent] = (
             {
                 (
                     id(config),
@@ -439,6 +447,7 @@ class LaraRuntimeService:
                     config.resolved_agent.default_model_group,
                     None,
                     config.eternal_conversation.enabled,
+                    config.realtime_interaction.enabled,
                 ): template
             }
             if template is not None and config.resolved_agent is not None
@@ -846,7 +855,7 @@ class LaraRuntimeService:
     async def bind(
         self,
         module: Any,
-        agent: LaraAgent,
+        agent: ModelBoundAgent,
         *,
         fork_profiles: Mapping[str, ForkModelProfile] | None = None,
     ) -> Any:
@@ -953,13 +962,13 @@ class LaraRuntimeService:
     ) -> dict[str, dict[str, str]]:
         """The ExecutionOptions ``model_calls`` entry for one group/profile."""
 
+        if profile_name is None:
+            if selected_model_key is None:
+                raise ValueError("model_key must be a non-empty string")
+            profile_name = preferred_profile_name(selected_model_key)
         return {
             f"lara:{group_name}": {
-                "profile": (
-                    preferred_profile_name(selected_model_key)
-                    if profile_name is None
-                    else profile_name
-                )
+                "profile": profile_name,
             }
         }
 
@@ -1185,8 +1194,11 @@ class LaraRuntimeService:
             selected_model_key=session.selected_model_key,
             tools=main_agent.tool_definitions,
         )
+        resolved_agent = config.resolved_agent
+        if resolved_agent is None:
+            raise ValueError("resolved agent configuration is required")
         group_name = (
-            session.model_group_name or config.resolved_agent.default_model_group
+            session.model_group_name or resolved_agent.default_model_group
         )
         fork_profiles = (
             fork_model_profiles(
@@ -1240,18 +1252,15 @@ class LaraRuntimeService:
     ) -> ForkReplyModule:
         """One cached fork-reply graph per configuration shape."""
 
-        group_name = (
-            model_group_name or self.config.resolved_agent.default_model_group
-        )
+        resolved_agent = self.config.resolved_agent
+        if resolved_agent is None:
+            raise ValueError("resolved agent configuration is required")
+        group_name = model_group_name or resolved_agent.default_model_group
         key = (id(self.config), group_name, selected_model_key, tools)
         existing = self._fork_agents.get(key)
         if existing is not None:
             return existing
-        invoker = (
-            self._model_invokers.get(self.config.resolved_agent.alias)
-            if self.config.resolved_agent is not None
-            else None
-        )
+        invoker = self._model_invokers.get(resolved_agent.alias)
         retry = self.config.model_retry
         agent = ForkReplyModule(
             config=self.config,
