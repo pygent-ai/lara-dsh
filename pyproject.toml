@@ -47,6 +47,6 @@ markers = [
 # 本机验证环境：暂用原 lara 项目的 venv（内含 pygent/凭据组）；
 # 独立 `uv sync` 之后可删去 venvPath/venv 两行。
 [tool.pyright]
-include = ["src/lara_sdk", "tests", "examples"]
+include = ["src/lara_sdk", "src/lara_shell", "tests", "examples"]
 venvPath = "C:/Projects/lara"
 venv = ".venv"

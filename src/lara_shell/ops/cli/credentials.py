@@ -6,7 +6,7 @@ from typing import Any
 
 from lara_shell.ops.cli._base import config_from_args
 from lara.core.io import non_empty_string as _non_empty
-from lara.credentials import (
+from lara_shell.credentials import (
     DEFAULT_API_KEY_ENV,
     credential_is_configured,
     delete_keyring_credential,
@@ -159,7 +159,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
 
 def _keyring_available() -> bool:
     try:
-        import keyring  # noqa: F401
+        import keyring  # type: ignore[import-not-found]  # noqa: F401
     except ImportError:
         return False
     return True

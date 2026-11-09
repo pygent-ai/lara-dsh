@@ -9,7 +9,7 @@ from lara.core.io import load_env_file, parse_env_entries
 from lara.core.io import non_empty_string as _non_empty
 
 try:
-    import keyring
+    import keyring  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - optional dependency
     keyring = None  # type: ignore[assignment]
 

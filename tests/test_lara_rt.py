@@ -1,6 +1,6 @@
 """lara_sdk.lara_rt 的单元测试。
 
-隔离策略：monkeypatch ``lara.config.loader.user_lara_root`` 指向临时目录，
+隔离策略：monkeypatch ``lara_shell.config.loader.user_lara_root`` 指向临时目录，
 会话存储、运行时 SQLite、凭据读取全部落在临时目录；凭据缺失时
 ``LaraAgent.llm`` 为 ``None``，因此不会发起任何真实模型调用。
 """

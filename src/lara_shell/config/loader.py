@@ -10,7 +10,7 @@ from pygent.llm import ModelConfig
 from lara.config import validate_config_mapping
 from lara.core.io import non_empty_string as _non_empty
 from lara.core.paths import user_lara_root
-from lara.credentials import load_credentials
+from lara_shell.credentials import load_credentials
 from lara.schema import (
     BashCliPreset,
     DelegationConfig,

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from lara_shell.config import load_run_config
+from lara_shell.credentials import build_credential_environment
 from lara.core.io import plain_object
 from lara.dispatch import DispatchOperationView, DispatchService, DispatchStore
 from lara.orchestration import LocalExecutionHost, ManagedSessionTurn
@@ -341,9 +342,12 @@ def _turn_result_payload(turn: ManagedSessionTurn, output: Any) -> dict[str, Any
 
 
 def _execution_host(config: RunConfig) -> LocalExecutionHost:
-    """Compose the CLI execution host with the shell-owned config loader."""
+    """Compose the CLI execution host with shell-owned config and credentials."""
 
-    return LocalExecutionHost(run_config_loader=load_run_config)
+    return LocalExecutionHost(
+        credential_environ=build_credential_environment(config.user_lara_root),
+        run_config_loader=load_run_config,
+    )
 
 
 def _config_and_manager(
