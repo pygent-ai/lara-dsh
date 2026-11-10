@@ -81,6 +81,59 @@ def test_resume_parses_positional_session_and_prompt() -> None:
     assert args.cwd is None
 
 
+def test_sessions_parses_home() -> None:
+    args = _parse(["dsh", "sessions", "--home", "H"])
+    assert args.home == "H"
+
+
+def test_sessions_lists_durable_sessions_newest_first(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    home = tmp_path / "home"
+    store = home / "storages" / "session_projcache" / "sessions"
+    store.mkdir(parents=True)
+    durable = home / "sessions" / "ws-slug" / "s-older"
+    durable.mkdir(parents=True)
+
+    older = {
+        "record": {
+            "identity": {"createdAt": 111, "cwd": "C:/w"},
+            "rows": {"title": {"val": "旧会话"}},
+        }
+    }
+    newer = {
+        "record": {
+            "identity": {"createdAt": 222, "cwd": "C:/w2"},
+            "rows": {"title": {"val": "新会话"}},
+        }
+    }
+    (store / "s-older.json").write_text(json.dumps(older), encoding="utf-8")
+    (store / "s-newer.json").write_text(json.dumps(newer), encoding="utf-8")
+    (store / "broken.json").write_text("{not json", encoding="utf-8")
+
+    exit_code = main(["dsh", "sessions", "--home", str(home)])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    ids = [item["session_id"] for item in payload["sessions"]]
+    assert ids == ["s-newer", "s-older"]  # newest first; corrupt file skipped
+    older_entry = payload["sessions"][1]
+    assert older_entry["title"] == "旧会话"
+    assert older_entry["cwd"] == "C:/w"
+    assert older_entry["resumable"] is True
+    assert payload["sessions"][0]["resumable"] is False
+
+
+def test_sessions_empty_home_renders_empty_list(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    exit_code = main(["dsh", "sessions", "--home", str(tmp_path)])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["sessions"] == []
+
+
 def test_run_requires_prompt() -> None:
     with pytest.raises(SystemExit):
         _parse(["dsh", "run"])

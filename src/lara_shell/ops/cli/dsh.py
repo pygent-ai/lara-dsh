@@ -7,6 +7,7 @@ DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY / DSH_MODEL。
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,18 @@ def register_dsh_parser(subparsers: Any) -> None:
     resume.add_argument("prompt", help="Prompt for the resumed session")
     _add_dsh_target(resume)
     resume.set_defaults(handler=_dsh_resume)
+
+    sessions = commands.add_parser(
+        "sessions", help="List durable dsh sessions available for resume"
+    )
+    sessions.add_argument(
+        "--home",
+        default=None,
+        metavar="DIR",
+        help="dsh home directory holding durable sessions "
+        f"(default: {DEFAULT_DSH_HOME})",
+    )
+    sessions.set_defaults(handler=_dsh_sessions)
 
 
 def _add_dsh_target(parser: argparse.ArgumentParser) -> None:
@@ -77,6 +90,42 @@ def _dsh_resume(args: argparse.Namespace) -> dict[str, Any]:
     with DshGateway(config) as gateway:
         response, session_id = gateway.resume_run(args.session_id, args.prompt)
     return _dsh_result(session_id, response, config)
+
+
+def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
+    home = Path(args.home) if args.home else DEFAULT_DSH_HOME
+    store = home / "storages" / "session_projcache" / "sessions"
+    durable_dir = home / "sessions"
+
+    sessions = []
+    for path in sorted(store.glob("*.json")):
+        try:
+            record = (json.loads(path.read_text(encoding="utf-8")) or {}).get(
+                "record"
+            ) or {}
+        except (OSError, ValueError):
+            continue
+        identity = record.get("identity") or {}
+        rows = record.get("rows") or {}
+        title = (rows.get("title") or {}).get("val")
+        created = identity.get("createdAt")
+        resumable = any(
+            (workspace / path.stem).is_dir()
+            for workspace in (durable_dir.iterdir() if durable_dir.is_dir() else ())
+            if workspace.is_dir()
+        )
+        sessions.append(
+            {
+                "session_id": path.stem,
+                "title": str(title) if title else "",
+                "cwd": str(identity.get("cwd") or ""),
+                "created_at": created,
+                "resumable": resumable,
+            }
+        )
+
+    sessions.sort(key=lambda item: item["created_at"] or 0, reverse=True)
+    return {"home": str(home), "sessions": sessions}
 
 
 def _dsh_result(
