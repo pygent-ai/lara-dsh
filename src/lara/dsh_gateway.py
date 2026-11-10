@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from deepseek_harness import DeepSeekHarness, DeepSeekHarnessConfig
+from deepseek_harness import DeepSeekHarness, DeepSeekHarnessConfig, RunResult
 
 DEFAULT_DSH_PROVIDER = "deepseek-official"
 DEFAULT_DSH_MODEL = "deepseek-v4-flash"
@@ -26,6 +26,7 @@ class DshGatewayConfig:
     model: str = DEFAULT_DSH_MODEL
     api_key: str | None = None
     base_url: str | None = None
+    runtime_cwd: Path | None = None
 
     @classmethod
     def from_env(cls, dsh_home: str | Path, cwd: str | Path) -> "DshGatewayConfig":
@@ -41,6 +42,7 @@ class DshGatewayConfig:
             model=os.environ.get("DSH_MODEL") or DEFAULT_DSH_MODEL,
             api_key=os.environ.get("DEEPSEEK_API_KEY") or None,
             base_url=os.environ.get("DEEPSEEK_BASE_URL") or None,
+            runtime_cwd=os.environ.get("DSH_RUNTIME_CWD") or None,
         )
 
 
@@ -68,10 +70,22 @@ class DshGateway:
     def start(self) -> None:
         if self._harness is not None:
             return
+        # The compiled dsh runtime extracts its embedded node_modules to
+        # "<runtime subprocess cwd drive>:\snapshot\node\..." and loads native
+        # modules from there. Keep that extraction on a stable, always-
+        # writable drive instead of the agent workspace's drive: with an
+        # E:-drive workspace the extraction lands on E:\snapshot and every
+        # turn fails with a koffi.node load error.
+        runtime_cwd = self._config.runtime_cwd or (
+            Path.home() / ".lara" / "dsh-runtime-cwd"
+        )
+        runtime_cwd.mkdir(parents=True, exist_ok=True)
+        self._config.dsh_home.mkdir(parents=True, exist_ok=True)
         config = DeepSeekHarnessConfig(
             provider=self._config.provider,
             model=self._config.model,
             cwd=str(self._config.cwd),
+            runtime_cwd=str(runtime_cwd),
             dsh_home=str(self._config.dsh_home),
             base_url=self._config.base_url,
             api_key=self._config.api_key,
@@ -84,6 +98,11 @@ class DshGateway:
         self.start()
         assert self._harness is not None
         result = self._harness.run(prompt, session_id=session_id)
+        if self._is_bootstrap_race(result):
+            # The first turn after a runtime boot can race the node_modules
+            # snapshot extraction; rerunning on the same durable session
+            # succeeds once the snapshot is in place.
+            result = self._harness.run(prompt, session_id=result.session_id)
         return result.final_response, result.session_id
 
     def resume_run(self, session_id: str, prompt: str) -> tuple[str, str]:
@@ -92,7 +111,13 @@ class DshGateway:
         assert self._harness is not None
         session = self._harness.resume_session(session_id)
         result = session.run(prompt)
+        if self._is_bootstrap_race(result):
+            result = session.run(prompt)
         return result.final_response, result.session_id
+
+    @staticmethod
+    def _is_bootstrap_race(result: RunResult) -> bool:
+        return result.finish_reason == "error" and not result.final_response
 
     def close(self) -> None:
         if self._harness is not None:
