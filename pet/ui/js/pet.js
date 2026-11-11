@@ -20,6 +20,8 @@ export class Pet {
 
   setSkin(skin) {
     this.skin = skin;
+    // 皮肤文件是外部输入：缺当前状态就回 idle，别让动画循环崩掉
+    if (!this.skin.manifest.states[this.state]) this.state = "idle";
     this.frameIx = 0;
     this.draw(this.skin.manifest.states[this.state].frames[0]);
   }

@@ -21,6 +21,7 @@ export class Bubble {
     this.typing = false;
     this.streaming = false;
     this.visible = false;
+    this.suppressed = false;
     this.unread = 0;
     this.holdTimer = null;
     this.unseenTimer = null;
@@ -49,15 +50,43 @@ export class Bubble {
   // —— queue & visibility ————————————————————————————————————————————
   say(text) {
     this.queue.push(text);
-    if (!this.typing && !this.streaming && !this.visible) this.next();
+    if (this.suppressed) {
+      // 面板打开时消息只进面板历史，气泡不出场（计为已读）
+      this.bumpUnread();
+      this.setUnread(0);
+      return;
+    }
+    if (this.typing || this.streaming) return;
+    if (!this.visible) {
+      this.next();
+      return;
+    }
+    // 上一条已展示完且正停留：安排换场，别让新消息干等
+    if (!this.holdTimer) {
+      this.holdTimer = setTimeout(() => {
+        this.hide();
+        this.next();
+      }, HOLD_MS);
+    }
   }
 
   stream(text) {
-    // Live delta: open a bubble on first sight and append words verbatim.
+    if (this.suppressed) return;
     if (this.typing || this.queue.length > 0) return; // never interleave
     if (!this.visible) this.show();
+    if (!this.streaming) {
+      // 新一条消息的流式开始：清掉停留期旧内容与待换场计时
+      clearTimeout(this.holdTimer);
+      this.holdTimer = null;
+      this.textEl.textContent = "";
+    }
     this.streaming = true;
     this.textEl.textContent += text;
+  }
+
+  setSuppressed(on) {
+    this.suppressed = on;
+    if (on && this.visible) this.hide();
   }
 
   finalize(text) {

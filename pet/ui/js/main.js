@@ -56,6 +56,7 @@ async function main() {
   const panelOpen = () => !panel.classList.contains("hidden");
   const togglePanel = (open = panelOpen()) => {
     panel.classList.toggle("hidden", !open);
+    bubble.setSuppressed(open);
     if (open) {
       renderTranscript();
       panelInput.focus();
@@ -142,6 +143,9 @@ async function main() {
     bar.classList.toggle("hidden", !open);
     document.body.classList.toggle("input-open", open);
     if (open) {
+      // 抢系统焦点：三击时用户键盘大概率在前台应用里，不抢焦点按键会
+      // 打进那个应用而不是输入条。
+      getCurrentWindow().setFocus().catch(() => {});
       input.focus();
       pet.setState("listening");
       bubble.engage();
