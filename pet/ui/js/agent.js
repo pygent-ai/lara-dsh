@@ -1,9 +1,51 @@
-// Agent transport. M1 ships a MockAgent so the pet is demonstrable without the
-// Python sidecar; the future SidecarTransport speaks the same event protocol:
+// Agent transport. Two implementations speak ONE event protocol:
 //   { type: "turn_started" }
 //   { type: "speak", text, attachments }   (final, complete speak delivery)
 //   { type: "speak_delta", text }          (streaming preview, M3 bridge)
 //   { type: "turn_finished" }
+// plus transport-lifecycle events: sidecar_ready / sidecar_error.
+export class SidecarTransport {
+  constructor(onEvent) {
+    this.onEvent = onEvent;
+  }
+
+  handle(event) {
+    switch (event?.type) {
+      case "ready":
+        this.onEvent({ type: "sidecar_ready", session: event.session_id });
+        break;
+      case "turn_started":
+        this.onEvent({ type: "turn_started" });
+        break;
+      case "speak":
+        this.onEvent({
+          type: "speak",
+          text: String(event.text || ""),
+          attachments: Array.isArray(event.attachments) ? event.attachments : [],
+        });
+        break;
+      case "turn_finished":
+        this.onEvent({ type: "turn_finished", error: event.error || null });
+        break;
+      case "error":
+        this.onEvent({ type: "sidecar_error", msg: String(event.msg || "sidecar error") });
+        break;
+      case "sidecar_exited":
+        this.onEvent({ type: "sidecar_error", msg: "sidecar exited" });
+        break;
+      case "log":
+        console.log("[sidecar]", event.msg);
+        break;
+    }
+  }
+
+  send(text) {
+    window.__TAURI__.core
+      .invoke("agent_send", { text })
+      .catch((e) => this.onEvent({ type: "sidecar_error", msg: String(e) }));
+  }
+}
+
 export class MockAgent {
   constructor(emit) {
     this.emit = emit;

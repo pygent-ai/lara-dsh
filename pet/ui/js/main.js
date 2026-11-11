@@ -1,7 +1,7 @@
 import { loadSkin } from "./skin.js";
 import { Pet } from "./pet.js";
 import { Bubble } from "./bubble.js";
-import { MockAgent } from "./agent.js";
+import { MockAgent, SidecarTransport } from "./agent.js";
 
 const { listen } = window.__TAURI__.event;
 const { getCurrentWindow, PhysicalPosition } = window.__TAURI__.window;
@@ -35,9 +35,14 @@ async function main() {
     },
   );
 
-  // Agent events drive pet state; speak events become bubbles (M1: mock).
-  const agent = new MockAgent((event) => {
+  // One event protocol, two transports: the sidecar owns the real lara
+  // realtime session; if it fails to come up, fall back to the mock so the
+  // pet stays demonstrable.
+  let fellBack = false;
+  const handleAgentEvent = (event) => {
     switch (event.type) {
+      case "sidecar_ready":
+        break; // real session attached; bubbles now carry real speak events
       case "turn_started":
         pet.setState("thinking");
         break;
@@ -49,8 +54,25 @@ async function main() {
       case "turn_finished":
         pet.setState(petIdleState());
         break;
+      case "sidecar_error":
+        if (fellBack) return;
+        fellBack = true;
+        transport = mock;
+        bubble.say(`sidecar 不可用（${event.msg}），暂时进入演示模式。`);
+        break;
     }
-  });
+  };
+  const sidecar = new SidecarTransport(handleAgentEvent);
+  const mock = new MockAgent(handleAgentEvent);
+  let transport = sidecar;
+  invoke("sidecar_status")
+    .then((status) => {
+      if (!status.running && status.error) {
+        handleAgentEvent({ type: "sidecar_error", msg: status.error });
+      }
+    })
+    .catch(() => {});
+  await listen("pet://agent-event", (event) => transport.handle(event.payload));
 
   const toggleInput = (open = !inputOpen()) => {
     bar.classList.toggle("hidden", !open);
@@ -70,7 +92,7 @@ async function main() {
     if (e.key === "Enter" && input.value.trim()) {
       const text = input.value.trim();
       input.value = "";
-      agent.send(text);
+      transport.send(text);
     } else if (e.key === "Escape") {
       toggleInput(false);
     }
