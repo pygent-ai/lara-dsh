@@ -1,0 +1,120 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  user-select: none;
+}
+
+#stage {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+#pet {
+  position: absolute;
+  bottom: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 192px;
+  height: 192px;
+  image-rendering: pixelated;
+  cursor: grab;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#bubble {
+  position: absolute;
+  left: 50%;
+  bottom: 206px;
+  transform: translateX(-50%);
+  width: max-content;
+  min-width: 0;
+  max-width: 272px;
+  padding: 8px 26px 8px 12px;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(59, 59, 79, 0.25);
+  border-radius: 14px;
+  box-shadow: 0 4px 14px rgba(30, 30, 50, 0.25);
+  font-size: 13px;
+  line-height: 1.5;
+  color: #2b2b3a;
+  word-break: break-word;
+}
+
+/* 气泡尾巴，指向兔兔头顶 */
+#bubble::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translateX(-50%) rotate(45deg);
+  background: rgba(255, 255, 255, 0.96);
+  border-right: 1px solid rgba(59, 59, 79, 0.25);
+  border-bottom: 1px solid rgba(59, 59, 79, 0.25);
+}
+
+#bubble-close {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  border: none;
+  background: none;
+  color: #9a9ab0;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#bubble-close:hover {
+  color: #2b2b3a;
+}
+
+#bubble-text {
+  min-height: 0;
+  /* speak 文本可能带换行；只让文本保留换行，容器不吃标签间空白 */
+  white-space: pre-wrap;
+}
+
+#input-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 206px;
+  transform: translateX(-50%);
+  width: 280px;
+}
+
+/* 输入条打开时气泡整体上移让位 */
+body.input-open #bubble {
+  bottom: 252px;
+}
+
+#chat-input {
+  width: 100%;
+  padding: 9px 14px;
+  border: 1px solid rgba(59, 59, 79, 0.35);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 4px 14px rgba(30, 30, 50, 0.25);
+  font-size: 13px;
+  color: #2b2b3a;
+  outline: none;
+}
+
+#chat-input::placeholder {
+  color: #a0a0b8;
+}

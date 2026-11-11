@@ -1,0 +1,40 @@
+{
+  "name": "default-bunny",
+  "frame": {
+    "w": 32,
+    "h": 32
+  },
+  "scale": 6,
+  "states": {
+    "idle": {
+      "fps": 1.6,
+      "frames": [
+        0,
+        1
+      ]
+    },
+    "listening": {
+      "fps": 3,
+      "frames": [
+        2,
+        3
+      ]
+    },
+    "thinking": {
+      "fps": 4,
+      "frames": [
+        4,
+        5
+      ]
+    },
+    "speaking": {
+      "fps": 8,
+      "frames": [
+        6,
+        7,
+        8,
+        9
+      ]
+    }
+  }
+}
