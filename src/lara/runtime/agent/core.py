@@ -617,7 +617,7 @@ class LaraAgent(Agent[UserMessage, AIMessage]):
 
     def _register_default_tools(self) -> None:
         self._standard_tools = StandardTools(
-            workspace_root=self.workspace_root, restrict_to_workspace=False
+            workspace_root=self.workspace_root, restrict_to_workspace=True
         )
         self._toolkit = ToolKit(
             self._standard_tools.bash.bash,

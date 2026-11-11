@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import re
 import shlex
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -23,6 +24,83 @@ MAX_BASH_RESULT_LINES = 200
 BASH_RESULT_PREVIEW_LINES = 120
 BASH_RESULT_PREVIEW_CHARS = 12_000
 SPOOLED_TEXT_TOOL_NAMES = frozenset({"bash", "grep"})
+
+# Standard-tool arguments that carry a filesystem path. Everything else in an
+# arguments mapping never addresses the filesystem (bash command text is
+# audited elsewhere, not path-resolved here).
+_EXEMPT_PATH_ARGUMENT_KEYS = frozenset({"file_path", "path", "working_directory"})
+
+
+def _is_within_root(candidate: Path, root: Path) -> bool:
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _arguments_touch_exempt_roots(
+    arguments: Mapping[str, Any],
+    *,
+    workspace_root: Path,
+    exempt_roots: tuple[Path, ...],
+) -> bool:
+    """True when a path argument lands outside the workspace but inside an exempt root."""
+
+    for key in _EXEMPT_PATH_ARGUMENT_KEYS:
+        value = arguments.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            continue  # relative arguments always resolve inside the workspace
+        resolved = candidate.resolve()
+        if _is_within_root(resolved, workspace_root):
+            continue
+        if any(_is_within_root(resolved, root) for root in exempt_roots):
+            return True
+    return False
+
+
+def route_exempt_roots(
+    executor_factory: Callable[[Any, Callable[..., object]], Any],
+    *,
+    workspace_root: str | Path,
+    exempt_roots: Sequence[str | Path],
+    mirror_handlers: Mapping[str, Callable[..., object]],
+) -> Callable[[Any, Callable[..., object]], Any]:
+    """Wrap a tool executor factory so allowlisted roots bypass workspace confinement.
+
+    The executor seam receives the compiled standard-tool invoke, which takes
+    the frozen arguments mapping. A call whose path arguments resolve under an
+    exempt root (Lara's own state: the user lara root and the project lara
+    root, e.g. skills, sessions, dsh home) runs the matching unrestricted
+    mirror handler with the same keyword arguments; everything else keeps the
+    restricted handler, including its ``path_outside_workspace`` error. The
+    executor class is preserved so sandbox profiles stay intact.
+    """
+
+    workspace = Path(workspace_root).expanduser().resolve()
+    roots = tuple(
+        dict.fromkeys(Path(root).expanduser().resolve() for root in exempt_roots)
+    )
+
+    def factory(spec: Any, handler: Callable[..., object]) -> Any:
+        inner = executor_factory(spec, handler)
+        mirror = mirror_handlers.get(spec.definition.name)
+        if mirror is None:
+            return inner
+
+        def execute(arguments: Mapping[str, Any]) -> Any:
+            if _arguments_touch_exempt_roots(
+                arguments, workspace_root=workspace, exempt_roots=roots
+            ):
+                return mirror(**dict(arguments))
+            return handler(arguments)
+
+        return type(inner)(execute)
+
+    return factory
 
 
 class SnapshotBudgetExceeded(RuntimeError):

@@ -125,6 +125,7 @@ from .eternal_conversation import (
     render_memory_snapshot,
 )
 from .file_effects import FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor
+from .tools import route_exempt_roots
 from .fork_context import (
     SessionForkWindowSource,
     restore_session_context,
@@ -320,12 +321,32 @@ class LaraRuntimeService:
         self.runtime.attach_executor_registry(self.executor_registry)
         self._diff_executor = _DiffExecutor(self)
         standard = StandardTools(
-            workspace_root=config.workspace_root, restrict_to_workspace=False
+            workspace_root=config.workspace_root, restrict_to_workspace=True
         )
         self._standard_tools = standard
+        # Lara's own state (skills, sessions, dsh home) lives under the lara
+        # roots outside the workspace; the mirror surface serves those paths
+        # while everything else stays confined (route_exempt_roots). It shares
+        # the primary task manager so exempt-cwd background tasks stay
+        # visible to tool_task_get/stop.
+        exempt_mirror = StandardTools(
+            workspace_root=config.workspace_root,
+            restrict_to_workspace=False,
+            task_manager=standard.bash.task_manager,
+        )
+        self._exempt_tools = exempt_mirror
+        mirror_handlers = {
+            "bash": exempt_mirror.bash.bash,
+            "read": exempt_mirror.files.read,
+            "write": exempt_mirror.files.write,
+            "edit": exempt_mirror.files.edit,
+            "glob": exempt_mirror.files.glob,
+            "grep": exempt_mirror.files.grep,
+        }
         # Memory jobs (fork extractor / child builder) share a surface with the
-        # exact same tool composition as the foreground, per the owner's decision
-        # to open them up before the production tool pipeline lands.
+        # exact same tool composition as the foreground; they stay unrestricted
+        # (owner decision D15) because they must read session state outside the
+        # workspace.
         self._memory_job_tools = StandardTools(
             workspace_root=config.workspace_root,
             restrict_to_workspace=False,
@@ -341,10 +362,15 @@ class LaraRuntimeService:
             standard.files.grep,
         ).register_into_runtime(
             self.runtime,
-            executor_factory=lambda spec, handler: (
-                WorkspaceToolExecutor(handler)
-                if spec.sandbox_profile == "workspace"
-                else LocalToolExecutor(handler)
+            executor_factory=route_exempt_roots(
+                lambda spec, handler: (
+                    WorkspaceToolExecutor(handler)
+                    if spec.sandbox_profile == "workspace"
+                    else LocalToolExecutor(handler)
+                ),
+                workspace_root=config.workspace_root,
+                exempt_roots=(config.user_lara_root, config.lara_root),
+                mirror_handlers=mirror_handlers,
             ),
         )
         self.runtime.register_tool(FILE_EFFECT_TOOL_SPEC, FileEffectToolExecutor())
@@ -1598,6 +1624,7 @@ class LaraRuntimeService:
         await self.runtime.close(cancel=cancel)
         await self.bash_tasks.close()
         await self._standard_tools.aclose()
+        await self._exempt_tools.aclose()
         await self._memory_job_tools.aclose()
         for pool in self._mcp_pools:
             try:
