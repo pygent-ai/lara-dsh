@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "deepseek-harness-runtime-bin>=0.2.1rc2",
     "deepseek-harness-sdk>=0.2.1rc2",
-    "pygent-ai[video]==0.3.35",
+    "pygent-ai[video]==0.5.1",
 ]
 
 [dependency-groups]
@@ -38,9 +38,5 @@ markers = [
     "e2e: end-to-end functional-anchor scenario (real runtime, scripted model)",
 ]
 
-# 本机验证环境：暂用原 lara 项目的 venv（内含 pygent/凭据组）；
-# 独立 `uv sync` 之后可删去 venvPath/venv 两行。
 [tool.pyright]
 include = ["src/lara_sdk", "src/lara_shell", "tests", "examples"]
-venvPath = "C:/Projects/lara"
-venv = ".venv"
