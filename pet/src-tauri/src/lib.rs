@@ -27,13 +27,6 @@ impl Sidecar {
 }
 
 #[tauri::command]
-fn set_click_through(window: tauri::WebviewWindow, on: bool) -> Result<(), String> {
-    window
-        .set_ignore_cursor_events(on)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn quit_app(window: tauri::WebviewWindow) {
     window.app_handle().exit(0);
 }
@@ -66,6 +59,77 @@ fn sidecar_status(state: tauri::State<Sidecar>) -> serde_json::Value {
         "running": state.stdin.lock().map(|g| g.is_some()).unwrap_or(false),
         "error": state.error.lock().ok().and_then(|g| g.clone()),
     })
+}
+
+// —— pet-config（热键 / 皮肤）持久化于 ~/.lara/pet-config.json ————————
+
+fn pet_config_path() -> PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    home.join(".lara").join("pet-config.json")
+}
+
+fn read_pet_config() -> serde_json::Value {
+    std::fs::read_to_string(pet_config_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| {
+            json!({
+                "hotkey": {"key": "shift", "taps": 3, "window_ms": 800},
+                "skin": "default"
+            })
+        })
+}
+
+fn apply_hotkey_from_config(config: &serde_json::Value) {
+    let hotkey = &config["hotkey"];
+    let key = hotkey["key"].as_str().unwrap_or("shift");
+    let taps = hotkey["taps"].as_u64().unwrap_or(3) as u32;
+    let window_ms = hotkey["window_ms"].as_u64().unwrap_or(800) as u32;
+    hook::set_hotkey(key, taps, window_ms);
+}
+
+#[tauri::command]
+fn get_pet_config() -> serde_json::Value {
+    read_pet_config()
+}
+
+#[tauri::command]
+fn set_pet_config(patch: serde_json::Value) -> Result<(), String> {
+    let mut config = read_pet_config();
+    if let Some(hotkey) = patch.get("hotkey") {
+        config["hotkey"] = hotkey.clone();
+        apply_hotkey_from_config(&config);
+    }
+    if let Some(skin) = patch.get("skin").and_then(|s| s.as_str()) {
+        config["skin"] = json!(skin);
+    }
+    let path = pet_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("config write failed: {e}"))
+}
+
+/// Skin pack names available under pet/ui/skins (a dir with skin.json).
+#[tauri::command]
+fn list_skins() -> Vec<String> {
+    let mut skins = Vec::new();
+    if let Some(repo) = find_repo_dir() {
+        if let Ok(entries) = std::fs::read_dir(repo.join("pet/ui/skins")) {
+            for entry in entries.flatten() {
+                if entry.path().join("skin.json").is_file() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        skins.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    skins.sort();
+    skins
 }
 
 /// Locate the repo root by walking up from the exe (dev layout: pet/src-tauri/target/debug).
@@ -135,10 +199,45 @@ fn kill_sidecar(app: &tauri::AppHandle) {
     }
 }
 
+/// Cursor polling: click-through outside the window, interactive inside.
+/// Transparent corners still catch clicks while the cursor is inside the
+/// rect; a full per-pixel hit-test needs the M3 cursor-forwarding design.
+fn spawn_click_through(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut ignoring = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            let Some(win) = app.get_webview_window("pet") else { continue };
+            let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
+                continue;
+            };
+            let mut point = POINT { x: 0, y: 0 };
+            if unsafe { GetCursorPos(&mut point) } == 0 {
+                continue;
+            }
+            let inside = point.x >= pos.x
+                && point.x < pos.x + size.width as i32
+                && point.y >= pos.y
+                && point.y < pos.y + size.height as i32;
+            let want = !inside;
+            if want != ignoring {
+                if win.set_ignore_cursor_events(want).is_ok() {
+                    ignoring = want;
+                }
+            }
+        }
+    });
+}
+
+use windows_sys::Win32::Foundation::POINT;
+use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
 pub fn run() {
     tauri::Builder::default()
         .manage(Sidecar::new())
         .setup(|app| {
+            apply_hotkey_from_config(&read_pet_config());
+
             let handle = app.handle().clone();
             let (tx, rx) = mpsc::channel::<()>();
             hook::set_trigger(tx);
@@ -148,15 +247,44 @@ pub fn run() {
                 }
             });
             std::thread::spawn(hook::install);
+            spawn_click_through(app.handle().clone());
+
+            // Tray: left-click toggles visibility; menu covers toggle + quit.
+            let toggle = tauri::menu::MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
+            let quit = tauri::menu::MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = tauri::menu::Menu::with_items(app, &[&toggle, &quit])?;
+            let tray = tauri::tray::TrayIconBuilder::new()
+                .icon(app.default_window_icon().expect("bundle icon").clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .build(app)?;
+            tray.on_menu_event(|app, event| match event.id.as_ref() {
+                "toggle" => toggle_pet_window(app),
+                "quit" => app.exit(0),
+                _ => {}
+            });
+            tray.on_tray_icon_event(|tray, event| {
+                if let tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up,
+                    ..
+                } = event
+                {
+                    toggle_pet_window(tray.app_handle());
+                }
+            });
+
             spawn_sidecar(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            set_click_through,
             quit_app,
             debug_fire_hotkey,
             agent_send,
-            sidecar_status
+            sidecar_status,
+            get_pet_config,
+            set_pet_config,
+            list_skins
         ])
         .build(tauri::generate_context!())
         .expect("error while building lara pet")
@@ -165,4 +293,14 @@ pub fn run() {
                 kill_sidecar(app_handle);
             }
         });
+}
+
+fn toggle_pet_window(app: &tauri::AppHandle) {
+    if let Some(win) = app.get_webview_window("pet") {
+        if win.is_visible().unwrap_or(false) {
+            let _ = win.hide();
+        } else {
+            let _ = win.show();
+        }
+    }
 }

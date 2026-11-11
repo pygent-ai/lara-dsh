@@ -17,10 +17,44 @@
           placeholder="跟兔兔说点什么…（Enter 发送 · Esc 关闭）"
         />
       </div>
+
+      <div id="chat-panel" class="hidden">
+        <div id="chat-history"></div>
+        <div class="chat-row">
+          <input id="panel-input" type="text" autocomplete="off" spellcheck="false" placeholder="发消息…" />
+          <button id="panel-collapse" title="收起面板">▾</button>
+        </div>
+      </div>
+
+      <div id="settings-panel" class="hidden">
+        <h3>桌宠设置</h3>
+        <label>触发键 <select id="set-key">
+          <option value="shift">Shift</option>
+          <option value="ctrl">Ctrl</option>
+          <option value="alt">Alt</option>
+          <option value="grave">`</option>
+          <option value="capslock">CapsLock</option>
+        </select></label>
+        <label>连击次数 <select id="set-taps">
+          <option value="2">双击</option>
+          <option value="3">三击</option>
+        </select></label>
+        <label>窗口 <select id="set-window">
+          <option value="500">宽松 0.5s</option>
+          <option value="800">标准 0.8s</option>
+          <option value="1200">迟缓 1.2s</option>
+        </select></label>
+        <label>皮肤 <select id="set-skin"></select></label>
+        <button id="settings-close">完成</button>
+      </div>
+
       <div id="bubble" class="hidden">
         <div id="bubble-text"></div>
+        <button id="bubble-panel" title="聊天面板">💬</button>
         <button id="bubble-close" title="关掉这条">×</button>
       </div>
+
+      <div id="unread-dot" class="hidden" title="有未读消息">1</div>
       <canvas id="pet" width="32" height="32"></canvas>
     </div>
     <script type="module" src="./js/main.js"></script>

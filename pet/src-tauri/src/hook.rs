@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use windows_sys::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -17,12 +17,54 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
 };
 
-/// Three taps must land within this window measured from the FIRST tap.
-const TAP_WINDOW_MS: u32 = 800;
 const VK_SHIFT: u32 = 0x10;
 const VK_LSHIFT: u32 = 0xA0;
 const VK_RSHIFT: u32 = 0xA1;
 const LLKHF_INJECTED: u32 = 0x10;
+
+/// The hotkey definition, mutable at runtime from the settings panel.
+#[derive(Clone, Copy)]
+pub struct HotkeyConfig {
+    /// Virtual keys that count as a tap (generic + left/right variants).
+    pub vks: [u32; 3],
+    /// Taps inside the window that trigger the hotkey.
+    pub taps: u32,
+    /// Sequence window measured from the FIRST tap (ms).
+    pub window_ms: u32,
+}
+
+static HOTKEY: RwLock<HotkeyConfig> = RwLock::new(HotkeyConfig {
+    vks: [VK_SHIFT, VK_LSHIFT, VK_RSHIFT],
+    taps: 3,
+    window_ms: 800,
+});
+
+/// Apply a hotkey binding from the settings panel (VK set by key name).
+pub fn set_hotkey(key: &str, taps: u32, window_ms: u32) {
+    let vks = match key {
+        "ctrl" => [0x11, 0xA2, 0xA3],
+        "alt" => [0x12, 0xA4, 0xA5],
+        "grave" => [0xC0, 0xC0, 0xC0],
+        "capslock" => [0x14, 0x14, 0x14],
+        _ => [VK_SHIFT, VK_LSHIFT, VK_RSHIFT],
+    };
+    let cfg = HotkeyConfig {
+        vks,
+        taps: taps.clamp(2, 5),
+        window_ms: window_ms.clamp(200, 2000),
+    };
+    if let Ok(mut slot) = HOTKEY.write() {
+        *slot = cfg;
+    }
+}
+
+fn current_hotkey() -> HotkeyConfig {
+    HOTKEY.read().map(|cfg| *cfg).unwrap_or(HotkeyConfig {
+        vks: [VK_SHIFT, VK_LSHIFT, VK_RSHIFT],
+        taps: 3,
+        window_ms: 800,
+    })
+}
 
 static TRIGGER: OnceLock<Sender<()>> = OnceLock::new();
 static FIRST_TAP_MS: AtomicU32 = AtomicU32::new(0);
@@ -48,22 +90,24 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         let info = &*(lparam as *const KBDLLHOOKSTRUCT);
         let keydown = wparam as u32 == WM_KEYDOWN || wparam as u32 == WM_SYSKEYDOWN;
-        let is_shift =
-            info.vkCode == VK_SHIFT || info.vkCode == VK_LSHIFT || info.vkCode == VK_RSHIFT;
-        if keydown && is_shift && (ALLOW_INJECTED.load(Ordering::Relaxed) || info.flags & LLKHF_INJECTED == 0)
+        let hotkey = current_hotkey();
+        let is_tap_key = hotkey.vks.contains(&info.vkCode);
+        if keydown
+            && is_tap_key
+            && (ALLOW_INJECTED.load(Ordering::Relaxed) || info.flags & LLKHF_INJECTED == 0)
         {
             let now = now_ms();
             let first = FIRST_TAP_MS.load(Ordering::Relaxed);
-            if TAPS.load(Ordering::Relaxed) == 0 || now.wrapping_sub(first) > TAP_WINDOW_MS {
+            if TAPS.load(Ordering::Relaxed) == 0 || now.wrapping_sub(first) > hotkey.window_ms {
                 TAPS.store(1, Ordering::Relaxed);
                 FIRST_TAP_MS.store(now, Ordering::Relaxed);
-                eprintln!("lara-pet: shift tap #1");
+                eprintln!("lara-pet: hotkey tap #1");
             } else {
                 let taps = TAPS.fetch_add(1, Ordering::Relaxed) + 1;
-                eprintln!("lara-pet: shift tap #{taps}");
-                if taps >= 3 {
+                eprintln!("lara-pet: hotkey tap #{taps}");
+                if taps >= hotkey.taps {
                     TAPS.store(0, Ordering::Relaxed);
-                    eprintln!("lara-pet: triple-shift TRIGGERED");
+                    eprintln!("lara-pet: hotkey TRIGGERED");
                     if let Some(sender) = TRIGGER.get() {
                         let _ = sender.send(());
                     }

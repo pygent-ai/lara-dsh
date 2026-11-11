@@ -18,6 +18,12 @@ export class Pet {
     this.frameIx = 0;
   }
 
+  setSkin(skin) {
+    this.skin = skin;
+    this.frameIx = 0;
+    this.draw(this.skin.manifest.states[this.state].frames[0]);
+  }
+
   tick(t) {
     const state = this.skin.manifest.states[this.state];
     if (t - this.lastTick >= 1000 / state.fps) {

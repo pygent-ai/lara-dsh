@@ -25,11 +25,14 @@ from pathlib import Path
 
 from lara.core.io import plain_object
 from lara.orchestration.execution_host import LocalExecutionHost
+from lara.runtime.agent.prompt_models import PromptRenderContext
+from lara.runtime.agent.speak_stream import SpeakStreamBridge
 from lara.schema import RuntimeApprovalConfig
 from lara.schema.models import RealtimeInteractionConfig
 from lara.sessions import SessionManager, LARA_SAYS_SESSION_MODE
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
+from lara_sdk.lara_profile import lara_prompt_modules
 
 CASE_ID = "pet"
 
@@ -74,12 +77,32 @@ class PetSession:
         self.config.runtime_approvals = RuntimeApprovalConfig(
             enabled=False, timeout_seconds=300.0, preauthorized_tools=()
         )
-        self.config.system_prompt = self.config.system_prompt or PET_SYSTEM_PROMPT
+        # The managed-execution binding does not carry the prompt registry to
+        # the executing module copy, so the canonical desktop-pet persona is
+        # rendered here into the static base prompt instead.
+        self.config.system_prompt = self.config.system_prompt or self._persona()
         self.user_root = Path(self.config.user_lara_root)
         self.manager = SessionManager(self.config)
         self.session_id = resolve_session(self.manager)
         self.turn_lock = asyncio.Lock()
         self.turn_count = 0
+
+    def _persona(self) -> str:
+        ctx = PromptRenderContext(
+            session_id=LARA_SAYS_SESSION_MODE,
+            workspace_root=self.workspace,
+            session_dir=self.workspace,
+            turn_id="static",
+            projection={},
+            tool_names=[],
+            request_id="pet-persona",
+            request_type="agent_turn",
+        )
+        return "\n\n".join(
+            module.render(ctx)
+            for module in lara_prompt_modules()
+            if module.phase == "static"
+        )
 
     def _config_loader(self, **kwargs):
         kwargs.setdefault("workspace_root", str(self.workspace))
@@ -134,6 +157,11 @@ class PetSession:
         )
         out({"type": "turn_started", "turn_id": turn_id})
         await turn.wait_ready()
+        # Consumer-side streaming bridge: model.tool_call.delta events flow
+        # through the turn stream; decode the speak arguments incrementally
+        # (pygent whitelists the model-layer event kinds, so the bridge lives
+        # here, on the renderer side of the bus).
+        speak_bridge = SpeakStreamBridge()
         async with turn.subscribe() as stream:
             async for event in stream:
                 if event.kind == "lara.realtime.speak":
@@ -143,6 +171,9 @@ class PetSession:
                         "text": str(data.get("text") or ""),
                         "attachments": list(data.get("attachments") or ()),
                     })
+                else:
+                    for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
+                        out({"type": "speak_delta", "text": suffix})
         output, _ = await turn.result()
         result = plain_object(plain_object(output.data).get("result"))
         out({

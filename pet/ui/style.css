@@ -43,7 +43,7 @@ body {
   width: max-content;
   min-width: 0;
   max-width: 272px;
-  padding: 8px 26px 8px 12px;
+  padding: 8px 46px 8px 12px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(59, 59, 79, 0.25);
   border-radius: 14px;
@@ -68,26 +68,53 @@ body {
   border-bottom: 1px solid rgba(59, 59, 79, 0.25);
 }
 
-#bubble-close {
+#bubble button {
   position: absolute;
-  top: 2px;
-  right: 4px;
+  top: 4px;
   border: none;
   background: none;
   color: #9a9ab0;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1;
   cursor: pointer;
+  padding: 2px;
 }
 
-#bubble-close:hover {
+#bubble button:hover {
   color: #2b2b3a;
+}
+
+#bubble-panel {
+  right: 20px;
+}
+
+#bubble-close {
+  right: 4px;
 }
 
 #bubble-text {
   min-height: 0;
   /* speak 文本可能带换行；只让文本保留换行，容器不吃标签间空白 */
   white-space: pre-wrap;
+}
+
+#unread-dot {
+  position: absolute;
+  bottom: 168px;
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(30, 30, 50, 0.35);
 }
 
 #input-bar {
@@ -117,4 +144,126 @@ body.input-open #bubble {
 
 #chat-input::placeholder {
   color: #a0a0b8;
+}
+
+#chat-panel {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 284px;
+  height: 330px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(59, 59, 79, 0.3);
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(30, 30, 50, 0.3);
+  overflow: hidden;
+}
+
+#chat-history {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.chat-msg {
+  max-width: 88%;
+  padding: 6px 10px;
+  border-radius: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+  background: #d7e3ff;
+  color: #1f2a44;
+}
+
+.chat-msg.assistant {
+  align-self: flex-start;
+  background: #f1f1f6;
+  color: #2b2b3a;
+}
+
+.chat-row {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid rgba(59, 59, 79, 0.15);
+}
+
+#panel-input {
+  flex: 1;
+  padding: 7px 12px;
+  border: 1px solid rgba(59, 59, 79, 0.35);
+  border-radius: 999px;
+  font-size: 12.5px;
+  outline: none;
+  color: #2b2b3a;
+}
+
+#panel-collapse {
+  border: none;
+  background: #eeeef4;
+  border-radius: 8px;
+  width: 30px;
+  cursor: pointer;
+  color: #2b2b3a;
+}
+
+#settings-panel {
+  position: absolute;
+  top: 30px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 250px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid rgba(59, 59, 79, 0.3);
+  border-radius: 14px;
+  box-shadow: 0 6px 18px rgba(30, 30, 50, 0.3);
+  font-size: 13px;
+  color: #2b2b3a;
+  z-index: 5;
+}
+
+#settings-panel h3 {
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+#settings-panel label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+#settings-panel select {
+  width: 150px;
+  padding: 4px 6px;
+  border: 1px solid rgba(59, 59, 79, 0.3);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+#settings-close {
+  align-self: flex-end;
+  padding: 5px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #4a5df0;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12.5px;
 }
