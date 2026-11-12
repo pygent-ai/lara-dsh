@@ -90,6 +90,8 @@ class PetSession:
         self.session_id = resolve_session(self.manager)
         self.turn_lock = asyncio.Lock()
         self.turn_count = 0
+        self.interrupt_count = 0
+        self._active_turn = None
 
     def _persona(self) -> str:
         ctx = PromptRenderContext(
@@ -147,8 +149,20 @@ class PetSession:
                     text = str(request.get("text") or "").strip()
                     if not text:
                         continue
-                    async with self.turn_lock:
-                        await self._run_turn(host, text)
+                    active = self._active_turn
+                    if (
+                        active is not None
+                        and not active.done
+                        and active.execution_id is not None
+                        and active.run_ref is not None
+                    ):
+                        # Mid-turn: the fork-reply fast path answers now while
+                        # the main turn keeps running (D-RT2/3). No lock — the
+                        # runtime's per-session fork state handles supersede.
+                        asyncio.create_task(self._handle_interrupt(active, text))
+                    else:
+                        async with self.turn_lock:
+                            await self._run_turn(host, text)
                     continue
                 out({"type": "error", "msg": f"unknown request type: {request.get('type')!r}"})
 
@@ -164,33 +178,75 @@ class PetSession:
             interactive_approvals=False,
             attachments=(),
         )
-        out({"type": "turn_started", "turn_id": turn_id})
-        await turn.wait_ready()
-        # Consumer-side streaming bridge: model.tool_call.delta events flow
-        # through the turn stream; decode the speak arguments incrementally
-        # (pygent whitelists the model-layer event kinds, so the bridge lives
-        # here, on the renderer side of the bus).
-        speak_bridge = SpeakStreamBridge()
-        async with turn.subscribe() as stream:
-            async for event in stream:
-                if event.kind == "lara.realtime.speak":
-                    data = plain_object(event.data)
-                    out({
-                        "type": "speak",
-                        "text": str(data.get("text") or ""),
-                        "attachments": list(data.get("attachments") or ()),
-                    })
-                else:
-                    for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
-                        out({"type": "speak_delta", "text": suffix})
-        output, _ = await turn.result()
-        result = plain_object(plain_object(output.data).get("result"))
-        out({
-            "type": "turn_finished",
-            "turn_id": turn_id,
-            "status": str(result.get("status") or turn.status),
-            "error": str(result.get("error") or "") or None,
-        })
+        self._active_turn = turn
+        try:
+            out({"type": "turn_started", "turn_id": turn_id})
+            await turn.wait_ready()
+            # Consumer-side streaming bridge: model.tool_call.delta events flow
+            # through the turn stream; decode the speak arguments incrementally
+            # (pygent whitelists the model-layer event kinds, so the bridge lives
+            # here, on the renderer side of the bus).
+            speak_bridge = SpeakStreamBridge()
+            async with turn.subscribe() as stream:
+                async for event in stream:
+                    if event.kind == "lara.realtime.speak":
+                        data = plain_object(event.data)
+                        out({
+                            "type": "speak",
+                            "text": str(data.get("text") or ""),
+                            "attachments": list(data.get("attachments") or ()),
+                        })
+                    else:
+                        for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
+                            out({"type": "speak_delta", "text": suffix})
+            output, _ = await turn.result()
+            result = plain_object(plain_object(output.data).get("result"))
+            out({
+                "type": "turn_finished",
+                "turn_id": turn_id,
+                "status": str(result.get("status") or turn.status),
+                "error": str(result.get("error") or "") or None,
+            })
+        finally:
+            self._active_turn = None
+
+    async def _handle_interrupt(self, turn, text: str) -> None:
+        """Mid-turn user message: the D-RT2/3 fork-reply fast path.
+
+        The runtime supersedes an in-flight fork (cancel + numbered batch) and
+        queues the exchange envelope so the main agent learns what was asked
+        and answered at its next tool boundary.
+        """
+
+        self.interrupt_count += 1
+        try:
+            outcome = await turn.runtime_service.send_interrupt(
+                turn.execution_id,
+                manager=self.manager,
+                run_ref=turn.run_ref,
+                session_id=self.session_id,
+                input_id=f"interrupt-{time.time() * 1000:.0f}-{self.interrupt_count}",
+                message=text,
+            )
+        except Exception as exc:
+            out({"type": "error", "msg": f"interrupt failed: {exc!r}"})
+            return
+        if outcome is None:
+            return  # superseded by a newer interrupt; the newer one answers
+        speak_args = outcome.speak_args
+        if speak_args is not None and speak_args.say_nothing:
+            return
+        reply = (
+            speak_args.text
+            if speak_args is not None
+            else outcome.text
+        ) or ""
+        if reply:
+            out({
+                "type": "speak",
+                "text": reply,
+                "attachments": list(speak_args.attachments) if speak_args is not None else [],
+            })
 
 
 def main() -> None:

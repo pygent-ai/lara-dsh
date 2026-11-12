@@ -30,6 +30,7 @@ async function main() {
   const bubble = new Bubble(
     document.getElementById("bubble"),
     document.getElementById("bubble-text"),
+    document.getElementById("bubble-attachments"),
     document.getElementById("bubble-close"),
     document.getElementById("bubble-panel"),
     document.getElementById("unread-dot"),
@@ -48,7 +49,21 @@ async function main() {
     for (const item of transcript) {
       const div = document.createElement("div");
       div.className = `chat-msg ${item.role}`;
-      div.textContent = item.text;
+      // speak 允许只发文件不发文字；文字为空时面板只显示附件块。
+      if (item.text) div.textContent = item.text;
+      const attachments = item.role === "assistant" ? item.attachments || [] : [];
+      if (attachments.length > 0) {
+        const files = document.createElement("div");
+        files.className = "chat-attachments";
+        for (const path of attachments) {
+          const file = document.createElement("div");
+          file.className = "chat-file";
+          file.textContent = `📄 ${path}`;
+          file.title = path;
+          files.appendChild(file);
+        }
+        div.appendChild(files);
+      }
       history.appendChild(div);
     }
     history.scrollTop = history.scrollHeight;
@@ -56,6 +71,13 @@ async function main() {
   const panelOpen = () => !panel.classList.contains("hidden");
   const togglePanel = (open = panelOpen()) => {
     panel.classList.toggle("hidden", !open);
+    document.body.classList.toggle("chat-open", open);
+    if (open) {
+      bar.classList.add("hidden");
+      // 从输入条切过来：收掉输入条的 body 状态和焦点，面板接管输入。
+      document.body.classList.remove("input-open");
+      input.blur();
+    }
     bubble.setSuppressed(open);
     if (open) {
       renderTranscript();
@@ -67,6 +89,16 @@ async function main() {
   };
   bubble.onPanel = () => togglePanel(true);
   document.getElementById("panel-collapse").addEventListener("click", () => togglePanel(false));
+  // 输入条 ↔ 面板 两种对话形态来回切换。
+  document.getElementById("input-to-panel").addEventListener("click", () => togglePanel(true));
+  // 边缘把手 → 系统原生 resize 循环；North 方向底边固定，窗口往上变大。
+  for (const handle of document.querySelectorAll("#resize-handles .rh")) {
+    handle.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      getCurrentWindow().startResizeDragging(handle.dataset.dir).catch(console.error);
+    });
+  }
   const sendText = (text) => {
     if (!text) return;
     transcript.push({ role: "user", text });
@@ -104,8 +136,12 @@ async function main() {
         pet.setState("thinking");
         break;
       case "speak":
-        bubble.finalize(event.text);
-        transcript.push({ role: "assistant", text: event.text });
+        bubble.finalize(event.text, event.attachments);
+        transcript.push({
+          role: "assistant",
+          text: event.text,
+          attachments: event.attachments,
+        });
         if (panelOpen()) renderTranscript();
         break;
       case "speak_delta":
@@ -154,6 +190,11 @@ async function main() {
       pet.setState("idle");
     }
   };
+  // 面板 → 输入条：收起面板（气泡接力续放队列里的消息）再唤出输入条。
+  document.getElementById("panel-to-input").addEventListener("click", () => {
+    togglePanel(false);
+    toggleInput(true);
+  });
 
   await listen("pet://triple-shift", () => toggleInput());
 

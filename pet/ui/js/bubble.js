@@ -7,15 +7,21 @@
 //   into the unread dot on the bunny; clicking the dot re-opens it.
 // - While the input bar / chat panel is open (the user is engaged) the
 //   bubble never auto-collapses.
+// - 面板开着时到达的消息只在面板历史里出场；收起面板后气泡接力，
+//   把队列里的消息接着放完（见 setSuppressed(false)）。
 // - × dismisses: counts as read; queued messages still rise one by one.
 const TYPE_MS = 26;
 const HOLD_MS = 6000;      // advance to the next queued bubble after this hold
 const UNSEEN_MS = 25000;   // no interaction -> collapse to the unread dot
 
+// 附件是 workspace 相对路径；气泡 chip 只显示文件名。
+const basename = (path) => String(path).split(/[\\/]/).pop() || String(path);
+
 export class Bubble {
-  constructor(rootEl, textEl, closeBtn, panelBtn, dotEl, { onTyping, onUnread }) {
+  constructor(rootEl, textEl, attachEl, closeBtn, panelBtn, dotEl, { onTyping, onUnread }) {
     this.root = rootEl;
     this.textEl = textEl;
+    this.attachEl = attachEl;
     this.dot = dotEl;
     this.queue = [];
     this.typing = false;
@@ -48,12 +54,12 @@ export class Bubble {
   onPanel = null;
 
   // —— queue & visibility ————————————————————————————————————————————
-  say(text) {
-    this.queue.push(text);
+  // Queue entries are { text, attachments } — speak 可只发文件不发文字。
+  say(text, attachments = []) {
+    this.queue.push({ text, attachments });
     if (this.suppressed) {
-      // 面板打开时消息只进面板历史，气泡不出场（计为已读）
-      this.bumpUnread();
-      this.setUnread(0);
+      // 面板开着：消息只进面板历史，气泡不出场；收起面板时
+      // setSuppressed(false) 会把队列里的消息接着放成气泡。
       return;
     }
     if (this.typing || this.streaming) return;
@@ -79,6 +85,7 @@ export class Bubble {
       clearTimeout(this.holdTimer);
       this.holdTimer = null;
       this.textEl.textContent = "";
+      this.renderAttachments([]);
     }
     this.streaming = true;
     this.textEl.textContent += text;
@@ -86,18 +93,32 @@ export class Bubble {
 
   setSuppressed(on) {
     this.suppressed = on;
-    if (on && this.visible) this.hide();
+    if (on) {
+      if (this.visible) this.hide();
+      return;
+    }
+    // 面板收起：气泡接力。队列里有面板期间到达的消息就接着放；
+    // 当前气泡还在停留的话安排换场，别让排队消息干等。
+    if (!this.visible) {
+      if (this.queue.length > 0) this.next();
+    } else if (this.queue.length > 0 && !this.holdTimer) {
+      this.holdTimer = setTimeout(() => {
+        this.hide();
+        this.next();
+      }, HOLD_MS);
+    }
   }
 
-  finalize(text) {
+  finalize(text, attachments = []) {
     if (this.streaming) {
       // Confirm what streamed (the full event is authoritative).
       this.streaming = false;
       this.textEl.textContent = text;
+      this.renderAttachments(attachments);
       this.afterDone();
       return;
     }
-    this.say(text);
+    this.say(text, attachments);
   }
 
   skip() {
@@ -109,10 +130,24 @@ export class Bubble {
   }
 
   next() {
-    const text = this.queue.shift();
-    if (text === undefined) return;
+    const item = this.queue.shift();
+    if (item === undefined) return;
     this.show();
-    this.typewriter(text);
+    this.renderAttachments(item.attachments);
+    this.typewriter(item.text);
+  }
+
+  // speak 附件：workspace 相对路径，气泡里只放文件名，全路径进 tooltip。
+  renderAttachments(paths) {
+    this.attachEl.replaceChildren();
+    this.attachEl.classList.toggle("hidden", !(paths && paths.length > 0));
+    for (const path of paths || []) {
+      const chip = document.createElement("div");
+      chip.className = "bubble-file";
+      chip.textContent = `📄 ${basename(path)}`;
+      chip.title = path;
+      this.attachEl.appendChild(chip);
+    }
   }
 
   show() {

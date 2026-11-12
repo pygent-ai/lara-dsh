@@ -16,12 +16,14 @@
           spellcheck="false"
           placeholder="跟兔兔说点什么…（Enter 发送 · Esc 关闭）"
         />
+        <button id="input-to-panel" title="切换到聊天面板">💬</button>
       </div>
 
       <div id="chat-panel" class="hidden">
         <div id="chat-history"></div>
         <div class="chat-row">
           <input id="panel-input" type="text" autocomplete="off" spellcheck="false" placeholder="发消息…" />
+          <button id="panel-to-input" title="切换到输入条">⌨</button>
           <button id="panel-collapse" title="收起面板">▾</button>
         </div>
       </div>
@@ -50,11 +52,20 @@
 
       <div id="bubble" class="hidden">
         <div id="bubble-text"></div>
+        <div id="bubble-attachments" class="hidden"></div>
         <button id="bubble-panel" title="聊天面板">💬</button>
         <button id="bubble-close" title="关掉这条">×</button>
       </div>
 
       <div id="unread-dot" class="hidden" title="有未读消息">1</div>
+      <!-- 聊天面板打开时贴窗口边缘的隐形缩放把手；按下交给系统原生 resize 循环 -->
+      <div id="resize-handles">
+        <div class="rh rh-n" data-dir="North"></div>
+        <div class="rh rh-nw" data-dir="NorthWest"></div>
+        <div class="rh rh-ne" data-dir="NorthEast"></div>
+        <div class="rh rh-w" data-dir="West"></div>
+        <div class="rh rh-e" data-dir="East"></div>
+      </div>
       <canvas id="pet" width="32" height="32"></canvas>
     </div>
     <script type="module" src="./js/main.js"></script>

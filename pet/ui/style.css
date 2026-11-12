@@ -29,6 +29,32 @@ body {
   height: 192px;
   image-rendering: pixelated;
   cursor: grab;
+  transition: left 0.2s ease, width 0.15s ease, height 0.15s ease;
+}
+
+/* 聊天面板打开：兔兔缩到左下角，让出面板阅读区（面板 288px + 兔 96px 在
+   300x400 窗口内垂直错开） */
+body.chat-open #pet {
+  left: 6px;
+  transform: none;
+  width: 96px;
+  height: 96px;
+}
+
+/* 面板铺满窗口（默认 300x400 下与旧固定尺寸一致），拖拽窗口即等于拖拽面板 */
+body.chat-open #chat-panel {
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  bottom: 104px;
+  width: auto;
+  height: auto;
+  transform: none;
+}
+
+/* 面板自带输入框，独立输入条让位 */
+body.chat-open #input-bar {
+  display: none;
 }
 
 .hidden {
@@ -98,6 +124,27 @@ body {
   white-space: pre-wrap;
 }
 
+/* speak 附带的文件：文字下方一排文件名 chip，全路径在 tooltip */
+#bubble-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.bubble-file {
+  max-width: 180px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(59, 59, 79, 0.08);
+  color: #4a4a62;
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #unread-dot {
   position: absolute;
   bottom: 168px;
@@ -123,6 +170,8 @@ body {
   bottom: 206px;
   transform: translateX(-50%);
   width: 280px;
+  display: flex;
+  gap: 6px;
 }
 
 /* 输入条打开时气泡整体上移让位 */
@@ -131,7 +180,8 @@ body.input-open #bubble {
 }
 
 #chat-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 9px 14px;
   border: 1px solid rgba(59, 59, 79, 0.35);
   border-radius: 999px;
@@ -173,6 +223,63 @@ body.input-open #bubble {
   gap: 6px;
 }
 
+/* 缩放把手：比系统边框命中区更宽更好抓；仅聊天面板打开时出现，平时不挡
+   气泡/输入条。左右两侧在兔兔上方收住，避免盖住左下角的兔兔。 */
+#resize-handles {
+  display: none;
+}
+
+body.chat-open #resize-handles {
+  display: block;
+}
+
+.rh {
+  position: absolute;
+  z-index: 20;
+}
+
+.rh-n {
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.rh-w {
+  top: 14px;
+  bottom: 116px;
+  left: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.rh-e {
+  top: 14px;
+  bottom: 116px;
+  right: 0;
+  width: 8px;
+  cursor: ew-resize;
+}
+
+.rh-nw,
+.rh-ne {
+  top: 0;
+  width: 14px;
+  height: 14px;
+  z-index: 21;
+}
+
+.rh-nw {
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.rh-ne {
+  right: 0;
+  cursor: nesw-resize;
+}
+
 .chat-msg {
   max-width: 88%;
   padding: 6px 10px;
@@ -193,6 +300,26 @@ body.input-open #bubble {
   color: #2b2b3a;
 }
 
+/* 面板里的 speak 附件行：完整相对路径 */
+.chat-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 5px;
+}
+
+.chat-file {
+  padding: 3px 8px;
+  border-radius: 7px;
+  background: rgba(59, 59, 79, 0.07);
+  color: #4a4a62;
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .chat-row {
   display: flex;
   gap: 6px;
@@ -210,7 +337,10 @@ body.input-open #bubble {
   color: #2b2b3a;
 }
 
-#panel-collapse {
+/* 面板行与输入条里的形态切换/收起小按钮共用一个样式 */
+#panel-collapse,
+#panel-to-input,
+#input-to-panel {
   border: none;
   background: #eeeef4;
   border-radius: 8px;
