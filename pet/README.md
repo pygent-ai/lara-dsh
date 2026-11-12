@@ -28,7 +28,7 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   `host.turns.submit` 提交 turn，`lara.realtime.speak` 事件经 Rust 中继到
   前端。协议：JSONL over stdio（`send` 进，`ready/turn_started/speak/
   speak_delta/turn_finished/error` 出）。模型与凭据沿用用户
-  `~/.lara-dsh/config.yaml` 与 keyring；workspace 默认 `~/lara-pet`
+  `~/.lara-dsh/config.yaml` 与 keyring；workspace 默认 `~/.lara-dsh/pet`
   （`LARA_PET_WORKSPACE` 可覆盖）。sidecar 起不来时前端自动回退 mock。
 - **真流式**：内核 `lara.runtime.agent.speak_stream.SpeakStreamBridge` 把
   `model.tool_call.delta` 里的 speak 参数增量解码成文本后缀；桥放在 sidecar

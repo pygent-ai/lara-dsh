@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 
 from lara.core.io import plain_object
+from lara.core.paths import user_lara_root
 from lara.orchestration.execution_host import LocalExecutionHost
 from lara.runtime.agent.prompt_models import PromptRenderContext
 from lara.runtime.agent.speak_stream import SpeakStreamBridge
@@ -196,7 +197,11 @@ def main() -> None:
     # Windows pipes default to the locale codec; the Tauri host speaks UTF-8.
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         stream.reconfigure(encoding="utf-8", errors="replace")
-    workspace = Path(sys.argv[sys.argv.index("--workspace") + 1]) if "--workspace" in sys.argv else Path.home() / "lara-pet"
+    workspace = (
+        Path(sys.argv[sys.argv.index("--workspace") + 1])
+        if "--workspace" in sys.argv
+        else user_lara_root() / "pet"
+    )
     try:
         session = PetSession(workspace)
     except Exception as exc:
