@@ -37,7 +37,7 @@ def _ctx_project_lara_root(ctx: PromptRenderContext) -> Path:
 
 
 def _ctx_user_lara_root(ctx: PromptRenderContext) -> Path:
-    return (ctx.user_lara_root or Path.home() / ".lara").expanduser().resolve()
+    return (ctx.user_lara_root or Path.home() / ".lara-dsh").expanduser().resolve()
 
 
 def _ctx_project_skills_dir(ctx: PromptRenderContext) -> Path:

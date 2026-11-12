@@ -61,13 +61,13 @@ fn sidecar_status(state: tauri::State<Sidecar>) -> serde_json::Value {
     })
 }
 
-// —— pet-config（热键 / 皮肤）持久化于 ~/.lara/pet-config.json ————————
+// —— pet-config（热键 / 皮肤）持久化于 ~/.lara-dsh/pet-config.json ————————
 
 fn pet_config_path() -> PathBuf {
     let home = std::env::var("USERPROFILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
-    home.join(".lara").join("pet-config.json")
+    home.join(".lara-dsh").join("pet-config.json")
 }
 
 fn read_pet_config() -> serde_json::Value {

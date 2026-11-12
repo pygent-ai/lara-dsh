@@ -109,7 +109,7 @@ class SnapshotBudgetExceeded(RuntimeError):
 
 class FileEffectTracker:
     IGNORED_DIRS = frozenset(
-        {".git", ".lara", ".venv", "__pycache__", ".pytest_cache", "sessions",
+        {".git", ".lara", ".lara-dsh", ".venv", "__pycache__", ".pytest_cache", "sessions",
          ".tmp", "node_modules", ".npm-cache", ".ruff_cache", ".vite",
          "build", "dist"}
     )

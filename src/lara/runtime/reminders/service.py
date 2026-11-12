@@ -39,7 +39,7 @@ class ReminderService:
 
     def scope(self, session_id: str) -> ReminderScope:
         session_dir = Path(self.config.lara_root) / "sessions" / session_id
-        user_lara_root = Path(self.config.user_lara_root or Path.home() / ".lara")
+        user_lara_root = Path(self.config.user_lara_root or Path.home() / ".lara-dsh")
         project_lara_root = Path(self.config.lara_root)
         return ReminderScope(
             session_id=session_id,

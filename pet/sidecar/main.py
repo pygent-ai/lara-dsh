@@ -36,14 +36,17 @@ from lara_sdk.lara_profile import lara_prompt_modules
 
 CASE_ID = "pet"
 
-# The pet's persona: concise, user-language, speak-only visibility. The CLI
-# injects prompts through a PromptRegistry; the sidecar owns one prompt.
-PET_SYSTEM_PROMPT = (
-    "你是用户的桌宠助手（像素兔兔），在用户的 workspace 里干活。"
-    "用户只能看到 speak 工具发出的消息，其他一切输出都不可见。"
-    "收到任务后先用 speak 说一句简短确认，再开始干活；过程中用 speak 汇报进展"
-    "和提出问题，结束时用 speak 总结结果。每条 speak 尽量控制在一两句话。"
-    "用用户的语言（默认中文）交流。"
+# The pet's persona comes from the stock prompt profile; the speak channel is
+# the only user-visible surface, so the sidecar appends its channel rules to
+# the rendered profile (the runtime's per-turn reply-instruction alone does
+# not keep the model off plain text).
+SPEAK_CHANNEL_RULES = (
+    "输出通道：\n"
+    "- 用户只能看到 speak 工具发出的消息，其他一切文本输出都不可见；"
+    "不要用普通文本回答用户。\n"
+    "- 收到任务后先用 speak 说一句简短确认，再开始干活；过程中用 speak 汇报进展"
+    "和提出问题，结束时用 speak 总结结果。\n"
+    "- 每条 speak 尽量控制在一两句话，用用户的语言（默认中文）交流。"
 )
 
 
@@ -99,9 +102,14 @@ class PetSession:
             request_type="agent_turn",
         )
         return "\n\n".join(
-            module.render(ctx)
-            for module in lara_prompt_modules()
-            if module.phase == "static"
+            [
+                *(
+                    module.render(ctx)
+                    for module in lara_prompt_modules()
+                    if module.phase == "static"
+                ),
+                SPEAK_CHANNEL_RULES,
+            ]
         )
 
     def _config_loader(self, **kwargs):

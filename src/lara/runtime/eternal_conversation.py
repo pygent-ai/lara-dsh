@@ -254,7 +254,7 @@ class EternalConversationHarness:
         self.run_memory_job = run_memory_job
         self._foreground_system_prompt = (foreground_system_prompt or "").strip()
         self._user_clis_root = (
-            (user_clis_root or Path.home() / ".lara" / "clis")
+            (user_clis_root or Path.home() / ".lara-dsh" / "clis")
             .expanduser()
             .resolve()
         )

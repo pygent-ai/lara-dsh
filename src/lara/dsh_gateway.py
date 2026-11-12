@@ -77,7 +77,7 @@ class DshGateway:
         # E:-drive workspace the extraction lands on E:\snapshot and every
         # turn fails with a koffi.node load error.
         runtime_cwd = self._config.runtime_cwd or (
-            Path.home() / ".lara" / "dsh-runtime-cwd"
+            Path.home() / ".lara-dsh" / "dsh-runtime-cwd"
         )
         runtime_cwd.mkdir(parents=True, exist_ok=True)
         self._config.dsh_home.mkdir(parents=True, exist_ok=True)

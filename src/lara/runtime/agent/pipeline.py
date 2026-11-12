@@ -330,7 +330,7 @@ def _context_manager(
         prompt_registry=prompt_registry,
         system_prompt=config.system_prompt,
         project_lara_root=Path(config.lara_root),
-        user_lara_root=Path(config.user_lara_root or Path.home() / ".lara"),
+        user_lara_root=Path(config.user_lara_root or Path.home() / ".lara-dsh"),
     )
 
 

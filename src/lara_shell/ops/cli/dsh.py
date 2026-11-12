@@ -13,7 +13,7 @@ from typing import Any
 
 from lara.dsh_gateway import DshGateway, DshGatewayConfig
 
-DEFAULT_DSH_HOME = Path.home() / ".lara" / "dsh-home"
+DEFAULT_DSH_HOME = Path.home() / ".lara-dsh" / "dsh-home"
 
 
 def register_dsh_parser(subparsers: Any) -> None:

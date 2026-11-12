@@ -28,7 +28,7 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   `host.turns.submit` 提交 turn，`lara.realtime.speak` 事件经 Rust 中继到
   前端。协议：JSONL over stdio（`send` 进，`ready/turn_started/speak/
   speak_delta/turn_finished/error` 出）。模型与凭据沿用用户
-  `~/.lara/config.yaml` 与 keyring；workspace 默认 `~/lara-pet`
+  `~/.lara-dsh/config.yaml` 与 keyring；workspace 默认 `~/lara-pet`
   （`LARA_PET_WORKSPACE` 可覆盖）。sidecar 起不来时前端自动回退 mock。
 - **真流式**：内核 `lara.runtime.agent.speak_stream.SpeakStreamBridge` 把
   `model.tool_call.delta` 里的 speak 参数增量解码成文本后缀；桥放在 sidecar
@@ -60,7 +60,7 @@ npm run tauri dev
 - **点击穿透**：Rust 每 120ms 轮询光标与窗口矩形，窗口外自动
   `ignore_cursor_events`，兔兔不再挡住后面的应用。
 - **设置**：右键兔兔打开面板——触发键（Shift/Ctrl/Alt/`/CapsLock）、连击次数、
-  时间窗、皮肤切换；持久化在 `~/.lara/pet-config.json`，热键即时生效。
+  时间窗、皮肤切换；持久化在 `~/.lara-dsh/pet-config.json`，热键即时生效。
 - **聊天面板**：气泡上的 💬 切换完整历史 + 输入框。
 
 ## 运行

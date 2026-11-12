@@ -7,8 +7,12 @@ from pathlib import Path
 
 
 def user_lara_root() -> Path:
-    """Return the user-owned Lara data root shared by all projects."""
-    return (Path.home() / ".lara").expanduser().resolve()
+    """Return the user-owned Lara data root shared by all projects.
+
+    The lara-dsh deployment keeps its state under ``~/.lara-dsh``; the legacy
+    ``~/.lara`` tree belongs to the original deployment and is never written.
+    """
+    return (Path.home() / ".lara-dsh").expanduser().resolve()
 
 
 def project_lara_root(workspace_root: str | Path, user_root: str | Path | None = None) -> Path:

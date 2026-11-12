@@ -246,7 +246,7 @@ class AgentContextManager:
         # registry ships empty and only carries injected modules on top.
         self.system_prompt = system_prompt
         self.user_lara_root = (
-            (user_lara_root or Path.home() / ".lara").expanduser().resolve()
+            (user_lara_root or Path.home() / ".lara-dsh").expanduser().resolve()
         )
         self.project_lara_root = (
             (
