@@ -24,10 +24,10 @@ from _e2e_support import (
     run_cli,
 )
 from lara_shell.ops.cli.main import main as cli_main
-from lara.scheduler.daemon import SchedulerDaemon, TaskResult
-from lara.scheduler.message import build_task_message
-from lara.scheduler.store import SchedulerStore, scheduler_db_path
-from lara.sessions import SessionManager
+from pygent.agent.pygent_v1.scheduler.daemon import SchedulerDaemon, TaskResult
+from pygent.agent.pygent_v1.scheduler.message import build_task_message
+from pygent.agent.pygent_v1.scheduler.store import SchedulerStore, scheduler_db_path
+from pygent.agent.pygent_v1.sessions import SessionManager
 
 
 class InProcessTaskRunner:
@@ -131,7 +131,7 @@ def test_scheduler_cli_add_daemon_once_runs_dedicated_session(
     assert cycle["tasks"] == 1
     assert len(runner.tasks) == 1
 
-    store = SchedulerStore(scheduler_db_path(config.lara_root))
+    store = SchedulerStore(scheduler_db_path(config.pygent_root))
     task = store.list_tasks()[0]
     assert task.session == dedicated.session_id
     runs = store.list_runs(task_id=task.id)

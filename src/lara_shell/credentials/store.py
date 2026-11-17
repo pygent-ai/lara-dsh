@@ -5,8 +5,8 @@ import os
 import sys
 from pathlib import Path
 
-from lara.core.io import load_env_file, parse_env_entries
-from lara.core.io import non_empty_string as _non_empty
+from pygent.agent.pygent_v1.core.io import load_env_file, parse_env_entries
+from pygent.agent.pygent_v1.core.io import non_empty_string as _non_empty
 
 try:
     import keyring  # type: ignore[import-not-found]

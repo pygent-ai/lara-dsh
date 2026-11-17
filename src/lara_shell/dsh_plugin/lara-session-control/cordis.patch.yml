@@ -1,0 +1,13 @@
+# Layer contributed by the lara-dsh-session-control bundle. Relative plugin
+# paths resolve beside this file, so the same patch works as an installed
+# bundle (`dsh plugin add`) and as a `--patch` / SDK `patches=` overlay.
+#
+# `tool-ask-user` gives dsh sessions the ask_user_question tool; the shipped
+# sdk profile does not mount it, and without it a session can never ask its
+# owner anything. The control plugin answers those questions (and approvals)
+# on Lara's behalf.
+- insert:
+    - id: lara-session-control
+      name: ./index.js
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'

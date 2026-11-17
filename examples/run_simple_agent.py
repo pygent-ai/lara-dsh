@@ -1,7 +1,7 @@
 """离线示例：用 lara 实现层构造 agent，按 lara_sdk 契约调用（无需 API key）。
 
 ``lara_sdk`` 是对外使用层，不负责构造 agent；本示例演示调用方如何把
-``lara.agents.runner.AgentRunner``（实现层）适配成 ``lara_sdk.Agent`` 协议，
+``pygent.agent.pygent_v1.agents.runner.AgentRunner``（实现层）适配成 ``lara_sdk.Agent`` 协议，
 再以标准 ``AgentInput`` / ``AgentResult`` 使用它。
 
 模型用脚本假模型顶替，演示两条路径：
@@ -9,7 +9,7 @@
 2. 经 ToolRegistry / ToolkitToolSurface 注册的 echo 工具（ReAct 工具轮）。
 
 接入真实模型时，把 ``model_factory`` 换成
-``lara.agents.runner.build_model_layer_factory(invoker, ...)`` 的产物即可；
+``pygent.agent.pygent_v1.agents.runner.build_model_layer_factory(invoker, ...)`` 的产物即可；
 真实 lara 会话使用 ``lara_sdk.LaraSessionAgent``（见 run_lara_session_agent.py）。
 """
 
@@ -29,7 +29,7 @@ from pygent import (
     tool,
 )
 
-from lara.agents.runner import AgentRunner, ToolRegistry, ToolkitToolSurface
+from pygent.agent.pygent_v1.agents.runner import AgentRunner, ToolRegistry, ToolkitToolSurface
 from lara_sdk import Agent, AgentInput, AgentLimits, AgentResult, ToolProfile
 
 

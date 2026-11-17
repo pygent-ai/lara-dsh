@@ -1,8 +1,4 @@
-"""lara CLI（抽取版）：会话、凭据、项目、调度器与 dsh 子命令。
-
-原仓的 case / regression / test / repair / optimize / automations 子命令依赖
-已裁剪的 evaluation / repair / automations / workflows 子系统，故不在此仓。
-"""
+"""lara CLI：会话、凭据、调度器与 dsh 子命令，运行在 ``pygent.agent.pygent_v1`` 之上。"""
 
 from __future__ import annotations
 
@@ -13,9 +9,7 @@ from typing import Sequence
 
 from lara_shell.ops.cli.credentials import register_credentials_parser
 from lara_shell.ops.cli.dsh import register_dsh_parser
-from lara_shell.ops.cli.projects import register_projects_parser
 from lara_shell.ops.cli.scheduler import register_scheduler_parser
-from lara_shell.ops.cli.sessions import _manager as _manager
 from lara_shell.ops.cli.sessions import register_session_parser
 
 
@@ -66,7 +60,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     register_session_parser(sub)
     register_credentials_parser(sub)
-    register_projects_parser(sub)
     register_scheduler_parser(sub)
     register_dsh_parser(sub)
     return parser

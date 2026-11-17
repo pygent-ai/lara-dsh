@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "deepseek-harness-runtime-bin>=0.2.1rc2",
     "deepseek-harness-sdk>=0.2.1rc2",
-    "pygent-ai[video]==0.6.0",
+    "pygent-ai[video]==0.6.2",
 ]
 
 [dependency-groups]
@@ -28,7 +28,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lara", "src/lara_shell", "src/lara_sdk"]
+packages = ["src/lara_shell", "src/lara_sdk"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

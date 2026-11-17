@@ -17,7 +17,7 @@ from typing import Any
 from pygent import AIMessage, Context, Message
 from pygent.llm import ModelExecution, ModelProviderResponse
 
-from lara.schema import ResolvedAgentConfig, RunConfig
+from pygent.agent.pygent_v1.schema import ResolvedAgentConfig, RunConfig
 
 Responder = Callable[[Message, Context], AIMessage | Awaitable[AIMessage]]
 
@@ -83,7 +83,7 @@ def make_config(
     user_root.mkdir(parents=True, exist_ok=True)
     return RunConfig(
         workspace_root=str(workspace),
-        user_lara_root=str(user_root),
+        user_pygent_root=str(user_root),
         system_prompt="E2E scenario agent system prompt.",
         model_config_mapping=(
             MODEL_CONFIG_MAPPING
@@ -144,7 +144,7 @@ def install_scripted_model(monkeypatch: Any, invoker: ScriptedModelInvoker) -> N
     """Make every new LaraAgent use the scripted model instead of a provider."""
 
     monkeypatch.setattr(
-        "lara.runtime.agent.core.build_model_invoker",
+        "pygent.agent.pygent_v1.graph.core.build_model_invoker",
         lambda *_args, **_kwargs: invoker,
     )
 

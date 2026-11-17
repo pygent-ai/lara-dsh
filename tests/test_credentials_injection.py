@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from lara.runtime.model_configuration import CredentialEnvironment
+from pygent.agent.pygent_v1.runtime.model_configuration import CredentialEnvironment
 from lara_shell.credentials import build_credential_environment
 from lara_shell.credentials.store import (
     user_credentials_path,

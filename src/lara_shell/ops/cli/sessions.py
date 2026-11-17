@@ -8,11 +8,14 @@ from typing import Any
 
 from lara_shell.config import load_run_config
 from lara_shell.credentials import build_credential_environment
-from lara.core.io import plain_object
-from lara.dispatch import DispatchOperationView, DispatchService, DispatchStore
-from lara.orchestration import LocalExecutionHost, ManagedSessionTurn
-from lara.schema import RunConfig
-from lara.sessions import SessionManager, user_lara_root_for
+from pygent.agent.pygent_v1.core.io import plain_object
+from pygent.agent.pygent_v1.orchestration import (
+    LocalExecutionHost,
+    ManagedSessionTurn,
+    UserDelivery,
+)
+from pygent.agent.pygent_v1.schema import RunConfig
+from pygent.agent.pygent_v1.sessions import SessionManager
 
 
 def register_session_parser(subparsers: Any) -> None:
@@ -43,58 +46,6 @@ def register_session_parser(subparsers: Any) -> None:
     _add_turn_attachments(chat)
     chat.set_defaults(handler=_session_chat)
 
-    send = commands.add_parser("send", help="Queue a message for an existing session")
-    send.add_argument("session_id", help="Target session ID")
-    _add_collaboration_submission(send)
-    send.set_defaults(handler=_session_send)
-
-    start = commands.add_parser(
-        "start", help="Create a session and queue a background task"
-    )
-    _add_collaboration_submission(start)
-    start.add_argument(
-        "--model-group",
-        default=None,
-        help="Model group from the agent's configuration for the new session",
-    )
-    start.set_defaults(handler=_session_start)
-
-    fork = commands.add_parser(
-        "fork",
-        help="Fork a session; with -m, start the fork as a background agent",
-    )
-    fork.add_argument("session_id", help="Source session ID to fork")
-    fork.add_argument(
-        "-m",
-        "--message",
-        default=None,
-        help="Initial message; submits it to the forked session as a background turn",
-    )
-    fork.add_argument(
-        "--submission-id",
-        default=None,
-        help="Stable idempotency key for retrying the same submission",
-    )
-    fork.add_argument(
-        "--source-session",
-        default=None,
-        help="Session ID of the sending agent; omit for an external sender",
-    )
-    fork.add_argument(
-        "--model-group",
-        default=None,
-        help="Model group from the agent's configuration for the forked session",
-    )
-    fork.set_defaults(handler=_session_fork)
-
-    status = commands.add_parser("status", help="Show an operation or agent message")
-    status.add_argument("collaboration_id", metavar="operation_or_message_id")
-    status.set_defaults(handler=_session_status)
-
-    wait = commands.add_parser("wait", help="Wait for an operation or agent message")
-    wait.add_argument("collaboration_id", metavar="operation_or_message_id")
-    wait.set_defaults(handler=_session_wait)
-
 
 def _add_session_target(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("session_id", nargs="?", help="Existing session ID")
@@ -112,22 +63,6 @@ def _add_turn_attachments(parser: argparse.ArgumentParser) -> None:
             "Workspace-relative file to attach to the submitted turn"
             " (repeatable)"
         ),
-    )
-
-
-def _add_collaboration_submission(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-m", "--message", required=True, help="Message for the target agent"
-    )
-    parser.add_argument(
-        "--submission-id",
-        default=None,
-        help="Stable idempotency key for retrying the same submission",
-    )
-    parser.add_argument(
-        "--source-session",
-        default=None,
-        help="Session ID of the sending agent; omit for an external sender",
     )
 
 
@@ -155,105 +90,19 @@ def _session_run(args: argparse.Namespace) -> dict[str, Any]:
     return asyncio.run(_run_session_turn(args))
 
 
-def _session_send(args: argparse.Namespace) -> dict[str, Any]:
-    return asyncio.run(_enqueue_agent_message(args))
-
-
-def _session_start(args: argparse.Namespace) -> dict[str, Any]:
-    config, _manager = _config_and_manager(args)
-    item = _dispatch_service(config).submit_start(
-        config=config,
-        message=args.message,
-        source_session_id=args.source_session,
-        submission_id=args.submission_id,
-        model_group=args.model_group,
-    )
-    return DispatchOperationView.from_item(item).to_dict()
-
-
-def _session_fork(args: argparse.Namespace) -> dict[str, Any]:
-    config, manager = _config_and_manager(args)
-    if not args.message:
-        return manager.fork(args.session_id, mode="chat").to_dict()
-    item = _dispatch_service(config).submit_fork(
-        config=config,
-        fork_from=args.session_id,
-        message=args.message,
-        submission_id=args.submission_id,
-        model_group=args.model_group,
-    )
-    return DispatchOperationView.from_item(item).to_dict()
-
-
-def _dispatch_service(config: RunConfig) -> DispatchService:
-    store = DispatchStore(
-        user_lara_root_for(config.lara_root) / "dispatch-v1.sqlite3"
-    )
-    return DispatchService(store)
-
-
-async def _enqueue_agent_message(args: argparse.Namespace) -> dict[str, Any]:
-    config, manager = _config_and_manager(args)
-    async with _execution_host(config) as host:
-        message = await host.collaboration.send(
-            config=config,
-            manager=manager,
-            target_session_id=args.session_id,
-            message=args.message,
-            source_session_id=args.source_session,
-            source_agent_alias=(config.agent_alias if args.source_session else None),
-            submission_id=args.submission_id,
-        )
-        return message.to_dict()
-
-
-def _session_status(args: argparse.Namespace) -> dict[str, Any]:
-    return asyncio.run(_read_collaboration_status(args))
-
-
-async def _read_collaboration_status(args: argparse.Namespace) -> dict[str, Any]:
-    config, _manager = _config_and_manager(args)
-    async with _execution_host(config) as host:
-        item = await host.collaboration.item_status(
-            config=config,
-            collaboration_id=args.collaboration_id,
-        )
-        return item.to_dict()
-
-
-def _session_wait(args: argparse.Namespace) -> dict[str, Any]:
-    return asyncio.run(_wait_for_collaboration(args))
-
-
-async def _wait_for_collaboration(args: argparse.Namespace) -> dict[str, Any]:
-    config, _manager = _config_and_manager(args)
-    async with _execution_host(config) as host:
-        if args.collaboration_id.startswith("msg-"):
-            message = await host.collaboration.wait_message(
-                config=config,
-                message_id=args.collaboration_id,
-            )
-            return message.to_dict()
-        # Dispatched items are driven by an external scheduler; waiting is
-        # pure polling, there is no in-process resume anymore.
-        operation = await host.collaboration.wait(
-            config=config,
-            operation_id=args.collaboration_id,
-        )
-        return operation.to_dict()
-
-
 async def _run_session_turn(args: argparse.Namespace) -> dict[str, Any]:
     config, manager = _config_and_manager(args, session_id=args.session_id)
     async with _execution_host(config) as host:
-        turn = await host.turns.submit(
-            config=config,
-            manager=manager,
-            session_id=args.session_id,
-            message=args.message,
-            turn_id="turn-0001",
-            interactive_approvals=False,
-            attachments=tuple(args.attachment or ()),
+        turn = _require_turn(
+            await host.deliver_user_message(
+                config=config,
+                manager=manager,
+                session_id=args.session_id,
+                message=args.message,
+                input_id="turn-0001",
+                interactive_approvals=False,
+                attachments=tuple(args.attachment or ()),
+            )
         )
         output, _ = await turn.result()
         return _turn_result_payload(turn, output)
@@ -273,11 +122,6 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
         manager.load(session_id)
 
     async with _execution_host(config) as host:
-        await host.turns.prewarm_session(
-            config=config,
-            manager=manager,
-            session_id=session_id,
-        )
         print(f"lara session chat: {session_id}")
         print("Type /exit or /quit to end.")
         turn_index = 1
@@ -290,14 +134,16 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
                 break
             if not user_input.strip():
                 continue
-            turn = await host.turns.submit(
-                config=config,
-                manager=manager,
-                session_id=session_id,
-                message=user_input,
-                turn_id=f"turn-{turn_index:04d}",
-                interactive_approvals=True,
-                attachments=tuple(args.attachment or ()),
+            turn = _require_turn(
+                await host.deliver_user_message(
+                    config=config,
+                    manager=manager,
+                    session_id=session_id,
+                    message=user_input,
+                    input_id=f"turn-{turn_index:04d}",
+                    interactive_approvals=True,
+                    attachments=tuple(args.attachment or ()),
+                )
             )
             await turn.wait_ready()
             streamed = await _render_turn_events(turn)
@@ -311,6 +157,17 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
                 print(f"agent error: {result['error']}", file=sys.stderr)
                 break
             turn_index += 1
+
+
+def _require_turn(delivery: UserDelivery) -> ManagedSessionTurn:
+    # CLI sessions are plain chat sessions, so the unified entry always
+    # starts a turn; an interrupt delivery means a realtime session was
+    # targeted, which the CLI does not drive.
+    if delivery.turn is None:
+        raise RuntimeError(
+            f"session delivered via {delivery.mode!r}; the CLI only runs turns"
+        )
+    return delivery.turn
 
 
 async def _render_turn_events(turn: ManagedSessionTurn) -> bool:
@@ -328,7 +185,7 @@ async def _render_turn_events(turn: ManagedSessionTurn) -> bool:
                 if chunk:
                     streamed = True
                     print(chunk, end="", flush=True)
-            elif event.kind == "lara.approval.requested":
+            elif event.kind == "pygent.v1.approval.requested":
                 answer = await asyncio.to_thread(
                     input,
                     f"Approve {data.get('tool_name')} {data.get('arguments')}? [y/N] ",
@@ -363,7 +220,7 @@ def _execution_host(config: RunConfig) -> LocalExecutionHost:
     """Compose the CLI execution host with shell-owned config and credentials."""
 
     return LocalExecutionHost(
-        credential_environ=build_credential_environment(config.user_lara_root),
+        credential_environ=build_credential_environment(config.user_pygent_root),
         run_config_loader=load_run_config,
     )
 

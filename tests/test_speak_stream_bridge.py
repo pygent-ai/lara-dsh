@@ -1,8 +1,12 @@
 """SpeakStreamBridge: streaming speak tool-call text → delta suffixes."""
 
 import json
+import sys
+from pathlib import Path
 
-from lara.runtime.agent.speak_stream import SpeakStreamBridge
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pet" / "sidecar"))
+
+from speak_stream import SpeakStreamBridge  # noqa: E402
 
 
 def _event(kind: str, data: dict[str, object]) -> tuple[str, dict[str, object]]:

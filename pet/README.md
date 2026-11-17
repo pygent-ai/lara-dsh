@@ -30,12 +30,33 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   speak_delta/turn_finished/error` 出）。模型与凭据沿用用户
   `~/.lara-dsh/config.yaml` 与 keyring；workspace 默认 `~/.lara-dsh/pet`
   （`LARA_PET_WORKSPACE` 可覆盖）。sidecar 起不来时前端自动回退 mock。
+- **dsh 系统 agent**：sidecar 启动时内嵌一个 `lara_shell.dsh_daemon.DshDaemon`，
+  常驻持有一个 DeepSeek Harness 运行时（叠加 `lara_shell/dsh_plugin/
+  lara-session-control` Cordis 插件），端口发布在 `~/.lara-dsh/dsh-daemon.json`，
+  `ready` 事件带 `dsh_port`。Lara 通过 bash 跑 `lara dsh send/sessions/status/
+  wait/resume` 管理 dsh 会话（`send --cwd` 新建的会话以该目录为根，也是它的
+  沙箱写边界）；dsh 每做完一轮，daemon 把 `<dsh-event kind="turn_finished">`
+  投递进 Lara 的 lara-says 会话，由 Lara 转述给用户。端点/凭据/模型来自
+  `~/.lara-dsh/dsh.yaml`（`connection` 指向 config.yaml 的 connections，`lara dsh
+  config` 查看/修改）。dsh 会话的沙箱升权申请和 `ask_user_question` 由插件接住，
+  以 `<dsh-event kind="approval_request"/"question">` 投给 Lara，Lara 用
+  `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed；
+  `lara dsh cancel` 叫停会话。dsh 起不来时桌宠照常运行，只是没有 worker。
+- **speak 出口**：最终的 `speak` 气泡来自注册在运行时上的 `PetSpeakChannel`
+  （`lara_sdk.execution_host.LaraExecutionHost(speak_channels=…)`），pygent 每执行
+  一次 speak 工具就回调一次 `deliver(text)`，不分 turn——主 turn、pygent 给纯文本
+  结尾补的 finalizer 轮、dsh-event 轮都能到。turn 事件流只用于 `speak_delta` 预览，
+  其终态 speak 事件不再重复输出。channel 只给文本，附件以相对路径逐行附在文本尾，
+  sidecar 用 `split_speak_delivery` 还原。
 - **真流式**：内核 `lara.runtime.agent.speak_stream.SpeakStreamBridge` 把
   `model.tool_call.delta` 里的 speak 参数增量解码成文本后缀；桥放在 sidecar
   消费端（pygent 对模型层 emit 的 kind 有白名单），以 `speak_delta` 事件送
   前端实时上屏，最终 `speak` 事件为准收尾。
 - **人设**：桌面兔兔的系统提示词来自 `lara_sdk.lara_profile.lara_prompt_modules`
-  （`system.pet` 模块），sidecar 在加载配置时渲染进 `config.system_prompt`。
+  ——`system.pet`（人设与语气）和 `system.dsh`（管理 dsh 会话的规则，
+  内容在 `DSH_MANAGEMENT_PROMPT`，改 dsh 相关行为只改它）。所有模型可见的提示词
+  一律英文，运行时由模型按用户语言回复。sidecar 在加载配置时
+  按 order 渲染进 `config.system_prompt`，再附上输出通道规则 `SPEAK_CHANNEL_RULES`。
   （pygent 托管执行的绑定不会把 prompt registry 带到执行副本，所以注册表
   方式在此路径不生效——sidecar 改走静态渲染。）
 - **皮肤**：`ui/skins/<name>/skin.json + sheet.png`。manifest 声明每状态的帧

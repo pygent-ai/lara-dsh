@@ -5,7 +5,7 @@ from typing import Any
 
 from pygent.llm import ModelConfig
 
-from lara.core.io import write_atomic
+from pygent.agent.pygent_v1.core.io import write_atomic
 
 from .loader import USER_CONFIG_FILENAME
 from .yaml_subset import dump_yaml_subset, parse_yaml_subset

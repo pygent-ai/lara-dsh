@@ -6,28 +6,28 @@ from pathlib import Path
 
 import lara_shell.config.loader as loader
 from lara_shell.config import load_run_config
-from lara.scheduler.store import scheduler_db_path
-from lara.schema import RunConfig
+from pygent.agent.pygent_v1.scheduler.store import scheduler_db_path
+from pygent.agent.pygent_v1.schema import RunConfig
 
 
 def test_scheduler_defaults() -> None:
     config = RunConfig(
         workspace_root="C:/workspace",
-        user_lara_root="C:/user",
+        user_pygent_root="C:/user",
     )
     assert config.scheduler.agent_create_enabled is False
     assert config.scheduler.session == "scheduler"
     assert config.scheduler.max_concurrent == 2
     assert config.scheduler.poll_seconds == 10.0
-    assert str(scheduler_db_path(config.lara_root)).endswith(
-        "scheduler\\lara-scheduler.sqlite3"
+    assert str(scheduler_db_path(config.pygent_root)).endswith(
+        "scheduler\\pygent.v1-scheduler.sqlite3"
     )
 
 
 def test_scheduler_overrides(tmp_path: Path) -> None:
     config = RunConfig(
         workspace_root=str(tmp_path / "workspace"),
-        user_lara_root=str(tmp_path / "user"),
+        user_pygent_root=str(tmp_path / "user"),
         scheduler={  # type: ignore[arg-type]
             "agent_create_enabled": True,
             "session": "ops",

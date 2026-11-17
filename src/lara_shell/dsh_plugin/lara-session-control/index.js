@@ -1,0 +1,301 @@
+/**
+ * lara-session-control — a dsh (DeepSeek Harness) Cordis plugin that gives
+ * Lara a session control plane inside the dsh runtime it owns.
+ *
+ * The SDK JSON-RPC server owns stdio and exposes no hook for extra methods,
+ * so this plugin serves its own newline-delimited JSON-RPC on a loopback TCP
+ * port that the launching Lara process selects through LARA_DSH_CONTROL_PORT.
+ * Live session events already reach Lara through the SDK's runtime-wide
+ * `session.event` / `session.status` notifications; this channel adds what
+ * the SDK wire lacks: a session inventory with live status, sessions rooted
+ * at their own directory, cancellation, and the runtime's questions to its
+ * owner (approvals, ask_user_question) when a client registers as answerer.
+ *
+ * Client → plugin requests (all results are JSON objects):
+ *   lara/ping                                    -> { ok, name, version }
+ *   lara/session/list                            -> { sessions: SessionEntry[] }
+ *   lara/session/stat     { sessionId }          -> { session: SessionEntry | null }
+ *   lara/session/create   { sessionId, cwd }     -> { sessionId, cwd, createdAt }
+ *   lara/session/cancel   { sessionId }          -> { cancelled: boolean }
+ *   lara/answerer/register                       -> { ok } (this connection answers
+ *                                                   approvals and questions)
+ *   lara/approval/respond { requestId, outcome } -> { ok }
+ *   lara/question/respond { requestId, answers } | { requestId, cancelled: true } -> { ok }
+ *
+ * Plugin → answerer notifications (no id):
+ *   lara/approval/request   { requestId, sessionId, toolName, callId?, reason? }
+ *   lara/approval/cancelled { requestId }
+ *   lara/question/request   { requestId, sessionId, questions }
+ *   lara/question/cancelled { requestId }
+ *
+ * No imports from dsh packages: everything comes through `ctx`, so the file
+ * loads from any absolute path via a `--patch` overlay or as an installed bundle.
+ */
+
+import net from 'node:net'
+import { randomUUID } from 'node:crypto'
+
+export const name = 'lara-session-control'
+export const inject = ['sessionPersistence', 'agents', 'sessions']
+
+const VERSION = '0.2.0'
+const JSONRPC_INVALID_REQUEST = -32600
+const JSONRPC_METHOD_NOT_FOUND = -32601
+const JSONRPC_INTERNAL_ERROR = -32603
+const APPROVAL_OUTCOMES = new Set(['allowed-once', 'rejected', 'cancelled', 'unavailable'])
+
+export function apply(ctx) {
+  const port = Number(process.env.LARA_DSH_CONTROL_PORT)
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    process.stderr.write(`[${name}] LARA_DSH_CONTROL_PORT is not set; control channel disabled\n`)
+    return
+  }
+
+  const state = {
+    answerers: new Set(),   // sockets that registered as answerer
+    approvals: new Map(),   // requestId -> { resolve }
+    questions: new Map(),   // requestId -> { resolve, reject }
+  }
+
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let buffer = ''
+    socket.on('data', (chunk) => {
+      buffer += chunk
+      let newline = buffer.indexOf('\n')
+      while (newline !== -1) {
+        const line = buffer.slice(0, newline).trim()
+        buffer = buffer.slice(newline + 1)
+        if (line) void handleLine(ctx, state, socket, line)
+        newline = buffer.indexOf('\n')
+      }
+    })
+    socket.on('close', () => { state.answerers.delete(socket) })
+    socket.on('error', () => { /* a dropped client is not a runtime fault */ })
+  })
+
+  ctx.effect(() => {
+    server.on('error', (error) => {
+      process.stderr.write(`[${name}] control channel failed on 127.0.0.1:${port}: ${error.message}\n`)
+    })
+    server.listen(port, '127.0.0.1')
+    return () => new Promise((resolve) => server.close(() => resolve()))
+  }, 'lara.session-control.serve')
+
+  // Approval answerer: Lara decides when it is listening; otherwise the
+  // composed chain continues (and fails closed without a terminal answerer).
+  ctx.on('approval/request', async (request, next) => {
+    if (state.answerers.size === 0) return next()
+    const requestId = randomUUID()
+    const outcome = await new Promise((resolve) => {
+      state.approvals.set(requestId, { resolve })
+      request.signal?.addEventListener('abort', () => {
+        if (state.approvals.delete(requestId)) {
+          broadcast(state, 'lara/approval/cancelled', { requestId })
+          resolve('cancelled')
+        }
+      }, { once: true })
+      broadcast(state, 'lara/approval/request', {
+        requestId,
+        sessionId: String(request.agent.session.id),
+        toolName: request.toolName,
+        ...(request.callId === undefined ? {} : { callId: String(request.callId) }),
+        ...(request.reason === undefined ? {} : { reason: request.reason }),
+      })
+    })
+    return outcome
+  })
+
+  // ask_user_question answerer, same shape; a cancelled question rejects the
+  // tool call instead of inventing an answer.
+  ctx.on('user-questions/request', async (request, next) => {
+    if (state.answerers.size === 0) return next()
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      state.questions.set(requestId, { resolve, reject })
+      request.signal?.addEventListener('abort', () => {
+        if (state.questions.delete(requestId)) {
+          broadcast(state, 'lara/question/cancelled', { requestId })
+          reject(new Error('user question cancelled by the runtime'))
+        }
+      }, { once: true })
+      broadcast(state, 'lara/question/request', {
+        requestId,
+        sessionId: request.agent === undefined ? null : String(request.agent.session.id),
+        questions: request.questions,
+      })
+    })
+  })
+}
+
+function broadcast(state, method, params) {
+  const line = `${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`
+  for (const socket of state.answerers) {
+    if (!socket.destroyed) socket.write(line)
+  }
+}
+
+async function handleLine(ctx, state, socket, line) {
+  let message
+  try {
+    message = JSON.parse(line)
+  } catch {
+    write(socket, { jsonrpc: '2.0', id: null, error: { code: JSONRPC_INVALID_REQUEST, message: 'invalid JSON' } })
+    return
+  }
+  const id = message?.id ?? null
+  if (message?.jsonrpc !== '2.0' || typeof message.method !== 'string') {
+    write(socket, { jsonrpc: '2.0', id, error: { code: JSONRPC_INVALID_REQUEST, message: 'invalid JSON-RPC request' } })
+    return
+  }
+  try {
+    const result = await dispatch(ctx, state, socket, message.method, message.params ?? {})
+    write(socket, { jsonrpc: '2.0', id, result })
+  } catch (error) {
+    const code = error instanceof MethodNotFound ? JSONRPC_METHOD_NOT_FOUND : JSONRPC_INTERNAL_ERROR
+    write(socket, { jsonrpc: '2.0', id, error: { code, message: error instanceof Error ? error.message : String(error) } })
+  }
+}
+
+function write(socket, message) {
+  if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`)
+}
+
+class MethodNotFound extends Error {}
+
+function requireString(params, key) {
+  const value = params[key]
+  if (typeof value !== 'string' || value === '') throw new Error(`${key} must be a non-empty string`)
+  return value
+}
+
+async function dispatch(ctx, state, socket, method, params) {
+  switch (method) {
+    case 'lara/ping':
+      return { ok: true, name, version: VERSION }
+    case 'lara/session/list':
+      return { sessions: await listSessions(ctx) }
+    case 'lara/session/stat': {
+      const sessionId = requireString(params, 'sessionId')
+      const sessions = await listSessions(ctx)
+      return { session: sessions.find((entry) => entry.sessionId === sessionId) ?? null }
+    }
+    case 'lara/session/create':
+      return createSession(ctx, params)
+    case 'lara/session/cancel': {
+      const agent = ctx.agents.get(requireString(params, 'sessionId'))
+      if (agent === undefined) return { cancelled: false }
+      await agent.cancel()
+      return { cancelled: true }
+    }
+    case 'lara/answerer/register':
+      state.answerers.add(socket)
+      return { ok: true }
+    case 'lara/approval/respond': {
+      const requestId = requireString(params, 'requestId')
+      const outcome = requireString(params, 'outcome')
+      if (!APPROVAL_OUTCOMES.has(outcome)) throw new Error(`outcome must be one of ${[...APPROVAL_OUTCOMES].join(', ')}`)
+      const pending = state.approvals.get(requestId)
+      if (pending === undefined) throw new Error(`unknown or settled approval request: ${requestId}`)
+      state.approvals.delete(requestId)
+      pending.resolve(outcome)
+      return { ok: true }
+    }
+    case 'lara/question/respond': {
+      const requestId = requireString(params, 'requestId')
+      const pending = state.questions.get(requestId)
+      if (pending === undefined) throw new Error(`unknown or settled question request: ${requestId}`)
+      state.questions.delete(requestId)
+      if (params.cancelled === true) {
+        pending.reject(new Error('user question cancelled by Lara'))
+        return { ok: true }
+      }
+      if (!Array.isArray(params.answers)) throw new Error('answers must be an array')
+      pending.resolve({ answers: params.answers })
+      return { ok: true }
+    }
+    default:
+      throw new MethodNotFound(`unknown lara-session-control method: ${method}`)
+  }
+}
+
+/**
+ * Persist a new, idle session whose header records `cwd`.
+ *
+ * The SDK server stamps every session it creates with the one `cwd` from
+ * `initialize`, and the file sandbox's workspace-write boundary is exactly
+ * `session.header.cwd`, fixed for the session's life. Creating the session
+ * here with the caller's directory and releasing it right away leaves a
+ * persisted header the SDK's `session/resume` then adopts unchanged, so the
+ * session works — and may write — inside its own project directory.
+ */
+async function createSession(ctx, params) {
+  const sessionId = requireString(params, 'sessionId')
+  const cwd = requireString(params, 'cwd')
+  if (ctx.agents.get(sessionId) !== undefined) throw new Error(`session "${sessionId}" is already live`)
+  if ((await ctx.sessionPersistence.stat(sessionId)) !== undefined) throw new Error(`session "${sessionId}" already exists`)
+  const handle = await ctx.agents.create({ sessionId, meta: { cwd } })
+  const header = handle.agent.session.header
+  await handle.dispose()
+  return { sessionId: String(header.id), cwd: header.cwd ?? null, createdAt: header.createdAt }
+}
+
+/**
+ * Persisted sessions joined with the live agent registry. A live agent whose
+ * session has not been materialized on disk yet is still reported, so a
+ * freshly created session shows up as soon as its first prompt is queued.
+ */
+async function listSessions(ctx) {
+  const live = new Map(ctx.agents.list().map((agent) => [String(agent.session.id), agent]))
+  const titles = ctx.get('sessionTitle')
+  const entries = []
+  const seen = new Set()
+  for (const snapshot of await ctx.sessionPersistence.list()) {
+    const id = String(snapshot.header.id)
+    seen.add(id)
+    entries.push(describe(ctx, snapshot.header, snapshot, live.get(id), titles))
+  }
+  for (const [id, agent] of live) {
+    if (!seen.has(id)) entries.push(describe(ctx, agent.session.header, undefined, agent, titles))
+  }
+  await fillPersistedTitles(ctx, entries, titles)
+  entries.sort((a, b) => b.createdAt - a.createdAt)
+  return entries
+}
+
+function describe(ctx, header, snapshot, agent, titles) {
+  const session = agent?.session ?? ctx.sessions.get(header.id)
+  const title = session !== undefined && titles !== undefined ? titles.get(session)?.title ?? null : null
+  return {
+    sessionId: String(header.id),
+    cwd: header.cwd ?? null,
+    createdAt: header.createdAt,
+    origin: header.origin ?? 'root',
+    parentSessionId: header.parentSession === undefined ? null : String(header.parentSession),
+    eventCount: snapshot?.eventCount ?? session?.seq ?? null,
+    title,
+    live: agent !== undefined,
+    status: agent?.status ?? null,
+  }
+}
+
+/**
+ * The title service folds from a Session object, which only live sessions
+ * have. `sessionQuery.readTitle` folds a persisted log detached — no agent,
+ * nothing made live — so persisted-only entries get titles too. A session
+ * whose log cannot be read keeps a null title rather than failing the whole
+ * inventory.
+ */
+async function fillPersistedTitles(ctx, entries, titles) {
+  const query = ctx.get('sessionQuery')
+  if (query === undefined || titles === undefined) return
+  await Promise.all(entries
+    .filter((entry) => !entry.live && entry.title === null)
+    .map(async (entry) => {
+      try {
+        entry.title = (await query.readTitle(entry.sessionId))?.title ?? null
+      } catch {
+        entry.title = null
+      }
+    }))
+}

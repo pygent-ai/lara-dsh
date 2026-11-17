@@ -6,7 +6,7 @@ import argparse
 from collections.abc import Callable
 
 from lara_shell.config import load_run_config
-from lara.schema import RunConfig
+from pygent.agent.pygent_v1.schema import RunConfig
 
 
 def config_from_args(

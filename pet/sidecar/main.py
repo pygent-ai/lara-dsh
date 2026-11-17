@@ -13,6 +13,12 @@ The session is the kernel's singleton ``lara-says`` realtime session (the
 session id IS ``"lara-says"`` by design): the agent works silently and
 ``speak`` is the only user-visible channel; the pet renders those events as
 bubbles. The session is resumed across sidecar restarts.
+
+Final ``speak`` messages come from a ``SpeakChannel`` registered on the
+runtime (``lara_sdk.execution_host``), which hears every speak the runtime
+delivers — including the finalizer round pygent appends when a turn ends in
+plain text, and dsh-event turns. The per-turn event stream is used only for
+``speak_delta`` previews; its terminal speak event is not re-emitted.
 """
 
 from __future__ import annotations
@@ -21,34 +27,53 @@ import asyncio
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 
-from lara.core.io import plain_object
-from lara.core.paths import user_lara_root
-from lara.orchestration.execution_host import LocalExecutionHost
-from lara.runtime.agent.prompt_models import PromptRenderContext
-from lara.runtime.agent.speak_stream import SpeakStreamBridge
-from lara.schema import RuntimeApprovalConfig
-from lara.schema.models import RealtimeInteractionConfig
-from lara.sessions import SessionManager, LARA_SAYS_SESSION_MODE
+from lara_sdk.execution_host import LaraExecutionHost, split_speak_delivery
+from lara_sdk.lara_profile import lara_prompt_modules
+from lara_shell import user_lara_root
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
-from lara_sdk.lara_profile import lara_prompt_modules
+from lara_shell.dsh_daemon import DshDaemon, DshEvent
+from lara_shell.dsh_settings import load_dsh_settings
+from pygent.agent.pygent_v1.core.io import plain_object
+from pygent.agent.pygent_v1.graph.prompt_models import PromptRenderContext
+from pygent.agent.pygent_v1.orchestration import ManagedSessionTurn
+from pygent.agent.pygent_v1.orchestration.models import TurnCommand
+from pygent.agent.pygent_v1.runtime.realtime.speak import render_reply_instruction
+from pygent.agent.react_projection_operations import (
+    REACT_PROJECTION_OPERATION_KIND,
+    AppendToolResultContent,
+    encode_react_projection_operation,
+)
+from pygent.agent.reminder import InjectionKind
+from pygent.agent.pygent_v1.schema import RuntimeApprovalConfig
+from pygent.agent.pygent_v1.schema.models import RealtimeInteractionConfig
+from pygent.agent.pygent_v1.sessions import PYGENT_SAYS_SESSION_MODE, SessionManager
+from speak_stream import SpeakStreamBridge
 
 CASE_ID = "pet"
+
+# Harness-originated turns carry their own framing; the runtime leaves this
+# kind out of the <user-context> wrapper and logs it with origin "automation".
+DSH_EVENT_MESSAGE_KIND = "pygent.v1.automation.trigger"
 
 # The pet's persona comes from the stock prompt profile; the speak channel is
 # the only user-visible surface, so the sidecar appends its channel rules to
 # the rendered profile (the runtime's per-turn reply-instruction alone does
 # not keep the model off plain text).
-SPEAK_CHANNEL_RULES = (
-    "输出通道：\n"
-    "- 用户只能看到 speak 工具发出的消息，其他一切文本输出都不可见；"
-    "不要用普通文本回答用户。\n"
-    "- 收到任务后先用 speak 说一句简短确认，再开始干活；过程中用 speak 汇报进展"
-    "和提出问题，结束时用 speak 总结结果。\n"
-    "- 每条 speak 尽量控制在一两句话，用用户的语言（默认中文）交流。"
-)
+SPEAK_CHANNEL_RULES = """Output channel
+- The user sees only messages sent with the speak tool. Text in your reply —
+  including a reply that reads like a message to the user — is never shown to
+  them. If you have not called speak(text=...) in this turn, you have said
+  nothing, no matter what you wrote.
+- Do not answer the user in plain text. When a task arrives, speak a short
+  acknowledgment first, then work; speak progress and questions while you work;
+  speak the result when you finish.
+- Keep each speak to one or two sentences, in the user's language (Chinese by
+  default).
+"""
 
 
 def out(payload: dict) -> None:
@@ -62,10 +87,25 @@ def log(msg: str) -> None:
 def resolve_session(manager: SessionManager) -> str:
     """The kernel keeps exactly one lara-says session; resume or create it."""
     try:
-        manager.load(LARA_SAYS_SESSION_MODE)
+        manager.load(PYGENT_SAYS_SESSION_MODE)
     except FileNotFoundError:
-        manager.create(CASE_ID, mode=LARA_SAYS_SESSION_MODE)
-    return LARA_SAYS_SESSION_MODE
+        manager.create(CASE_ID, mode=PYGENT_SAYS_SESSION_MODE)
+    return PYGENT_SAYS_SESSION_MODE
+
+
+class PetSpeakChannel:
+    """Runtime → pet bubble. ``deliver`` runs on a runtime worker thread."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, workspace: Path) -> None:
+        self._loop = loop
+        self._workspace = workspace
+
+    def deliver(self, text: str) -> bool:
+        spoken, attachments = split_speak_delivery(text, self._workspace)
+        self._loop.call_soon_threadsafe(
+            out, {"type": "speak", "text": spoken, "attachments": attachments}
+        )
+        return True
 
 
 class PetSession:
@@ -85,17 +125,21 @@ class PetSession:
         # the executing module copy, so the canonical desktop-pet persona is
         # rendered here into the static base prompt instead.
         self.config.system_prompt = self.config.system_prompt or self._persona()
-        self.user_root = Path(self.config.user_lara_root)
+        self.user_root = Path(self.config.user_pygent_root)
         self.manager = SessionManager(self.config)
         self.session_id = resolve_session(self.manager)
-        self.turn_lock = asyncio.Lock()
         self.turn_count = 0
-        self.interrupt_count = 0
-        self._active_turn = None
+        self._turn_tasks: set[asyncio.Task[None]] = set()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._host: LaraExecutionHost | None = None
+        self._active_turn: ManagedSessionTurn | None = None
+        # Appends handed to a running turn, by input id, until the react layer
+        # applies them (silently) or rejects them (event → fallback turn).
+        self._pending_appends: dict[str, DshEvent] = {}
 
     def _persona(self) -> str:
         ctx = PromptRenderContext(
-            session_id=LARA_SAYS_SESSION_MODE,
+            session_id=PYGENT_SAYS_SESSION_MODE,
             workspace_root=self.workspace,
             session_dir=self.workspace,
             turn_id="static",
@@ -119,134 +163,242 @@ class PetSession:
         kwargs.setdefault("workspace_root", str(self.workspace))
         return load_run_config(**kwargs)
 
-    async def run(self) -> None:
-        async with LocalExecutionHost(
-            credential_environ=build_credential_environment(self.config.user_lara_root),
-            run_config_loader=self._config_loader,
-        ) as host:
-            out({
-                "type": "ready",
-                "session_id": self.session_id,
-                "workspace": str(self.workspace),
-            })
-            loop = asyncio.get_running_loop()
-            while True:
-                raw = await loop.run_in_executor(None, sys.stdin.readline)
-                if not raw:
-                    break  # parent died or closed stdin
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    request = json.loads(line)
-                except ValueError:
-                    out({"type": "error", "msg": f"bad request line: {line[:120]}"})
-                    continue
-                if request.get("type") == "ping":
-                    out({"type": "pong"})
-                    continue
-                if request.get("type") == "send":
-                    text = str(request.get("text") or "").strip()
-                    if not text:
-                        continue
-                    active = self._active_turn
-                    if (
-                        active is not None
-                        and not active.done
-                        and active.execution_id is not None
-                        and active.run_ref is not None
-                    ):
-                        # Mid-turn: the fork-reply fast path answers now while
-                        # the main turn keeps running (D-RT2/3). No lock — the
-                        # runtime's per-session fork state handles supersede.
-                        asyncio.create_task(self._handle_interrupt(active, text))
-                    else:
-                        async with self.turn_lock:
-                            await self._run_turn(host, text)
-                    continue
-                out({"type": "error", "msg": f"unknown request type: {request.get('type')!r}"})
+    def _start_dsh(self) -> DshDaemon | None:
+        """Lara's seat as dsh system agent: one resident runtime for the pet's life.
 
-    async def _run_turn(self, host: LocalExecutionHost, text: str) -> None:
-        self.turn_count += 1
-        turn_id = f"turn-{time.time() * 1000:.0f}-{self.turn_count}"
-        turn = await host.turns.submit(
-            config=self.config,
-            manager=self.manager,
-            session_id=self.session_id,
-            message=text,
-            turn_id=turn_id,
-            interactive_approvals=False,
-            attachments=(),
-        )
-        self._active_turn = turn
-        try:
-            out({"type": "turn_started", "turn_id": turn_id})
-            await turn.wait_ready()
-            # Consumer-side streaming bridge: model.tool_call.delta events flow
-            # through the turn stream; decode the speak arguments incrementally
-            # (pygent whitelists the model-layer event kinds, so the bridge lives
-            # here, on the renderer side of the bus).
-            speak_bridge = SpeakStreamBridge()
-            async with turn.subscribe() as stream:
-                async for event in stream:
-                    if event.kind == "lara.realtime.speak":
-                        data = plain_object(event.data)
-                        out({
-                            "type": "speak",
-                            "text": str(data.get("text") or ""),
-                            "attachments": list(data.get("attachments") or ()),
-                        })
-                    else:
-                        for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
-                            out({"type": "speak_delta", "text": suffix})
-            output, _ = await turn.result()
-            result = plain_object(plain_object(output.data).get("result"))
-            out({
-                "type": "turn_finished",
-                "turn_id": turn_id,
-                "status": str(result.get("status") or turn.status),
-                "error": str(result.get("error") or "") or None,
-            })
-        finally:
-            self._active_turn = None
-
-    async def _handle_interrupt(self, turn, text: str) -> None:
-        """Mid-turn user message: the D-RT2/3 fork-reply fast path.
-
-        The runtime supersedes an in-flight fork (cancel + numbered batch) and
-        queues the exchange envelope so the main agent learns what was asked
-        and answered at its next tool boundary.
+        The daemon publishes its port for ``lara dsh`` (which Lara runs via
+        bash) and reports finished dsh turns back into Lara's own session as
+        ``<dsh-event>`` messages. A dsh that cannot boot (no credential, no
+        runtime download) degrades to a pet without a worker, not a dead pet.
         """
-
-        self.interrupt_count += 1
         try:
-            outcome = await turn.runtime_service.send_interrupt(
-                turn.execution_id,
+            settings = load_dsh_settings(self.user_root)
+            daemon = DshDaemon(
+                settings.gateway_config(),
+                state_dir=self.user_root,
+                on_event=self._on_dsh_event,
+            )
+            daemon.start()
+        except Exception as exc:
+            log(f"dsh daemon unavailable: {exc!r}")
+            return None
+        log(f"dsh daemon on port {daemon.port}, home {settings.dsh_home}")
+        return daemon
+
+    def _on_dsh_event(self, event: DshEvent) -> None:
+        """Called on the daemon's notification thread; hop onto the loop."""
+        if self._loop is None or self._host is None:
+            return
+        self._loop.call_soon_threadsafe(
+            lambda: self._track(asyncio.create_task(self._route_dsh_event(event)))
+        )
+
+    async def _route_dsh_event(self, event: DshEvent) -> None:
+        """Deliver a dsh report the way Lara's own runtime context arrives.
+
+        While Lara is mid-turn the report rides the next tool result as
+        ``<runtime-context>`` (``AppendToolResultContent``): no fork agent, no
+        interruption, Lara simply sees it before its next model call. The
+        react layer applies it only when a tool result is pending; a turn
+        that ends first rejects it with ``react.projection_operation.rejected``
+        and the watcher falls back to a turn of its own. When Lara is idle the
+        report opens that turn directly.
+        """
+        turn = self._active_turn
+        if (
+            turn is not None
+            and turn.status == "running"
+            and turn.execution_handle is not None
+        ):
+            input_id = f"dsh-event-{uuid.uuid4().hex[:12]}"
+            self._pending_appends[input_id] = event
+            try:
+                delivery = await turn.execution_handle.send_input(
+                    input_id=input_id,
+                    kind=REACT_PROJECTION_OPERATION_KIND,
+                    value=encode_react_projection_operation(
+                        AppendToolResultContent(
+                            event.context_text(), InjectionKind.RUNTIME_CONTEXT
+                        )
+                    ),
+                )
+            except Exception as exc:  # execution already sealed or gone
+                log(f"dsh event append failed, opening a turn: {exc!r}")
+                delivery = None
+            if delivery is not None and delivery.status in {"accepted", "duplicate"}:
+                return
+            self._pending_appends.pop(input_id, None)
+        await self._start_event_turn(event)
+
+    async def _start_event_turn(self, event: DshEvent) -> None:
+        host = self._host
+        if host is None:
+            return
+        input_id = f"dsh-event-{uuid.uuid4().hex[:12]}"
+        # The runtime adds the speak reply-instruction only to <user-context>
+        # turns; a harness-framed turn supplies it itself.
+        message = f"{event.envelope()}\n{render_reply_instruction().strip()}"
+        lease = await host.acquire_runtime(config=self.config, manager=self.manager)
+        try:
+            lease.runtime.reminders.prewarm_session(self.session_id)
+            turn = await host.coordinator.submit_turn(
+                lease=lease,
+                command=TurnCommand(
+                    session_id=self.session_id,
+                    message=message,
+                    case_id=CASE_ID,
+                    submission_id=input_id,
+                    interactive_approvals=False,
+                    message_kind=DSH_EVENT_MESSAGE_KIND,
+                ),
+            )
+        except BaseException:
+            await lease.release()
+            raise
+        await self._watch_turn(turn, input_id)
+
+    def _track(self, task: asyncio.Task[None]) -> None:
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+
+    async def run(self) -> None:
+        loop = asyncio.get_running_loop()
+        async with LaraExecutionHost(
+            credential_environ=build_credential_environment(self.config.user_pygent_root),
+            run_config_loader=self._config_loader,
+            speak_channels=[PetSpeakChannel(loop, self.workspace)],
+        ) as host:
+            self._loop = loop
+            self._host = host
+            dsh = self._start_dsh()
+            try:
+                await self._serve(host, dsh)
+            finally:
+                self._host = None
+                if dsh is not None:
+                    dsh.close()
+
+    async def _serve(self, host: LaraExecutionHost, dsh: DshDaemon | None) -> None:
+        out({
+            "type": "ready",
+            "session_id": self.session_id,
+            "workspace": str(self.workspace),
+            "dsh_port": None if dsh is None else dsh.port,
+        })
+        loop = asyncio.get_running_loop()
+        while True:
+            raw = await loop.run_in_executor(None, sys.stdin.readline)
+            if not raw:
+                break  # parent died or closed stdin
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                request = json.loads(line)
+            except ValueError:
+                out({"type": "error", "msg": f"bad request line: {line[:120]}"})
+                continue
+            if request.get("type") == "ping":
+                out({"type": "pong"})
+                continue
+            if request.get("type") == "send":
+                text = str(request.get("text") or "").strip()
+                if not text:
+                    continue
+                # The unified entry routes by lane state: an active turn
+                # chain gets a fork interrupt (fast speak ack + exchange
+                # envelope), otherwise a real turn starts. Deliveries are
+                # detached so a long turn never blocks the next message.
+                self._track(asyncio.create_task(self._deliver(host, text)))
+                continue
+            out({"type": "error", "msg": f"unknown request type: {request.get('type')!r}"})
+
+    async def _deliver(self, host: LaraExecutionHost, text: str) -> None:
+        self.turn_count += 1
+        input_id = f"turn-{time.time() * 1000:.0f}-{self.turn_count}"
+        try:
+            delivery = await host.deliver_user_message(
+                config=self.config,
                 manager=self.manager,
-                run_ref=turn.run_ref,
                 session_id=self.session_id,
-                input_id=f"interrupt-{time.time() * 1000:.0f}-{self.interrupt_count}",
                 message=text,
+                input_id=input_id,
+                interactive_approvals=False,
             )
         except Exception as exc:
-            out({"type": "error", "msg": f"interrupt failed: {exc!r}"})
+            out({"type": "error", "msg": f"delivery failed: {exc!r}"})
             return
+        if delivery.mode == "interrupt":
+            self._emit_fork_reply(delivery.outcome)
+            return
+        assert delivery.turn is not None
+        await self._watch_turn(delivery.turn, input_id)
+
+    def _emit_fork_reply(self, outcome) -> None:
+        """Render the fork ack; ``None`` means a newer interrupt superseded it."""
+
         if outcome is None:
-            return  # superseded by a newer interrupt; the newer one answers
+            return
         speak_args = outcome.speak_args
         if speak_args is not None and speak_args.say_nothing:
             return
-        reply = (
-            speak_args.text
-            if speak_args is not None
-            else outcome.text
-        ) or ""
+        reply = (speak_args.text if speak_args is not None else outcome.text) or ""
         if reply:
             out({
                 "type": "speak",
                 "text": reply,
                 "attachments": list(speak_args.attachments) if speak_args is not None else [],
             })
+
+    async def _watch_turn(self, turn: ManagedSessionTurn, turn_id: str) -> None:
+        out({"type": "turn_started", "turn_id": turn_id})
+        await turn.wait_ready()
+        self._active_turn = turn
+        # Consumer-side streaming bridge: model.tool_call.delta events flow
+        # through the turn stream; decode the speak arguments incrementally
+        # (pygent whitelists the model-layer event kinds, so the bridge lives
+        # here, on the renderer side of the bus).
+        speak_bridge = SpeakStreamBridge()
+        rejected: list[DshEvent] = []
+        async with turn.subscribe() as stream:
+            async for event in stream:
+                if event.kind == "pygent.v1.realtime.speak":
+                    # The final text arrives through PetSpeakChannel, which
+                    # also covers turns this watcher never sees.
+                    continue
+                if event.kind == "react.projection_operation.rejected":
+                    data = plain_object(event.data)
+                    pending = self._pending_appends.pop(str(data.get("input_id")), None)
+                    if pending is not None:
+                        rejected.append(pending)
+                else:
+                    for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
+                        out({"type": "speak_delta", "text": suffix})
+        output, _ = await turn.result()
+        if self._active_turn is turn:
+            self._active_turn = None
+        # A skipped (cancelled) turn finalizes without an output envelope.
+        result = (
+            plain_object(plain_object(output.data).get("result"))
+            if output is not None
+            else {}
+        )
+        out({
+            "type": "turn_finished",
+            "turn_id": turn_id,
+            "status": str(result.get("status") or turn.status),
+            "error": str(result.get("error") or "") or None,
+        })
+        if turn.status == "skipped":
+            # A cancelled turn never drained its inbox: nothing was applied,
+            # nothing was rejected, so every outstanding append is lost.
+            rejected.extend(self._pending_appends.values())
+            self._pending_appends.clear()
+        else:
+            # Anything still pending was applied (applies are silent).
+            self._pending_appends.clear()
+        for pending in rejected:
+            self._track(asyncio.create_task(self._route_dsh_event(pending)))
 
 
 def main() -> None:

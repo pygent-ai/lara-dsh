@@ -24,7 +24,7 @@ from .store import (
 )
 
 if TYPE_CHECKING:
-    from lara.runtime.model_configuration import CredentialEnvironment
+    from pygent.agent.pygent_v1.runtime.model_configuration import CredentialEnvironment
 
 
 def lookup_credential_for_root(
@@ -38,7 +38,7 @@ def lookup_credential_for_root(
 def build_credential_environment(user_lara_root: str | Path) -> "CredentialEnvironment":
     """Compose the kernel credential environment from shell-owned sources."""
 
-    from lara.runtime.model_configuration import CredentialEnvironment
+    from pygent.agent.pygent_v1.runtime.model_configuration import CredentialEnvironment
 
     return CredentialEnvironment(
         user_lara_root,

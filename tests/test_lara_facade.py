@@ -16,7 +16,7 @@ import pytest
 from pygent import AIMessage, Context, Message
 from pygent.llm import ModelExecution, ModelProviderResponse
 
-from lara.schema import ResolvedAgentConfig, RunConfig
+from pygent.agent.pygent_v1.schema import ResolvedAgentConfig, RunConfig
 from lara_sdk import AgentResult, Lara, LaraConfig, SchedulerSettings
 
 MODEL_CONFIG_MAPPING: dict[str, Any] = {
@@ -97,7 +97,7 @@ def _run_config(tmp_path: Path) -> RunConfig:
     user_root.mkdir(parents=True, exist_ok=True)
     return RunConfig(
         workspace_root=str(workspace),
-        user_lara_root=str(user_root),
+        user_pygent_root=str(user_root),
         model_config_mapping=MODEL_CONFIG_MAPPING,
         resolved_agent=ResolvedAgentConfig(
             alias="default", default_model_group="e2e"
@@ -120,7 +120,7 @@ def configure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     ) -> tuple[Lara, RecordingInvoker]:
         invoker = RecordingInvoker(responder)
         monkeypatch.setattr(
-            "lara.runtime.agent.core.build_model_invoker",
+            "pygent.agent.pygent_v1.graph.core.build_model_invoker",
             lambda *_args, **_kwargs: invoker,
         )
         monkeypatch.setattr(
@@ -368,3 +368,29 @@ async def test_run_rejects_missing_attachment(configure) -> None:
         await facade.stop()
 
     assert invoker.requests == []
+
+
+def test_prompt_profile_is_modular() -> None:
+    from lara_sdk.lara_profile import DSH_MANAGEMENT_PROMPT, lara_prompt_modules
+    from pygent.agent.pygent_v1.graph.prompt_models import PromptRenderContext
+
+    modules = lara_prompt_modules()
+    assert [(m.id, m.order, m.phase, m.type) for m in modules] == [
+        ("system.pet", 10, "static", "system"),
+        ("system.dsh", 20, "static", "system"),
+    ]
+    from pathlib import Path
+
+    ctx = PromptRenderContext(
+        session_id="s", workspace_root=Path("E:/ws"), session_dir=Path("E:/ws"), turn_id="t",
+        projection={}, tool_names=[], request_id="r", request_type="agent_turn",
+    )
+    pet, dsh = (m.render(ctx) for m in modules)
+    assert pet is not None and str(Path("E:/ws")) in pet and "lara dsh" not in pet  # persona no longer carries dsh rules
+    assert dsh == DSH_MANAGEMENT_PROMPT
+    # The CLI grammar the prompt teaches must exist.
+    from lara_shell.ops.cli.main import build_parser
+    dsh_parser = next(a for a in build_parser()._subparsers._group_actions[0].choices["dsh"]._subparsers._group_actions)  # type: ignore[union-attr]
+    for command in ("send", "sessions", "status", "wait", "resume", "cancel", "requests", "approve", "reject", "answer", "decline", "config"):
+        assert f"lara dsh {command}" in dsh, command
+        assert command in dsh_parser.choices, command

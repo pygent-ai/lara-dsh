@@ -27,17 +27,17 @@ from typing import Any
 
 from lara_shell.config import load_run_config
 from lara_shell.credentials import build_credential_environment
-from lara.core.io import plain_object
-from lara.orchestration import LocalExecutionHost
-from lara.runtime.agent.prompts import PromptRegistry
-from lara.runtime.eternal_conversation import eternal_enabled_for, load_projection
-from lara.schema import AgentSession, RunConfig
-from lara.sessions import SessionManager, realtime_enabled_for
-from lara.sessions.manager import LARA_SAYS_SESSION_MODE
+from pygent.agent.pygent_v1.core.io import plain_object
+from pygent.agent.pygent_v1.orchestration import LocalExecutionHost
+from pygent.agent.pygent_v1.graph.prompts import PromptRegistry
+from pygent.agent.pygent_v1.runtime.eternal_conversation import eternal_enabled_for, load_projection
+from pygent.agent.pygent_v1.schema import AgentSession, RunConfig
+from pygent.agent.pygent_v1.sessions import SessionManager, realtime_enabled_for
+from pygent.agent.pygent_v1.sessions import PYGENT_SAYS_SESSION_MODE
 
 from .interfaces import AgentInput, AgentResult
 
-REALTIME_SESSION_MODE = LARA_SAYS_SESSION_MODE
+REALTIME_SESSION_MODE = PYGENT_SAYS_SESSION_MODE
 
 
 class LaraSessionAgent:
@@ -105,15 +105,12 @@ class LaraSessionAgent:
             self._manager.load(self._session_id)
         self._host = LocalExecutionHost(
             credential_environ=build_credential_environment(
-                self._config.user_lara_root
+                self._config.user_pygent_root
             ),
             run_config_loader=load_run_config,
             prompt_registry=self._prompt_registry,
         )
         await self._host.__aenter__()
-        await self._host.turns.prewarm_session(
-            config=self._config, manager=self._manager, session_id=self._session_id
-        )
         return self
 
     async def __aexit__(self, *_args: object) -> None:
@@ -137,22 +134,41 @@ class LaraSessionAgent:
                 "LaraSessionAgent must be started (use 'async with') before run()"
             )
         self._turn_seq += 1
-        turn = await self._host.turns.submit(
+        delivery = await self._host.deliver_user_message(
             config=self._config,
             manager=self._manager,
             session_id=self._session_id,
             message=request.message,
-            turn_id=f"turn-{self._turn_seq:04d}",
+            input_id=f"turn-{self._turn_seq:04d}",
             interactive_approvals=self._interactive,
             attachments=tuple(request.attachments),
         )
+        label = request.label or f"lara-session.{self._session_id}"
+        if delivery.mode == "interrupt":
+            # A realtime session mid-turn answers through the fork: the ack is
+            # the result; the running chain absorbs the exchange envelope.
+            outcome = delivery.outcome
+            speak = outcome.speak_args if outcome is not None else None
+            text = (
+                ""
+                if outcome is None or (speak is not None and speak.say_nothing)
+                else (speak.text if speak is not None else outcome.text) or ""
+            )
+            return AgentResult(
+                label=label,
+                text=text,
+                answer=outcome,
+                context={"session_id": self._session_id, "delivery": "interrupt"},
+            )
+        turn = delivery.turn
+        assert turn is not None
         output, _ = await turn.result()
         payload = plain_object(plain_object(output.data).get("result"))
         error = payload.get("error")
         if error:
             raise RuntimeError(f"lara turn failed: {error}")
         return AgentResult(
-            label=request.label or f"lara-session.{self._session_id}",
+            label=label,
             text=str(payload.get("final_answer") or ""),
             answer=payload,
             context={

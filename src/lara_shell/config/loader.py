@@ -7,11 +7,11 @@ from typing import Any, Literal, TypeVar
 
 from pygent.llm import ModelConfig
 
-from lara.config import validate_config_mapping
-from lara.core.io import non_empty_string as _non_empty
-from lara.core.paths import user_lara_root
+from pygent.agent.pygent_v1.config.validation import validate_config_mapping
+from pygent.agent.pygent_v1.core.io import non_empty_string as _non_empty
+from lara_shell import user_lara_root
 from lara_shell.credentials import load_credentials
-from lara.schema import (
+from pygent.agent.pygent_v1.schema import (
     BashCliPreset,
     DelegationConfig,
     EternalConversationConfig,
@@ -109,7 +109,7 @@ def load_run_config(
             _dig(config_data, "allow_read_outside_workspace"),
             default=True,
         ),
-        user_lara_root=str(user_root),
+        user_pygent_root=str(user_root),
         context_window=_optional_int_config(
             context_window,
             model_request.get("context_window"),
@@ -210,10 +210,7 @@ def _default_config() -> dict[str, Any]:
         },
         "mcp": {"servers": []},
         "delegation": {
-            "allowed_agents": [],
             "max_depth": 4,
-            "max_parallel": 4,
-            "background_enabled": True,
         },
         "eternal_conversation": {
             "enabled": False,
@@ -377,23 +374,11 @@ def _resolve_mcp_servers(data: dict[str, Any], root: Path) -> list[MCPServerConf
 
 
 def _resolve_delegation(data: dict[str, Any]) -> DelegationConfig:
-    agents = _dig(data, "delegation.allowed_agents") or []
-    if not isinstance(agents, list):
-        raise ValueError("delegation.allowed_agents must be a list")
     return DelegationConfig(
-        allowed_agents=tuple(str(item) for item in agents),
         max_depth=(
             4
             if _dig(data, "delegation.max_depth") is None
             else int(_dig(data, "delegation.max_depth"))
-        ),
-        max_parallel=(
-            4
-            if _dig(data, "delegation.max_parallel") is None
-            else int(_dig(data, "delegation.max_parallel"))
-        ),
-        background_enabled=_bool_config(
-            _dig(data, "delegation.background_enabled"), default=True
         ),
     )
 

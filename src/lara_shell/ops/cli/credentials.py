@@ -5,7 +5,7 @@ import os
 from typing import Any
 
 from lara_shell.ops.cli._base import config_from_args
-from lara.core.io import non_empty_string as _non_empty
+from pygent.agent.pygent_v1.core.io import non_empty_string as _non_empty
 from lara_shell.credentials import (
     DEFAULT_API_KEY_ENV,
     credential_is_configured,
@@ -48,10 +48,10 @@ def register_credentials_parser(sub: argparse._SubParsersAction[argparse.Argumen
 
 def credentials_list(args: argparse.Namespace) -> dict[str, Any]:
     config = config_from_args(args)
-    user_path = user_credentials_path(config.user_lara_root)
-    names = set(list_user_credential_names(config.user_lara_root))
+    user_path = user_credentials_path(config.user_pygent_root)
+    names = set(list_user_credential_names(config.user_pygent_root))
     for env_name in (DEFAULT_API_KEY_ENV,):
-        if credential_is_configured(env_name, user_lara_root=config.user_lara_root):
+        if credential_is_configured(env_name, user_lara_root=config.user_pygent_root):
             names.add(env_name)
     return {
         "credentials_file": str(user_path),
@@ -72,7 +72,7 @@ def credentials_set(args: argparse.Namespace) -> dict[str, Any]:
         return {"status": "stored", "env_name": env_name, "storage": f"keyring:{env_name}"}
 
     config = config_from_args(args)
-    path = set_user_credential(config.user_lara_root, env_name, value)
+    path = set_user_credential(config.user_pygent_root, env_name, value)
     return {"status": "stored", "env_name": env_name, "storage": f"file:{path}"}
 
 
@@ -86,11 +86,11 @@ def credentials_delete(args: argparse.Namespace) -> dict[str, Any]:
         return {"status": "deleted" if deleted else "missing", "env_name": env_name, "storage": f"keyring:{env_name}"}
 
     config = config_from_args(args)
-    deleted = delete_user_credential(config.user_lara_root, env_name)
+    deleted = delete_user_credential(config.user_pygent_root, env_name)
     return {
         "status": "deleted" if deleted else "missing",
         "env_name": env_name,
-        "storage": f"file:{user_credentials_path(config.user_lara_root)}",
+        "storage": f"file:{user_credentials_path(config.user_pygent_root)}",
     }
 
 
@@ -130,7 +130,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
             "hint": "The selected model has no native credential reference.",
         }
     api_key, lookup_source = lookup_credential(
-        env_name, user_lara_root=config.user_lara_root
+        env_name, user_lara_root=config.user_pygent_root
     )
     if api_key:
         return {
@@ -153,7 +153,7 @@ def credentials_validate(args: argparse.Namespace) -> dict[str, Any]:
             f"or export {env_name} in your shell environment."
         ),
         "lookup_source": lookup_source,
-        "credentials_file": str(user_credentials_path(config.user_lara_root)),
+        "credentials_file": str(user_credentials_path(config.user_pygent_root)),
     }
 
 

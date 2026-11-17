@@ -8,15 +8,15 @@ from types import SimpleNamespace
 
 import lara_shell.ops.cli.scheduler as scheduler_cli
 from lara_shell.ops.cli.main import build_parser
-from lara.scheduler.keys import init_keys
-from lara.scheduler.store import SchedulerStore, scheduler_db_path
-from lara.schema import RunConfig
+from pygent.agent.pygent_v1.scheduler.keys import init_keys
+from pygent.agent.pygent_v1.scheduler.store import SchedulerStore, scheduler_db_path
+from pygent.agent.pygent_v1.schema import RunConfig
 
 
 def _config(tmp_path: Path) -> RunConfig:
     return RunConfig(
         workspace_root=str(tmp_path / "workspace"),
-        user_lara_root=str(tmp_path / "user"),
+        user_pygent_root=str(tmp_path / "user"),
     )
 
 
@@ -52,12 +52,12 @@ def test_cli_add_creates_signed_user_submission(
     tmp_path: Path, monkeypatch
 ) -> None:
     config = _config(tmp_path)
-    init_keys(config.user_lara_root)
+    init_keys(config.user_pygent_root)
     monkeypatch.setattr(scheduler_cli, "load_run_config", lambda **_: config)
     result = scheduler_cli._scheduler_add(_args(tmp_path))
     assert result["kind"] == "task"
     assert result["source"] == "user"
-    store = SchedulerStore(scheduler_db_path(config.lara_root))
+    store = SchedulerStore(scheduler_db_path(config.pygent_root))
     submission = store.submission(str(result["id"]))
     assert submission is not None
     assert submission.payload["schedule"] == "every 1h"
@@ -65,12 +65,12 @@ def test_cli_add_creates_signed_user_submission(
 
 def test_cli_add_forwards_bus_fields(tmp_path: Path, monkeypatch) -> None:
     config = _config(tmp_path)
-    init_keys(config.user_lara_root)
+    init_keys(config.user_pygent_root)
     monkeypatch.setattr(scheduler_cli, "load_run_config", lambda **_: config)
     result = scheduler_cli._scheduler_add(
         _args(tmp_path, priority="high", delivery="speak")
     )
-    store = SchedulerStore(scheduler_db_path(config.lara_root))
+    store = SchedulerStore(scheduler_db_path(config.pygent_root))
     submission = store.submission(str(result["id"]))
     assert submission is not None
     assert submission.payload["priority"] == "high"
@@ -87,7 +87,7 @@ def test_cli_init_keys(tmp_path: Path, monkeypatch) -> None:
 
 def test_cli_list_and_show(tmp_path: Path, monkeypatch) -> None:
     config = _config(tmp_path)
-    store = SchedulerStore(scheduler_db_path(config.lara_root))
+    store = SchedulerStore(scheduler_db_path(config.pygent_root))
     store.migrate()
     task = store.create_task(
         name="task",

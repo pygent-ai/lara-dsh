@@ -14,16 +14,16 @@ from xml.sax.saxutils import escape
 
 from lara_shell.ops.cli._base import config_from_args
 from lara_shell.config import load_run_config
-from lara.scheduler.daemon import SchedulerDaemon
-from lara.scheduler.keys import init_keys, load_secret, sign
-from lara.scheduler.schedule import parse_schedule
-from lara.scheduler.store import (
+from pygent.agent.pygent_v1.scheduler.daemon import SchedulerDaemon
+from pygent.agent.pygent_v1.scheduler.keys import init_keys, load_secret, sign
+from pygent.agent.pygent_v1.scheduler.schedule import parse_schedule
+from pygent.agent.pygent_v1.scheduler.store import (
     SchedulerStore,
     scheduler_db_path,
     scheduler_keys_dir,
     submission_payload,
 )
-from lara.schema import RunConfig
+from pygent.agent.pygent_v1.schema import RunConfig
 
 AUTOSTART_TASK_NAME = "LaraScheduler"
 
@@ -88,7 +88,7 @@ def _config(args: argparse.Namespace) -> RunConfig:
 
 
 def _store(config: RunConfig) -> SchedulerStore:
-    return SchedulerStore(scheduler_db_path(config.lara_root))
+    return SchedulerStore(scheduler_db_path(config.pygent_root))
 
 
 def _scheduler_run(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -114,7 +114,7 @@ def _scheduler_add(args: argparse.Namespace) -> dict[str, Any]:
     parse_schedule(payload["schedule"])
     signature = sign(
         submission_payload("task", "user", payload),
-        load_secret(config.user_lara_root, "user"),
+        load_secret(config.user_pygent_root, "user"),
     )
     return _store(config).submit(
         kind="task",
@@ -146,7 +146,7 @@ def _scheduler_control(args: argparse.Namespace) -> dict[str, Any]:
     payload = {"action": args.action, "task_id": args.task_id}
     signature = sign(
         submission_payload("control", "user", payload),
-        load_secret(config.user_lara_root, "user"),
+        load_secret(config.user_pygent_root, "user"),
     )
     return _store(config).submit(
         kind="control",
@@ -158,8 +158,8 @@ def _scheduler_control(args: argparse.Namespace) -> dict[str, Any]:
 
 def _scheduler_init_keys(args: argparse.Namespace) -> dict[str, Any]:
     config = _config(args)
-    init_keys(config.user_lara_root, force=bool(args.force))
-    key_dir = scheduler_keys_dir(config.user_lara_root)
+    init_keys(config.user_pygent_root, force=bool(args.force))
+    key_dir = scheduler_keys_dir(config.user_pygent_root)
     return {
         "status": "ready",
         "keys": {

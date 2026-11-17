@@ -1,21 +1,22 @@
-"""导入完整性冒烟测试：抽取后的分层包必须全模块可导入。
+"""导入完整性冒烟测试：分层包必须全模块可导入，且不残留内核副本引用。
 
-评估 / 修复 / 自动化 / 工作流子系统已从本仓裁剪；任何残留的悬空引用
-（悬空 import）都会在这里暴露。同时固定依赖方向：``lara_sdk`` ->
-``lara_shell`` -> ``lara``，内核 ``lara`` 不得导入外壳或对外契约层。
+本仓的 agent 内核是 ``pygent.agent.pygent_v1``（随 pygent-ai 安装）；
+``lara_shell``（环境层）与 ``lara_sdk``（对外层）站在它之上。任何对已退役
+``src/lara`` 副本的悬空引用都会在这里暴露。依赖方向固定：
+``lara_sdk`` -> ``lara_shell`` -> ``pygent.agent.pygent_v1``。
 """
 
 from __future__ import annotations
 
 import ast
 import importlib
-import importlib.util
 import pkgutil
 from pathlib import Path
 
-import lara
 import lara_sdk
 import lara_shell
+
+PET_SIDECAR = Path(__file__).resolve().parents[1] / "pet" / "sidecar"
 
 
 def _import_roots(path: Path) -> set[str]:
@@ -27,68 +28,56 @@ def _import_roots(path: Path) -> set[str]:
         elif isinstance(node, ast.ImportFrom):
             if node.level == 0 and node.module:
                 roots.add(node.module.split(".")[0])
-            elif node.level > 0:
-                roots.add("lara")
     return roots
 
 
-def test_every_lara_module_imports() -> None:
-    module_names = {
+def _module_names(package) -> set[str]:
+    prefix = f"{package.__name__}."
+    return {
         name
-        for _, name, _ in pkgutil.walk_packages(lara.__path__, prefix="lara.")
+        for _, name, _ in pkgutil.walk_packages(package.__path__, prefix=prefix)
         if not name.endswith(".__main__")
     }
-    assert module_names, "lara package resolved to an empty module set"
+
+
+def test_every_layer_module_imports() -> None:
+    module_names = _module_names(lara_shell) | _module_names(lara_sdk)
+    assert module_names, "layer packages resolved to an empty module set"
     failures: dict[str, str] = {}
     for name in sorted(module_names):
         try:
             importlib.import_module(name)
         except Exception as exc:  # noqa: BLE001 - smoke test reports all failures
             failures[name] = f"{type(exc).__name__}: {exc}"
-    assert not failures, f"dangling imports after extraction: {failures}"
+    assert not failures, f"dangling imports: {failures}"
 
 
-def test_lara_kernel_does_not_import_shell_or_sdk() -> None:
+def test_no_module_references_the_retired_kernel_copy() -> None:
     offenders: dict[str, set[str]] = {}
-    for path in Path(lara.__path__[0]).rglob("*.py"):
-        # ``python -m lara`` is the process entry shim; it composes the shell
-        # CLI and is intentionally the only kernel file that names lara_shell.
-        if path.name == "__main__.py":
-            continue
-        forbidden = _import_roots(path) & {"lara_shell", "lara_sdk"}
+    sources = [
+        *Path(lara_shell.__path__[0]).rglob("*.py"),
+        *Path(lara_sdk.__path__[0]).rglob("*.py"),
+        *PET_SIDECAR.glob("*.py"),
+    ]
+    for path in sources:
+        stale = _import_roots(path) & {"lara"}
+        if stale:
+            offenders[path.name] = stale
+    assert not offenders, f"references to the retired src/lara copy: {offenders}"
+
+
+def test_shell_does_not_import_sdk() -> None:
+    offenders: dict[str, set[str]] = {}
+    for path in Path(lara_shell.__path__[0]).rglob("*.py"):
+        forbidden = _import_roots(path) & {"lara_sdk"}
         if forbidden:
-            offenders[str(path.relative_to(Path(lara.__path__[0])))] = forbidden
-    assert not offenders, f"kernel imports shell/sdk: {offenders}"
+            offenders[str(path.relative_to(Path(lara_shell.__path__[0])))] = forbidden
+    assert not offenders, f"lara_shell must not depend on lara_sdk: {offenders}"
 
 
-def test_every_lara_shell_module_imports() -> None:
-    module_names = {
-        name
-        for _, name, _ in pkgutil.walk_packages(
-            lara_shell.__path__, prefix="lara_shell."
-        )
-        if not name.endswith(".__main__")
+def test_sdk_public_surface() -> None:
+    modules = {
+        name.rsplit(".", 1)[-1]
+        for _, name, _ in pkgutil.iter_modules(lara_sdk.__path__, prefix="lara_sdk.")
     }
-    assert module_names, "lara_shell package resolved to an empty module set"
-    failures: dict[str, str] = {}
-    for name in sorted(module_names):
-        try:
-            importlib.import_module(name)
-        except Exception as exc:  # noqa: BLE001 - smoke test reports all failures
-            failures[name] = f"{type(exc).__name__}: {exc}"
-    assert not failures, f"dangling imports in lara_shell: {failures}"
-
-
-def test_lara_sdk_modules_import() -> None:
-    from lara_sdk import agent, interfaces, lara_rt  # noqa: F401
-
-    # SDK 只保留使用契约、运行时适配器、完整门面与可选 Lara 提示词 profile。
-    modules = {name for _, name, _ in pkgutil.iter_modules(lara_sdk.__path__)}
-    assert modules == {"agent", "interfaces", "lara_profile", "lara_rt"}
-    for removed in ("engine", "simple_agent"):
-        assert importlib.util.find_spec(f"lara_sdk.{removed}") is None
-
-
-def test_pruned_subsystems_absent() -> None:
-    for pruned in ("evaluation", "repair", "automations", "workflows"):
-        assert not (Path(lara.__path__[0]) / pruned).exists(), pruned
+    assert modules == {"agent", "execution_host", "interfaces", "lara_profile", "lara_rt"}

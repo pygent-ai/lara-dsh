@@ -1,0 +1,10 @@
+{
+  "name": "lara-dsh-session-control",
+  "version": "0.1.0",
+  "description": "Lara's session control plane for a DeepSeek Harness (dsh) runtime: session inventory with live status over a loopback JSON-RPC channel.",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "cordis.patch.yml"],
+  "engines": { "dsh": ">=0.2.0 <0.3.0" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

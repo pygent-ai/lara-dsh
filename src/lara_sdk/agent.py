@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from lara_shell.config import load_run_config
-from lara.scheduler import (
+from pygent.agent.pygent_v1.scheduler import (
     Run,
     SchedulerDaemon,
     SchedulerStore,
@@ -41,10 +41,10 @@ from lara.scheduler import (
     sign,
     submission_payload,
 )
-from lara.schema import RunConfig, SchedulerConfig
-from lara.runtime.agent.prompts import PromptRegistry
-from lara.scheduler.store import utc_now
-from lara.sessions import SessionManager
+from pygent.agent.pygent_v1.schema import RunConfig, SchedulerConfig
+from pygent.agent.pygent_v1.graph.prompts import PromptRegistry
+from pygent.agent.pygent_v1.scheduler.store import utc_now
+from pygent.agent.pygent_v1.sessions import SessionManager
 
 from .interfaces import AgentInput, AgentResult
 from .lara_profile import lara_prompt_modules
@@ -117,7 +117,7 @@ class LaraConfig:
             raise TypeError("scheduler must be a SchedulerSettings instance")
 
     def _prompt_registry(self) -> "PromptRegistry | None":
-        from lara.runtime.agent.prompts import PromptRegistry
+        from pygent.agent.pygent_v1.graph.prompts import PromptRegistry
 
         if not self.lara_prompt_profile:
             return None
@@ -172,7 +172,7 @@ class _EmbeddedScheduler:
         *,
         runner: TaskRunner,
     ) -> None:
-        self.store = SchedulerStore(scheduler_db_path(config.lara_root))
+        self.store = SchedulerStore(scheduler_db_path(config.pygent_root))
         self._daemon = SchedulerDaemon(config, store=self.store, runner=runner)
         self._poll_seconds = float(config.scheduler.poll_seconds)
         self._wake = asyncio.Event()
@@ -319,11 +319,11 @@ class Lara:
         scheduler_session_id: str | None = None
         store: SchedulerStore | None = None
         if self.config.scheduler.enabled:
-            init_keys(config.user_lara_root)
+            init_keys(config.user_pygent_root)
             scheduler_session_id = self._ensure_scheduler_session(
                 manager, self.config.scheduler.session
             )
-            store = SchedulerStore(scheduler_db_path(config.lara_root))
+            store = SchedulerStore(scheduler_db_path(config.pygent_root))
 
         mode = REALTIME_SESSION_MODE if self.config.realtime else "chat"
         session_id: str | None = None
@@ -545,7 +545,7 @@ class Lara:
     ) -> Submission:
         assert self._run_config is not None
         assert self._store is not None
-        secret = load_secret(self._run_config.user_lara_root, source)
+        secret = load_secret(self._run_config.user_pygent_root, source)
         return self._store.submit(
             kind=kind,
             source=source,
