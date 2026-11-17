@@ -19,6 +19,10 @@ runtime (``lara_sdk.execution_host``), which hears every speak the runtime
 delivers — including the finalizer round pygent appends when a turn ends in
 plain text, and dsh-event turns. The per-turn event stream is used only for
 ``speak_delta`` previews; its terminal speak event is not re-emitted.
+
+dsh reports reach Lara as wait-mode steering user messages when a turn is
+running (one more model step inside that turn) and as turns of their own
+otherwise; see ``PetSession._route_dsh_event``.
 """
 
 from __future__ import annotations
@@ -46,10 +50,11 @@ from pygent.agent.pygent_v1.orchestration.models import TurnCommand
 from pygent.agent.pygent_v1.runtime.realtime.speak import render_reply_instruction
 from pygent.agent.react_projection_operations import (
     REACT_PROJECTION_OPERATION_KIND,
-    AppendToolResultContent,
+    StandaloneUserMessage,
+    SteeringMode,
     encode_react_projection_operation,
 )
-from pygent.agent.reminder import InjectionKind
+from pygent.core import UserMessage
 from pygent.agent.pygent_v1.schema import RuntimeApprovalConfig
 from pygent.agent.pygent_v1.schema.models import RealtimeInteractionConfig
 from pygent.agent.pygent_v1.sessions import PYGENT_SAYS_SESSION_MODE, SessionManager
@@ -60,8 +65,9 @@ CASE_ID = "pet"
 # Env name under which dsh's DeepSeek key is handed to pygent, transiently.
 LARA_DSH_KEY_ENV = "LARA_DSH_DEEPSEEK_API_KEY"
 
-# Harness-originated turns carry their own framing; the runtime leaves this
+# Harness-originated messages carry their own framing; the runtime leaves this
 # kind out of the <user-context> wrapper and logs it with origin "automation".
+# Used both for steered mid-turn reports and for report turns of their own.
 DSH_EVENT_MESSAGE_KIND = "pygent.v1.automation.trigger"
 
 # The pet's persona comes from the stock prompt profile; the speak channel is
@@ -145,9 +151,6 @@ class PetSession:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._host: LaraExecutionHost | None = None
         self._active_turn: ManagedSessionTurn | None = None
-        # Appends handed to a running turn, by input id, until the react layer
-        # applies them (silently) or rejects them (event → fallback turn).
-        self._pending_appends: dict[str, DshEvent | DshEventBatch] = {}
 
     def _persona(self) -> str:
         ctx = PromptRenderContext(
@@ -237,40 +240,43 @@ class PetSession:
         )
 
     async def _route_dsh_event(self, event: DshEvent | DshEventBatch) -> None:
-        """Deliver a dsh report the way Lara's own runtime context arrives.
+        """Deliver a dsh report the way a mid-turn user exchange arrives.
 
-        While Lara is mid-turn the report rides the next tool result as
-        ``<runtime-context>`` (``AppendToolResultContent``): no fork agent, no
-        interruption, Lara simply sees it before its next model call. The
-        react layer applies it only when a tool result is pending; a turn
-        that ends first rejects it with ``react.projection_operation.rejected``
-        and the watcher falls back to a turn of its own. When Lara is idle the
-        report opens that turn directly.
+        While Lara is mid-turn the report is steered into that turn as a
+        wait-mode ``StandaloneUserMessage`` — the same operation pygent uses
+        for fork-reply exchanges. The react layer applies it after pending
+        tool results and before the next model call, and at a plain-text
+        ending it still applies, giving the turn one more model step instead
+        of letting the report wait for a new turn. Only a turn whose inbox is
+        already sealed refuses it; then (and when Lara is idle) the report
+        opens a harness-framed turn of its own.
         """
         turn = self._active_turn
         if (
             turn is not None
             and turn.status == "running"
             and turn.execution_handle is not None
+            and turn.run_ref is not None
         ):
             input_id = f"dsh-event-{uuid.uuid4().hex[:12]}"
-            self._pending_appends[input_id] = event
+            message = UserMessage(
+                content=event.envelope(),
+                kind=DSH_EVENT_MESSAGE_KIND,
+                data={"case_run_id": turn.run_ref.case_run_id, "input_id": input_id},
+            )
             try:
                 delivery = await turn.execution_handle.send_input(
                     input_id=input_id,
                     kind=REACT_PROJECTION_OPERATION_KIND,
                     value=encode_react_projection_operation(
-                        AppendToolResultContent(
-                            event.context_text(), InjectionKind.RUNTIME_CONTEXT
-                        )
+                        StandaloneUserMessage(message, SteeringMode.WAIT)
                     ),
                 )
             except Exception as exc:  # execution already sealed or gone
-                log(f"dsh event append failed, opening a turn: {exc!r}")
+                log(f"dsh event steering failed, opening a turn: {exc!r}")
                 delivery = None
             if delivery is not None and delivery.status in {"accepted", "duplicate"}:
                 return
-            self._pending_appends.pop(input_id, None)
         await self._start_event_turn(event)
 
     async def _start_event_turn(self, event: DshEvent | DshEventBatch) -> None:
@@ -401,21 +407,14 @@ class PetSession:
         # (pygent whitelists the model-layer event kinds, so the bridge lives
         # here, on the renderer side of the bus).
         speak_bridge = SpeakStreamBridge()
-        rejected: list[DshEvent | DshEventBatch] = []
         async with turn.subscribe() as stream:
             async for event in stream:
                 if event.kind == "pygent.v1.realtime.speak":
                     # The final text arrives through PetSpeakChannel, which
                     # also covers turns this watcher never sees.
                     continue
-                if event.kind == "react.projection_operation.rejected":
-                    data = plain_object(event.data)
-                    pending = self._pending_appends.pop(str(data.get("input_id")), None)
-                    if pending is not None:
-                        rejected.append(pending)
-                else:
-                    for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
-                        out({"type": "speak_delta", "text": suffix})
+                for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
+                    out({"type": "speak_delta", "text": suffix})
         output, _ = await turn.result()
         if self._active_turn is turn:
             self._active_turn = None
@@ -431,16 +430,6 @@ class PetSession:
             "status": str(result.get("status") or turn.status),
             "error": str(result.get("error") or "") or None,
         })
-        if turn.status == "skipped":
-            # A cancelled turn never drained its inbox: nothing was applied,
-            # nothing was rejected, so every outstanding append is lost.
-            rejected.extend(self._pending_appends.values())
-            self._pending_appends.clear()
-        else:
-            # Anything still pending was applied (applies are silent).
-            self._pending_appends.clear()
-        for pending in rejected:
-            self._track(asyncio.create_task(self._route_dsh_event(pending)))
 
 
 def main() -> None:

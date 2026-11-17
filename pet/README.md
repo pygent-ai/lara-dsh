@@ -37,7 +37,9 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   wait/resume/cancel` 管理 dsh 会话（`send --cwd` 新建的会话以该目录为根，也是它的
   沙箱写边界）；dsh 每做完一轮，daemon 把 `<dsh-event kind="turn_finished">` 投递
   进 Lara 的 lara-says 会话（3 秒内同时完工的合并为 `<dsh-events>`），由 Lara 转述给
-  用户。dsh 会话的沙箱升权申请和 `ask_user_question` 由插件接住，以
+  用户。投递方式：Lara 正在跑 turn 时以 wait 模式的 `StandaloneUserMessage` 注入该
+  turn（pygent 给 fork 交换信封用的同一机制，在工具结果之后、下次模型调用之前生效；
+  纯文本结尾处也能生效并多跑一步），否则另起一个 `automation.trigger` 框架的 turn。dsh 会话的沙箱升权申请和 `ask_user_question` 由插件接住，以
   `<dsh-event kind="approval_request"/"question">` 投给 Lara，Lara 用 speak 转问用户后
   `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed。
 - **配置以 dsh 为准**：dsh home 是 `~/.dsh`（与 dsh 自己的前端共享），API key 存在

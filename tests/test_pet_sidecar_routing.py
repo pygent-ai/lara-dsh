@@ -12,15 +12,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pet" / "sidecar"))
 
 import main as sidecar  # noqa: E402  (pet/sidecar/main.py)
-from lara_shell.dsh_daemon import DshEvent  # noqa: E402
+from lara_shell.dsh_daemon import DshEvent, DshEventBatch  # noqa: E402
 from pygent.agent.react_projection_operations import (  # noqa: E402
     REACT_PROJECTION_OPERATION_KIND,
-    AppendToolResultContent,
+    StandaloneUserMessage,
+    SteeringMode,
     decode_react_projection_operation,
 )
 
@@ -35,10 +34,15 @@ class _Handle:
         return SimpleNamespace(status=self.status)
 
 
+def _turn(status: str = "running", handle: Any = None, run_ref: Any = "default") -> SimpleNamespace:
+    if run_ref == "default":
+        run_ref = SimpleNamespace(case_run_id="run-1")
+    return SimpleNamespace(status=status, execution_handle=handle, run_ref=run_ref)
+
+
 def _session(active_turn: Any) -> tuple[Any, list[Any]]:
     session = sidecar.PetSession.__new__(sidecar.PetSession)
     session._active_turn = active_turn
-    session._pending_appends = {}
     session._turn_tasks = set()
     opened: list[Any] = []
 
@@ -53,10 +57,9 @@ def _event() -> DshEvent:
     return DshEvent(kind="turn_finished", session_id="dsh-1", title="t", finish_reason="completed", reply="done")
 
 
-def test_running_turn_gets_the_report_appended_to_its_tool_result() -> None:
+def test_running_turn_is_steered_with_a_harness_framed_user_message() -> None:
     handle = _Handle()
-    turn = SimpleNamespace(status="running", execution_handle=handle)
-    session, opened = _session(turn)
+    session, opened = _session(_turn(handle=handle))
 
     asyncio.run(session._route_dsh_event(_event()))
 
@@ -64,11 +67,24 @@ def test_running_turn_gets_the_report_appended_to_its_tool_result() -> None:
     (sent,) = handle.inputs
     assert sent["kind"] == REACT_PROJECTION_OPERATION_KIND
     operation = decode_react_projection_operation(sent["value"])
-    assert isinstance(operation, AppendToolResultContent)
-    assert operation.content.startswith("dsh event: turn_finished — session dsh-1 (t), finish_reason=completed")
-    assert "<" not in operation.content  # plain text: pygent escapes appended context
-    # Remembered until the react layer applies or rejects it.
-    assert list(session._pending_appends) == [sent["input_id"]]
+    assert isinstance(operation, StandaloneUserMessage)
+    assert operation.mode is SteeringMode.WAIT  # never interrupts the step in flight
+    message = operation.message
+    assert message.kind == sidecar.DSH_EVENT_MESSAGE_KIND  # not a <user-context> turn
+    assert message.content.startswith('<dsh-event kind="turn_finished">')
+    assert "<reply>done</reply>" in message.content
+    assert dict(message.data) == {"case_run_id": "run-1", "input_id": sent["input_id"]}
+
+
+def test_batches_are_steered_as_one_message() -> None:
+    handle = _Handle()
+    session, _ = _session(_turn(handle=handle))
+    batch = DshEventBatch((_event(), DshEvent(kind="turn_finished", session_id="dsh-2", finish_reason="completed", reply="also")))
+    asyncio.run(session._route_dsh_event(batch))
+    (sent,) = handle.inputs
+    operation = decode_react_projection_operation(sent["value"])
+    assert isinstance(operation, StandaloneUserMessage)
+    assert operation.message.content.startswith('<dsh-events count="2">')
 
 
 def test_idle_session_opens_a_turn_for_the_report() -> None:
@@ -77,23 +93,22 @@ def test_idle_session_opens_a_turn_for_the_report() -> None:
     assert len(opened) == 1 and opened[0].kind == "turn_finished"
 
 
-def test_finished_or_unready_turn_falls_back_to_a_new_turn() -> None:
+def test_finished_or_unready_turn_opens_a_new_turn() -> None:
     for turn in (
-        SimpleNamespace(status="passed", execution_handle=_Handle()),  # already ended
-        SimpleNamespace(status="running", execution_handle=None),  # not ready yet
+        _turn(status="passed", handle=_Handle()),  # already ended
+        _turn(handle=None),  # execution not ready yet
+        _turn(handle=_Handle(), run_ref=None),  # no run to bind the message to
     ):
         session, opened = _session(turn)
         asyncio.run(session._route_dsh_event(_event()))
         assert len(opened) == 1
-        assert session._pending_appends == {}
 
 
-def test_refused_append_falls_back_immediately() -> None:
-    handle = _Handle(status="sealed")  # inbox closed: no later tool result will come
-    session, opened = _session(SimpleNamespace(status="running", execution_handle=handle))
+def test_sealed_inbox_falls_back_to_a_new_turn() -> None:
+    handle = _Handle(status="sealed")  # the turn ended between our check and the send
+    session, opened = _session(_turn(handle=handle))
     asyncio.run(session._route_dsh_event(_event()))
-    assert len(handle.inputs) == 1
-    assert len(opened) == 1 and session._pending_appends == {}
+    assert len(handle.inputs) == 1 and len(opened) == 1
 
 
 def test_send_failure_falls_back_to_a_new_turn() -> None:
@@ -101,25 +116,6 @@ def test_send_failure_falls_back_to_a_new_turn() -> None:
         async def send_input(self, **kwargs: Any) -> SimpleNamespace:
             raise RuntimeError("execution gone")
 
-    session, opened = _session(SimpleNamespace(status="running", execution_handle=Broken()))
+    session, opened = _session(_turn(handle=Broken()))
     asyncio.run(session._route_dsh_event(_event()))
-    assert len(opened) == 1 and session._pending_appends == {}
-
-
-def test_react_rejection_during_the_turn_reroutes_the_event() -> None:
-    """The watcher sees `react.projection_operation.rejected` and re-delivers."""
-    handle = _Handle()
-    turn = SimpleNamespace(status="running", execution_handle=handle)
-    session, opened = _session(turn)
-    asyncio.run(session._route_dsh_event(_event()))
-    (input_id,) = session._pending_appends
-
-    # Simulate what _watch_turn does on the rejection event for this input id.
-    pending = session._pending_appends.pop(input_id)
-    rejected = [pending]
-    for event in rejected:
-        asyncio.run(session._route_dsh_event(event))  # turn still "running" → appended again
-    assert len(handle.inputs) == 2  # a fresh input id, same content
-    assert handle.inputs[0]["input_id"] != handle.inputs[1]["input_id"]
-    first, second = (decode_react_projection_operation(i["value"]) for i in handle.inputs)
-    assert first == second
+    assert len(opened) == 1
