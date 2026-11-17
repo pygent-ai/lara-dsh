@@ -34,14 +34,21 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   常驻持有一个 DeepSeek Harness 运行时（叠加 `lara_shell/dsh_plugin/
   lara-session-control` Cordis 插件），端口发布在 `~/.lara-dsh/dsh-daemon.json`，
   `ready` 事件带 `dsh_port`。Lara 通过 bash 跑 `lara dsh send/sessions/status/
-  wait/resume` 管理 dsh 会话（`send --cwd` 新建的会话以该目录为根，也是它的
-  沙箱写边界）；dsh 每做完一轮，daemon 把 `<dsh-event kind="turn_finished">`
-  投递进 Lara 的 lara-says 会话，由 Lara 转述给用户。端点/凭据/模型来自
-  `~/.lara-dsh/dsh.yaml`（`connection` 指向 config.yaml 的 connections，`lara dsh
-  config` 查看/修改）。dsh 会话的沙箱升权申请和 `ask_user_question` 由插件接住，
-  以 `<dsh-event kind="approval_request"/"question">` 投给 Lara，Lara 用
-  `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed；
-  `lara dsh cancel` 叫停会话。dsh 起不来时桌宠照常运行，只是没有 worker。
+  wait/resume/cancel` 管理 dsh 会话（`send --cwd` 新建的会话以该目录为根，也是它的
+  沙箱写边界）；dsh 每做完一轮，daemon 把 `<dsh-event kind="turn_finished">` 投递
+  进 Lara 的 lara-says 会话（3 秒内同时完工的合并为 `<dsh-events>`），由 Lara 转述给
+  用户。dsh 会话的沙箱升权申请和 `ask_user_question` 由插件接住，以
+  `<dsh-event kind="approval_request"/"question">` 投给 Lara，Lara 用 speak 转问用户后
+  `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed。
+- **配置以 dsh 为准**：dsh home 是 `~/.dsh`（与 dsh 自己的前端共享），API key 存在
+  dsh 的凭据库 `~/.dsh/.credentials.yaml`（`lara dsh credentials DEEPSEEK_API_KEY
+  --set` 写入），`~/.lara-dsh/dsh.yaml` 只放路由（provider/model/base_url/workspace/
+  lara_model，`lara dsh config` 查改，`lara dsh models` 列可选模型）。**桌宠自己的模型
+  也从 dsh 借**：sidecar 启动时先起 dsh daemon，从其凭据库取 DeepSeek key，拼成
+  pygent 的 connection（model group `dsh`）；dsh 没有 key 时才回退到 `config.yaml`。
+  `lara dsh open` 在共享 home 上拉起 `dsh web`（带令牌 URL 缓存于
+  `~/.lara-dsh/dsh-web.json`）让用户直接浏览所有会话。dsh 起不来时桌宠照常运行，
+  只是没有 worker。
 - **speak 出口**：最终的 `speak` 气泡来自注册在运行时上的 `PetSpeakChannel`
   （`lara_sdk.execution_host.LaraExecutionHost(speak_channels=…)`），pygent 每执行
   一次 speak 工具就回调一次 `deliver(text)`，不分 turn——主 turn、pygent 给纯文本

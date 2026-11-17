@@ -19,11 +19,13 @@ from pathlib import Path
 import pytest
 
 from lara_shell.dsh_daemon import DshDaemon, DshDaemonClient, DshEvent, DshEventBatch
-from lara_shell.dsh_gateway import DshGatewayConfig, ensure_primary_runtime
+from lara_shell.dsh_gateway import ensure_primary_runtime
+
+from _dsh_support import real_gateway_config
 
 REQUIRES_API_KEY = pytest.mark.skipif(
-    not os.environ.get("DEEPSEEK_API_KEY"),
-    reason="real dsh runtime + DEEPSEEK_API_KEY required",
+    not os.environ.get("DEEPSEEK_API_KEY") and not (Path.home() / ".dsh" / ".credentials.yaml").is_file(),
+    reason="real dsh runtime needs DEEPSEEK_API_KEY or a key in dsh's credential store",
 )
 
 
@@ -35,7 +37,7 @@ def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) 
     project = tmp_path / "project"
     project.mkdir()
     events: list[DshEvent | DshEventBatch] = []
-    config = DshGatewayConfig.from_env(tmp_path / "dsh-home", workspace)
+    config = real_gateway_config(tmp_path / "dsh-home", workspace)
     with DshDaemon(config, state_dir=tmp_path / "root", on_event=events.append):
         with DshDaemonClient.connect(tmp_path / "root") as client:
             sent = client.send("在当前目录创建 d.txt 内容 DAEMON，完成后只回答：done", cwd=str(project))

@@ -220,7 +220,8 @@ def test_run_forwards_prompt_and_env_config_to_gateway(
     assert str(config.dsh_home) == str(tmp_path / "home")
     assert str(config.cwd) == str(tmp_path / "work")
     assert config.model == "test-model"
-    assert config.api_key == "test-key"
+    # dsh resolves its own key from its credential store; the CLI never injects one.
+    assert config.api_key is None
     assert config.base_url == "http://test-endpoint/v1"
     assert gateway.run_calls == [("你好", "s1")]
     payload = json.loads(capsys.readouterr().out)
@@ -252,7 +253,7 @@ def test_run_defaults_home_and_cwd(
 
     assert exit_code == 0
     config = FakeGateway.instances[0].config
-    assert config.dsh_home == tmp_path / "root" / "dsh-home"
+    assert config.dsh_home == Path.home() / ".dsh"  # dsh's own home, shared with its UIs
     assert config.cwd == tmp_path
 
 
@@ -293,6 +294,8 @@ def test_config_shows_and_changes_settings(
     payload = json.loads(capsys.readouterr().out)
     assert payload["settings"] == {}
     assert payload["effective"]["model"] == DEFAULT_DSH_MODEL
+    assert payload["effective"]["provider"] == "deepseek-official"
+    assert payload["effective"]["home"].endswith(".dsh")
     assert payload["daemon_running"] is False
 
     assert main(["dsh", "config", "model=deepseek-v4-pro", "workspace=E:/work"]) == 0
@@ -305,3 +308,4 @@ def test_config_shows_and_changes_settings(
     assert main(["dsh", "config", "model="]) == 0
     assert json.loads(capsys.readouterr().out)["settings"] == {"workspace": "E:/work"}
     assert main(["dsh", "config", "bogus"]) == 2  # KEY=VALUE required
+    assert main(["dsh", "config", "connection=az"]) == 2  # retired key is refused

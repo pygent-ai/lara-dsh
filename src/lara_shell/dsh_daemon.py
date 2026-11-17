@@ -303,6 +303,11 @@ class DshDaemon:
     def state_path(self) -> Path:
         return self._state_dir / DAEMON_STATE_FILENAME
 
+    @property
+    def gateway(self) -> DshGateway:
+        """The resident runtime, for in-process hosts (credentials, models)."""
+        return self._gateway
+
     def start(self) -> None:
         if self._server is not None:
             return
@@ -733,6 +738,13 @@ class DshDaemon:
                 return {"request": pending.to_wire()}
             case "dsh/decline":
                 return {"request": self.decline(_required_str(params, "request_id")).to_wire()}
+            case "dsh/models":
+                return {"providers": self._gateway.list_models()}
+            case "dsh/credentials/describe":
+                return self._gateway.describe_credential(_required_str(params, "ref"))
+            case "dsh/credentials/set":
+                self._gateway.set_credential(_required_str(params, "ref"), _optional_str(params.get("value")))
+                return {"ok": True}
             case _:
                 raise _MethodNotFound(f"unknown dsh daemon method: {method}")
 
@@ -854,6 +866,15 @@ class DshDaemonClient:
 
     def decline(self, request_id: str) -> dict[str, Any]:
         return self._channel.call("dsh/decline", {"request_id": request_id})["request"]
+
+    def models(self) -> list[dict[str, Any]]:
+        return list(self._channel.call("dsh/models")["providers"])
+
+    def describe_credential(self, ref: str) -> dict[str, Any]:
+        return self._channel.call("dsh/credentials/describe", {"ref": ref})
+
+    def set_credential(self, ref: str, value: str | None) -> None:
+        self._channel.call("dsh/credentials/set", {"ref": ref, "value": value or ""})
 
 
 __all__ = [

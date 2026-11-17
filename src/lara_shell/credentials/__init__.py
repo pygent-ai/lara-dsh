@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,13 +36,20 @@ def lookup_credential_for_root(
     return lookup_credential(env_name, user_lara_root=user_lara_root)
 
 
-def build_credential_environment(user_lara_root: str | Path) -> "CredentialEnvironment":
-    """Compose the kernel credential environment from shell-owned sources."""
+def build_credential_environment(
+    user_lara_root: str | Path, *, transient: Mapping[str, str] | None = None
+) -> "CredentialEnvironment":
+    """Compose the kernel credential environment from shell-owned sources.
+
+    ``transient`` supplies process-lifetime values that are never written to
+    the store (e.g. a key borrowed from dsh's credential file).
+    """
 
     from pygent.agent.pygent_v1.runtime.model_configuration import CredentialEnvironment
 
     return CredentialEnvironment(
         user_lara_root,
+        transient=transient,
         lookup=lookup_credential_for_root,
         name_lister=list_user_credential_names,
     )

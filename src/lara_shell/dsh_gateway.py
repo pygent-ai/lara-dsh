@@ -20,7 +20,8 @@ import os
 import socket
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -254,6 +255,27 @@ class _PendingCall:
         self.error: str | None = None
 
 
+@contextmanager
+def _without_inherited_deepseek_env(config: DshGatewayConfig) -> Iterator[None]:
+    """Keep Lara's exported DEEPSEEK_* out of the dsh subprocess unless configured.
+
+    The shell exports every stored credential into this process, and the SDK
+    launches dsh with a copy of ``os.environ`` that can only be extended. A
+    gateway without an explicit key/endpoint wants dsh to use its own
+    credential store (``$DSH_HOME/.credentials.yaml``), which an inherited
+    stale ``DEEPSEEK_API_KEY`` would shadow and an inherited
+    ``DEEPSEEK_BASE_URL`` would redirect. Only the launch window is affected.
+    """
+    removed: dict[str, str] = {}
+    for name, configured in (("DEEPSEEK_API_KEY", config.api_key), ("DEEPSEEK_BASE_URL", config.base_url)):
+        if configured is None and name in os.environ:
+            removed[name] = os.environ.pop(name)
+    try:
+        yield
+    finally:
+        os.environ.update(removed)
+
+
 def _free_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
@@ -309,7 +331,8 @@ class DshGateway:
             api_key=self._config.api_key,
         )
         harness = DeepSeekHarness(config)
-        harness.start()
+        with _without_inherited_deepseek_env(self._config):
+            harness.start()
         self._harness = harness
         control = SessionControlChannel(
             control_port, on_notification=self._on_control_notification
@@ -390,6 +413,26 @@ class DshGateway:
         entry = self.stat_session(session_id)
         assert entry is not None
         return entry
+
+    def list_models(self) -> list[dict[str, Any]]:
+        """Providers registered in the runtime's llm service with their model catalogs."""
+        self.start()
+        return list(self.control.call("lara/models/list")["providers"])
+
+    def describe_credential(self, ref: str) -> dict[str, Any]:
+        self.start()
+        return self.control.call("lara/credentials/describe", {"ref": ref})
+
+    def resolve_credential(self, ref: str) -> str | None:
+        """The secret dsh would use for ``ref`` (file store, then its launch env)."""
+        self.start()
+        value = self.control.call("lara/credentials/resolve", {"ref": ref}).get("value")
+        return value if isinstance(value, str) and value else None
+
+    def set_credential(self, ref: str, value: str | None) -> None:
+        """Store (or with ``None``/empty, remove) a secret in dsh's credential file."""
+        self.start()
+        self.control.call("lara/credentials/set", {"ref": ref, "value": value or ""})
 
     def cancel_session(self, session_id: str) -> bool:
         """Cancel the live agent's current work; False when the session is not live."""

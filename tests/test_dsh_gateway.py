@@ -14,11 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from lara_shell.dsh_gateway import DshGateway, DshGatewayConfig, ensure_primary_runtime
+from lara_shell.dsh_gateway import DshGateway, ensure_primary_runtime
+
+from _dsh_support import real_gateway_config
 
 REQUIRES_API_KEY = pytest.mark.skipif(
-    not os.environ.get("DEEPSEEK_API_KEY"),
-    reason="real dsh runtime + DEEPSEEK_API_KEY required",
+    not os.environ.get("DEEPSEEK_API_KEY") and not (Path.home() / ".dsh" / ".credentials.yaml").is_file(),
+    reason="real dsh runtime needs DEEPSEEK_API_KEY or a key in dsh's credential store",
 )
 
 
@@ -33,13 +35,13 @@ def test_dsh_session_survives_a_new_gateway_process(tmp_path: Path) -> None:
     """A durable dsh session continues across gateway processes."""
     ensure_primary_runtime()
     home = tmp_path / "dsh-home"
-    with DshGateway(DshGatewayConfig.from_env(home, _workspace(tmp_path))) as first:
+    with DshGateway(real_gateway_config(home, _workspace(tmp_path))) as first:
         _, session_id = first.run(
             "记住数字 42。只回答：收到", session_id="lara-dsh-smoke-001"
         )
     assert session_id
 
-    with DshGateway(DshGatewayConfig.from_env(home, _workspace(tmp_path))) as second:
+    with DshGateway(real_gateway_config(home, _workspace(tmp_path))) as second:
         reply, _ = second.resume_run(
             session_id, "我让你记住的数字是多少？只回答数字本身"
         )
@@ -51,7 +53,7 @@ def test_dsh_agent_performs_real_work_in_the_workspace(tmp_path: Path) -> None:
     """The dsh agent executes real tool work inside the gateway cwd."""
     workspace = _workspace(tmp_path)
     ensure_primary_runtime()
-    with DshGateway(DshGatewayConfig.from_env(tmp_path / "dsh-home", workspace)) as gateway:
+    with DshGateway(real_gateway_config(tmp_path / "dsh-home", workspace)) as gateway:
         reply, _ = gateway.run(
             "在当前工作目录创建文件 dsh-ok.txt，内容写 DSH-OK。完成后只回答：done"
         )
@@ -72,7 +74,7 @@ def test_session_control_plugin_tracks_live_and_persisted_sessions(tmp_path: Pat
     home = tmp_path / "dsh-home"
     workspace = _workspace(tmp_path)
 
-    with DshGateway(DshGatewayConfig.from_env(home, workspace)) as first:
+    with DshGateway(real_gateway_config(home, workspace)) as first:
         assert first.control.call("lara/ping")["ok"] is True
         assert first.list_sessions() == []
         assert first.stat_session("lara-ctl-001") is None
@@ -96,7 +98,7 @@ def test_session_control_plugin_tracks_live_and_persisted_sessions(tmp_path: Pat
         assert idle is not None and idle.status == "idle"
         assert [entry.session_id for entry in first.list_sessions()] == ["lara-ctl-001"]
 
-    with DshGateway(DshGatewayConfig.from_env(home, workspace)) as second:
+    with DshGateway(real_gateway_config(home, workspace)) as second:
         (persisted,) = second.list_sessions()
         assert persisted.session_id == "lara-ctl-001"
         assert persisted.live is False
@@ -119,7 +121,7 @@ def test_created_session_is_rooted_at_its_own_cwd(tmp_path: Path) -> None:
     runtime_ws = _workspace(tmp_path)
     project = tmp_path / "project"
     project.mkdir()
-    with DshGateway(DshGatewayConfig.from_env(tmp_path / "dsh-home", runtime_ws)) as gateway:
+    with DshGateway(real_gateway_config(tmp_path / "dsh-home", runtime_ws)) as gateway:
         entry = gateway.create_session("lara-proj-001", project)
         assert entry.cwd == str(project)
         assert entry.live is True and entry.status == "idle"
@@ -166,7 +168,7 @@ def _exercise_owner_requests(tmp_path: Path, workspace: Path, outside: Path, not
     import threading
 
     with DshGateway(
-        DshGatewayConfig.from_env(tmp_path / "dsh-home", workspace),
+        real_gateway_config(tmp_path / "dsh-home", workspace),
         on_control_notification=lambda method, params: notifications.put((method, params)),
     ) as gateway:
         answered: list[str] = []

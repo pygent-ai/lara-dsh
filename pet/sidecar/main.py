@@ -36,7 +36,9 @@ from lara_shell import user_lara_root
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
 from lara_shell.dsh_daemon import DshDaemon, DshEvent, DshEventBatch
-from lara_shell.dsh_settings import load_dsh_settings
+from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, DshSettings, load_dsh_settings
+from pygent.agent.pygent_v1.schema import ResolvedAgentConfig
+from pygent.llm import ModelConfig
 from pygent.agent.pygent_v1.core.io import plain_object
 from pygent.agent.pygent_v1.graph.prompt_models import PromptRenderContext
 from pygent.agent.pygent_v1.orchestration import ManagedSessionTurn
@@ -54,6 +56,9 @@ from pygent.agent.pygent_v1.sessions import PYGENT_SAYS_SESSION_MODE, SessionMan
 from speak_stream import SpeakStreamBridge
 
 CASE_ID = "pet"
+
+# Env name under which dsh's DeepSeek key is handed to pygent, transiently.
+LARA_DSH_KEY_ENV = "LARA_DSH_DEEPSEEK_API_KEY"
 
 # Harness-originated turns carry their own framing; the runtime leaves this
 # kind out of the <user-context> wrapper and logs it with origin "automation".
@@ -126,6 +131,13 @@ class PetSession:
         # rendered here into the static base prompt instead.
         self.config.system_prompt = self.config.system_prompt or self._persona()
         self.user_root = Path(self.config.user_pygent_root)
+        # dsh owns provider configuration; when its credential store has the
+        # DeepSeek key, the pet runs on that same key and endpoint instead of
+        # a second model setup in config.yaml.
+        self._dsh_settings = load_dsh_settings(self.user_root)
+        self._dsh = self._start_dsh(self._dsh_settings)
+        self._lara_model_key = self._borrow_dsh_key()
+        self._apply_lara_model(self.config)
         self.manager = SessionManager(self.config)
         self.session_id = resolve_session(self.manager)
         self.turn_count = 0
@@ -161,9 +173,41 @@ class PetSession:
 
     def _config_loader(self, **kwargs):
         kwargs.setdefault("workspace_root", str(self.workspace))
-        return load_run_config(**kwargs)
+        config = load_run_config(**kwargs)
+        self._apply_lara_model(config)
+        return config
 
-    def _start_dsh(self) -> DshDaemon | None:
+    def _borrow_dsh_key(self) -> str | None:
+        if self._dsh is None:
+            return None
+        try:
+            key = self._dsh.gateway.resolve_credential(DEEPSEEK_API_KEY_REF)
+        except Exception as exc:
+            log(f"could not read {DEEPSEEK_API_KEY_REF} from dsh: {exc!r}")
+            return None
+        if key is None:
+            log(f"dsh has no {DEEPSEEK_API_KEY_REF}; the pet keeps its config.yaml model")
+        return key
+
+    def _apply_lara_model(self, config) -> None:
+        """Point the pet's model at dsh's DeepSeek route when its key is available."""
+        if self._lara_model_key is None:
+            return
+        mapping = self._dsh_settings.lara_model_mapping(LARA_DSH_KEY_ENV)
+        config.model_config_mapping = mapping
+        config.model_config = ModelConfig.from_mapping(mapping)
+        config.model_configuration_status = "configured"
+        config.model_configuration_error = None
+        config.resolved_agent = ResolvedAgentConfig(
+            alias=config.resolved_agent.alias if config.resolved_agent is not None else "default",
+            default_model_group="dsh",
+        )
+
+    def _credential_environ(self):
+        transient = {} if self._lara_model_key is None else {LARA_DSH_KEY_ENV: self._lara_model_key}
+        return build_credential_environment(self.config.user_pygent_root, transient=transient)
+
+    def _start_dsh(self, settings: DshSettings) -> DshDaemon | None:
         """Lara's seat as dsh system agent: one resident runtime for the pet's life.
 
         The daemon publishes its port for ``lara dsh`` (which Lara runs via
@@ -172,7 +216,6 @@ class PetSession:
         runtime download) degrades to a pet without a worker, not a dead pet.
         """
         try:
-            settings = load_dsh_settings(self.user_root)
             daemon = DshDaemon(
                 settings.gateway_config(),
                 state_dir=self.user_root,
@@ -264,19 +307,18 @@ class PetSession:
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         async with LaraExecutionHost(
-            credential_environ=build_credential_environment(self.config.user_pygent_root),
+            credential_environ=self._credential_environ(),
             run_config_loader=self._config_loader,
             speak_channels=[PetSpeakChannel(loop, self.workspace)],
         ) as host:
             self._loop = loop
             self._host = host
-            dsh = self._start_dsh()
             try:
-                await self._serve(host, dsh)
+                await self._serve(host, self._dsh)
             finally:
                 self._host = None
-                if dsh is not None:
-                    dsh.close()
+                if self._dsh is not None:
+                    self._dsh.close()
 
     async def _serve(self, host: LaraExecutionHost, dsh: DshDaemon | None) -> None:
         out({

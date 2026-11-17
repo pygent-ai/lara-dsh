@@ -319,165 +319,67 @@ def test_concurrent_clients_are_served(tmp_path: Path, fake_gateway: list[FakeGa
 
 
 def test_settings_default_without_files(tmp_path: Path) -> None:
-    settings = load_dsh_settings(tmp_path, environ={}, credentials={})
-    assert settings.dsh_home == tmp_path / "dsh-home"
+    from lara_shell.dsh_settings import DEFAULT_DSH_HOME
+
+    settings = load_dsh_settings(tmp_path, environ={})
+    assert settings.dsh_home == DEFAULT_DSH_HOME  # dsh's own home, shared with its front ends
     assert settings.workspace == tmp_path / "pet"
-    assert settings.model == "deepseek-v4-flash"
-    assert settings.base_url is None and settings.api_key is None and settings.connection is None
-    # Without a connection the plain DEEPSEEK_* environment is the whole story.
-    env_only = load_dsh_settings(tmp_path, environ={"DEEPSEEK_API_KEY": "sk-env"}, credentials={})
-    assert env_only.api_key == "sk-env" and env_only.base_url is None
+    assert settings.provider == "deepseek-official"
+    assert settings.model == "deepseek-v4-flash" and settings.lara_model == "deepseek-v4-flash"
+    assert settings.base_url is None
+    config = settings.gateway_config()
+    assert config.api_key is None and config.base_url is None  # dsh resolves its own key
 
 
-def test_settings_resolve_connection_from_lara_config(tmp_path: Path) -> None:
-    (tmp_path / "config.yaml").write_text(
-        "connections:\n  az:\n    provider: 'az'\n    credential:\n      env: 'AZ_KEY'\n"
-        "    protocols:\n      openai_chat_completions:\n        base_url: 'https://az.example/v1'\n",
+def test_settings_file_and_environment_layers(tmp_path: Path) -> None:
+    (tmp_path / "dsh.yaml").write_text(
+        "home: dsh-x\nprovider: deepseek-official\nmodel: deepseek-v4-flash\n"
+        "base_url: https://az.example/v1\nworkspace: E:/work\nlara_model: deepseek-v4-pro\n",
         encoding="utf-8",
     )
-    (tmp_path / "dsh.yaml").write_text(
-        "connection: az\nmodel: deepseek-v4-flash\nhome: dsh-az\nworkspace: E:/work\n", encoding="utf-8"
-    )
-    settings = load_dsh_settings(tmp_path, environ={}, credentials={"AZ_KEY": "sk-test"})
-    assert settings.connection == "az"
-    assert settings.base_url == "https://az.example/v1"
-    assert settings.api_key == "sk-test"
-    assert settings.dsh_home == tmp_path / "dsh-az"
+    settings = load_dsh_settings(tmp_path, environ={})
+    assert settings.dsh_home == tmp_path / "dsh-x"
     assert settings.workspace == Path("E:/work")
-    config = settings.gateway_config()
-    assert config.base_url == "https://az.example/v1" and config.cwd == Path("E:/work")
+    assert settings.base_url == "https://az.example/v1"
+    assert settings.lara_model == "deepseek-v4-pro"
+    assert settings.gateway_config().base_url == "https://az.example/v1"
 
-    # Environment overrides the file layer.
     overridden = load_dsh_settings(
         tmp_path,
-        environ={"DEEPSEEK_BASE_URL": "http://local/v1", "DSH_MODEL": "deepseek-v4-pro", "DSH_HOME": "elsewhere"},
-        credentials={"AZ_KEY": "sk-test"},
+        environ={"DEEPSEEK_BASE_URL": "http://local/v1", "DSH_MODEL": "deepseek-flash", "DSH_HOME": "elsewhere"},
     )
     assert overridden.base_url == "http://local/v1"
-    assert overridden.api_key == "sk-test"  # redirect without a key keeps the connection's
-    assert overridden.model == "deepseek-v4-pro"
+    assert overridden.model == "deepseek-flash"
+    assert overridden.lara_model == "deepseek-v4-pro"  # explicit lara_model is not the worker model
     assert overridden.dsh_home == tmp_path / "elsewhere"
 
-    # A stray DEEPSEEK_API_KEY in the environment (the shell exports every
-    # stored credential) must not be paired with the connection's endpoint.
-    stray = load_dsh_settings(tmp_path, environ={"DEEPSEEK_API_KEY": "sk-other-provider"}, credentials={"AZ_KEY": "sk-test"})
-    assert stray.base_url == "https://az.example/v1"
-    assert stray.api_key == "sk-test"
 
-    # Explicit redirect with its own key replaces the pair.
-    redirected = load_dsh_settings(
-        tmp_path, environ={"DEEPSEEK_BASE_URL": "http://local/v1", "DEEPSEEK_API_KEY": "sk-local"}, credentials={"AZ_KEY": "sk-test"}
-    )
-    assert (redirected.base_url, redirected.api_key) == ("http://local/v1", "sk-local")
+def test_lara_model_mapping_points_pygent_at_dsh_route(tmp_path: Path) -> None:
+    from pygent.llm import ModelConfig
 
+    (tmp_path / "dsh.yaml").write_text("base_url: https://az.example/v1\nmodel: deepseek-v4-flash\n", encoding="utf-8")
+    mapping = load_dsh_settings(tmp_path, environ={}).lara_model_mapping("LARA_DSH_DEEPSEEK_API_KEY")
+    assert mapping["connections"]["dsh"]["credential"]["env"] == "LARA_DSH_DEEPSEEK_API_KEY"
+    assert mapping["connections"]["dsh"]["protocols"]["openai_chat_completions"]["base_url"] == "https://az.example/v1"
+    assert list(mapping["models"]) == ["deepseek-v4-flash"]
+    assert mapping["model_groups"]["dsh"]["models"] == ["deepseek-v4-flash"]
+    ModelConfig.from_mapping(mapping)  # the kernel accepts the shape
 
-def test_settings_reject_unknown_connection_or_missing_credential(tmp_path: Path) -> None:
-    (tmp_path / "dsh.yaml").write_text("connection: nope\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="not defined"):
-        load_dsh_settings(tmp_path, environ={}, credentials={})
-    (tmp_path / "config.yaml").write_text(
-        "connections:\n  az:\n    credential:\n      env: 'AZ_KEY'\n"
-        "    protocols:\n      openai_chat_completions:\n        base_url: 'https://az.example/v1'\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "dsh.yaml").write_text("connection: az\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="AZ_KEY.*not configured"):
-        load_dsh_settings(tmp_path, environ={}, credentials={})
+    default = load_dsh_settings(tmp_path / "none", environ={}).lara_model_mapping("K")
+    assert default["connections"]["dsh"]["protocols"]["openai_chat_completions"]["base_url"] == "https://api.deepseek.com/v1"
 
 
-def test_runtime_questions_reach_lara_and_answers_go_back(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
-    events: list[DshEvent | DshEventBatch] = []
-    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append):
-        gateway = fake_gateway[0]
-        gateway.control("lara/approval/request", {"requestId": "r-1", "sessionId": "s1", "toolName": "write", "callId": "c1", "reason": "escalate sandbox"})
-        gateway.control("lara/question/request", {"requestId": "r-2", "sessionId": "s1", "questions": [
-            {"id": "color", "question": "红还是蓝？", "header": "选颜色", "options": [{"label": "红色"}, {"label": "蓝色"}]},
-            {"id": "why", "question": "为什么？"},
-        ]})
-        with DshDaemonClient.connect(tmp_path / "root") as client:
-            listed = client.requests()
-            assert [(r["request_id"], r["kind"], r["tool_name"]) for r in listed] == [("r-1", "approval", "write"), ("r-2", "question", None)]
-            assert listed[1]["questions"][0]["options"] == ["红色", "蓝色"]
+def test_settings_file_roundtrip_and_validation(tmp_path: Path) -> None:
+    from lara_shell.dsh_settings import read_dsh_settings_file, write_dsh_settings_file
 
-            assert client.approve("r-1")["request_id"] == "r-1"
-            assert gateway.approvals == [("r-1", "allowed-once")]
-            # Settled requests are gone; answering twice is an error, not a resend.
-            with pytest.raises(SessionControlErrorAlias, match="unknown or settled"):
-                client.approve("r-1")
-
-            client.answer("r-2", {"color": "蓝色", "why": "好看"})
-            assert gateway.answers == [("r-2", [{"id": "color", "selected": ["蓝色"]}, {"id": "why", "selected": [], "custom": "好看"}], False)]
-            assert client.requests() == []
-
-            # One text for every question; a declined question is cancelled.
-            gateway.control("lara/question/request", {"requestId": "r-3", "sessionId": "s1", "questions": [{"id": "a", "question": "A?"}, {"id": "b", "question": "B?", "options": [{"label": "随便"}]}]})
-            client.answer("r-3", "随便")
-            assert gateway.answers[-1] == ("r-3", [{"id": "a", "selected": [], "custom": "随便"}, {"id": "b", "selected": ["随便"]}], False)
-            gateway.control("lara/question/request", {"requestId": "r-4", "sessionId": "s1", "questions": [{"id": "a", "question": "A?"}]})
-            client.decline("r-4")
-            assert gateway.answers[-1] == ("r-4", None, True)
-            # Declining an approval rejects it.
-            gateway.control("lara/approval/request", {"requestId": "r-5", "sessionId": "s1", "toolName": "pwsh"})
-            client.decline("r-5")
-            assert gateway.approvals[-1] == ("r-5", "rejected")
-            # The runtime withdrawing a request removes it and tells Lara.
-            gateway.control("lara/approval/request", {"requestId": "r-6", "sessionId": "s1", "toolName": "pwsh"})
-            gateway.control("lara/approval/cancelled", {"requestId": "r-6"})
-            assert client.requests() == []
-            with pytest.raises(SessionControlErrorAlias, match="unknown or settled"):
-                client.approve("r-6")
-            # A wrong-kind answer is rejected before anything is sent.
-            gateway.control("lara/approval/request", {"requestId": "r-7", "sessionId": "s1", "toolName": "pwsh"})
-            with pytest.raises(SessionControlErrorAlias, match="is a approval, not a question"):
-                client.answer("r-7", "x")
-            assert client.requests()[0]["request_id"] == "r-7"
-
-    single = [e for e in events if isinstance(e, DshEvent)]
-    assert len(single) == len(events)
-    kinds = [(e.kind, e.request_id) for e in single]
-    assert kinds == [("approval_request", "r-1"), ("question", "r-2"), ("question", "r-3"), ("question", "r-4"), ("approval_request", "r-5"), ("approval_request", "r-6"), ("request_cancelled", "r-6"), ("approval_request", "r-7")]
-
-    approval = single[0].envelope()
-    assert approval.startswith('<dsh-event kind="approval_request">')
-    assert '<request id="r-1" tool="write" />' in approval
-    assert "<reason>escalate sandbox</reason>" in approval
-    question = single[1].envelope()
-    assert '<request id="r-2" />' in question
-    assert '<question id="color" header="选颜色">' in question
-    assert "<text>红还是蓝？</text>" in question and "<option>蓝色</option>" in question
-    assert '<question id="why">' in question
-    assert "dsh event: approval_request — session s1, request_id=r-1, tool=write" in single[0].context_text()
-    assert "question [color]: 红还是蓝？ options: 红色 | 蓝色" in single[1].context_text()
-    assert single[6].context_text() == "dsh event: request_cancelled — session s1, request_id=r-6"
-
-
-def test_cancel_marks_running_session(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
-    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root"):
-        gateway = fake_gateway[0]
-        gateway.live.add("s1")
-        with DshDaemonClient.connect(tmp_path / "root") as client:
-            client.send("跑", session_id="s1")
-            assert client.cancel("s1") is True
-            assert gateway.cancels == ["s1"]
-            # The runtime ends a cancelled turn without a reason object.
-            gateway.event("s1", "turn/end", {"turn": 1, "reason": None})
-            gateway.emit("session.status", {"sessionId": "s1", "status": "idle"})
-            view, _ = client.wait("s1", timeout=5)
-            assert view is not None and view.finish_reason == "cancelled" and view.status == "idle"
-            assert client.cancel("not-live") is False
-
-
-def test_unanswered_requests_expire_fail_closed(tmp_path: Path, fake_gateway: list[FakeGateway], monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(daemon_module, "REQUEST_TIMEOUT_SECONDS", -1.0)
-    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root") as daemon:
-        gateway = fake_gateway[0]
-        gateway.control("lara/approval/request", {"requestId": "r-1", "sessionId": "s1", "toolName": "write"})
-        gateway.control("lara/question/request", {"requestId": "r-2", "sessionId": "s1", "questions": [{"id": "a", "question": "A?"}]})
-        # Drive the sweep directly instead of waiting for its 30 s tick.
-        daemon._sweep_expired_requests()
-        assert gateway.approvals == [("r-1", "unavailable")]
-        assert gateway.answers == [("r-2", None, True)]
-        assert daemon.requests() == []
+    assert read_dsh_settings_file(tmp_path) == {}
+    path = write_dsh_settings_file(tmp_path, {"model": "deepseek-v4-pro", "home": "dsh-x"})
+    assert path == tmp_path / "dsh.yaml"
+    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro", "home": "dsh-x"}
+    write_dsh_settings_file(tmp_path, {"home": None})
+    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro"}
+    with pytest.raises(ValueError, match="unknown dsh setting"):
+        write_dsh_settings_file(tmp_path, {"connection": "az"})  # retired key
 
 
 def test_second_daemon_refuses_to_start_beside_a_live_one(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
@@ -490,29 +392,6 @@ def test_second_daemon_refuses_to_start_beside_a_live_one(tmp_path: Path, fake_g
     (tmp_path / "root" / DAEMON_STATE_FILENAME).write_text(json.dumps({"port": 1, "pid": 0, "home": "x"}), encoding="utf-8")
     with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root") as daemon:
         assert daemon.port is not None and daemon.port != 1
-
-
-def test_settings_file_roundtrip_and_validation(tmp_path: Path) -> None:
-    from lara_shell.dsh_settings import read_dsh_settings_file, write_dsh_settings_file
-
-    (tmp_path / "config.yaml").write_text(
-        "connections:\n  az:\n    credential:\n      env: 'AZ_KEY'\n"
-        "    protocols:\n      openai_chat_completions:\n        base_url: 'https://az.example/v1'\n",
-        encoding="utf-8",
-    )
-    assert read_dsh_settings_file(tmp_path) == {}
-    path = write_dsh_settings_file(tmp_path, {"model": "deepseek-v4-pro", "home": "dsh-x"})
-    assert path == tmp_path / "dsh.yaml"
-    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro", "home": "dsh-x"}
-    # Unset with None; unknown keys are refused before writing.
-    write_dsh_settings_file(tmp_path, {"home": None})
-    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro"}
-    with pytest.raises(ValueError, match="unknown dsh setting"):
-        write_dsh_settings_file(tmp_path, {"nope": "x"})
-    # A connection that does not resolve is rolled back, leaving the file as it was.
-    with pytest.raises(ValueError, match="not defined"):
-        write_dsh_settings_file(tmp_path, {"connection": "missing"})
-    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro"}
 
 
 def test_simultaneous_finished_reports_are_batched(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:

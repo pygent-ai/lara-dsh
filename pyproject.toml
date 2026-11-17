@@ -40,3 +40,4 @@ markers = [
 
 [tool.pyright]
 include = ["src/lara_sdk", "src/lara_shell", "tests", "examples"]
+extraPaths = ["pet/sidecar"]

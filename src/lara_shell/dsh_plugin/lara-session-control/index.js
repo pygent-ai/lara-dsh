@@ -17,6 +17,10 @@
  *   lara/session/stat     { sessionId }          -> { session: SessionEntry | null }
  *   lara/session/create   { sessionId, cwd }     -> { sessionId, cwd, createdAt }
  *   lara/session/cancel   { sessionId }          -> { cancelled: boolean }
+ *   lara/models/list                             -> { providers: [{ id, name, models: [{ id, name, description? }] }] }
+ *   lara/credentials/describe { ref }            -> { configured, source?, writable?, masked? }
+ *   lara/credentials/resolve  { ref }            -> { value, source } | { value: null }
+ *   lara/credentials/set      { ref, value }     -> { ok }   (value "" unsets)
  *   lara/answerer/register                       -> { ok } (this connection answers
  *                                                   approvals and questions)
  *   lara/approval/respond { requestId, outcome } -> { ok }
@@ -38,7 +42,7 @@ import { randomUUID } from 'node:crypto'
 export const name = 'lara-session-control'
 export const inject = ['sessionPersistence', 'agents', 'sessions']
 
-const VERSION = '0.2.0'
+const VERSION = '0.3.0'
 const JSONRPC_INVALID_REQUEST = -32600
 const JSONRPC_METHOD_NOT_FOUND = -32601
 const JSONRPC_INTERNAL_ERROR = -32603
@@ -188,6 +192,27 @@ async function dispatch(ctx, state, socket, method, params) {
       await agent.cancel()
       return { cancelled: true }
     }
+    case 'lara/models/list':
+      return { providers: await listModels(ctx) }
+    case 'lara/credentials/describe': {
+      const credentials = requireService(ctx, 'credentials')
+      const info = await credentials.describe(requireString(params, 'ref'))
+      return { configured: Boolean(info.configured), source: info.source ?? null, writable: info.writable ?? null, masked: info.masked ?? null }
+    }
+    case 'lara/credentials/resolve': {
+      const credentials = requireService(ctx, 'credentials')
+      const resolved = await credentials.resolve(requireString(params, 'ref'))
+      return resolved === undefined ? { value: null } : { value: resolved.value, source: resolved.source }
+    }
+    case 'lara/credentials/set': {
+      const credentials = requireService(ctx, 'credentials')
+      const ref = requireString(params, 'ref')
+      const value = params.value
+      if (typeof value !== 'string') throw new Error('value must be a string')
+      if (value === '') await credentials.unset(ref)
+      else await credentials.set(ref, value)
+      return { ok: true }
+    }
     case 'lara/answerer/register':
       state.answerers.add(socket)
       return { ok: true }
@@ -217,6 +242,36 @@ async function dispatch(ctx, state, socket, method, params) {
     default:
       throw new MethodNotFound(`unknown lara-session-control method: ${method}`)
   }
+}
+
+function requireService(ctx, key) {
+  const service = ctx.get(key)
+  if (service === undefined) throw new Error(`the ${key} service is not mounted in this profile`)
+  return service
+}
+
+/**
+ * Providers registered with the llm service and each one's model catalog.
+ * A provider whose catalog cannot be listed (e.g. missing credential) is
+ * reported with an empty model list rather than failing the whole call.
+ */
+async function listModels(ctx) {
+  const llm = requireService(ctx, 'llm')
+  const providers = []
+  for (const provider of llm.listProviders()) {
+    let models = []
+    try {
+      models = (await llm.listModels(provider.id)).map((model) => ({
+        id: model.id,
+        name: model.name ?? model.id,
+        ...(model.description === undefined ? {} : { description: model.description }),
+      }))
+    } catch {
+      models = []
+    }
+    providers.push({ id: provider.id, name: provider.name ?? provider.id, models })
+  }
+  return providers
 }
 
 /**
