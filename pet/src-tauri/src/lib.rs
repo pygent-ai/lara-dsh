@@ -61,13 +61,25 @@ fn sidecar_status(state: tauri::State<Sidecar>) -> serde_json::Value {
     })
 }
 
-// —— pet-config（热键 / 皮肤）持久化于 ~/.lara-dsh/pet-config.json ————————
+// —— pet-config（热键 / 皮肤）持久化于 <dsh home>/lara/pet-config.json ————————
+// Lara 的用户根在 dsh 的 home 里（$DSH_HOME，默认 ~/.dsh），与 lara_shell.user_lara_root 一致。
+
+fn lara_root() -> PathBuf {
+    let dsh_home = std::env::var("DSH_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var("USERPROFILE")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".dsh")
+        });
+    dsh_home.join("lara")
+}
 
 fn pet_config_path() -> PathBuf {
-    let home = std::env::var("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    home.join(".lara-dsh").join("pet-config.json")
+    lara_root().join("pet-config.json")
 }
 
 fn read_pet_config() -> serde_json::Value {

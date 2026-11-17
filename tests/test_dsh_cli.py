@@ -62,8 +62,9 @@ def _use_fake_gateway(monkeypatch: pytest.MonkeyPatch, user_root: Path) -> None:
     """Fake gateway, an empty user root (so no dsh.yaml and no daemon), no DEEPSEEK env."""
     monkeypatch.setattr(dsh_cli, "DshGateway", FakeGateway)
     monkeypatch.setattr(dsh_cli, "user_lara_root", lambda: user_root)
-    for name in ("DSH_MODEL", "DSH_HOME", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):
+    for name in ("DSH_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DSH_HOME", str(user_root.parent))  # Lara root sits inside the dsh home
 
 
 def _parse(argv: list[str]):
@@ -253,7 +254,7 @@ def test_run_defaults_home_and_cwd(
 
     assert exit_code == 0
     config = FakeGateway.instances[0].config
-    assert config.dsh_home == Path.home() / ".dsh"  # dsh's own home, shared with its UIs
+    assert config.dsh_home == (tmp_path / "root").parent.resolve()  # dsh's own home, shared with its UIs
     assert config.cwd == tmp_path
 
 
@@ -295,7 +296,7 @@ def test_config_shows_and_changes_settings(
     assert payload["settings"] == {}
     assert payload["effective"]["model"] == DEFAULT_DSH_MODEL
     assert payload["effective"]["provider"] == "deepseek-official"
-    assert payload["effective"]["home"].endswith(".dsh")
+    assert Path(payload["effective"]["home"]) == tmp_path.resolve()
     assert payload["daemon_running"] is False
 
     assert main(["dsh", "config", "model=deepseek-v4-pro", "workspace=E:/work"]) == 0

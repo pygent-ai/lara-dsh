@@ -318,11 +318,10 @@ def test_concurrent_clients_are_served(tmp_path: Path, fake_gateway: list[FakeGa
 # -- settings -----------------------------------------------------------------
 
 
-def test_settings_default_without_files(tmp_path: Path) -> None:
-    from lara_shell.dsh_settings import DEFAULT_DSH_HOME
-
+def test_settings_default_without_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh"))
     settings = load_dsh_settings(tmp_path, environ={})
-    assert settings.dsh_home == DEFAULT_DSH_HOME  # dsh's own home, shared with its front ends
+    assert settings.dsh_home == (tmp_path / "dsh").resolve()  # dsh's own home, shared with its front ends
     assert settings.workspace == tmp_path / "pet"
     assert settings.provider == "deepseek-official"
     assert settings.model == "deepseek-v4-flash" and settings.lara_model == "deepseek-v4-flash"
@@ -331,14 +330,15 @@ def test_settings_default_without_files(tmp_path: Path) -> None:
     assert config.api_key is None and config.base_url is None  # dsh resolves its own key
 
 
-def test_settings_file_and_environment_layers(tmp_path: Path) -> None:
+def test_settings_file_and_environment_layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DSH_HOME", str(tmp_path))
     (tmp_path / "dsh.yaml").write_text(
         "home: dsh-x\nprovider: deepseek-official\nmodel: deepseek-v4-flash\n"
         "base_url: https://az.example/v1\nworkspace: E:/work\nlara_model: deepseek-v4-pro\n",
         encoding="utf-8",
     )
     settings = load_dsh_settings(tmp_path, environ={})
-    assert settings.dsh_home == tmp_path / "dsh-x"
+    assert settings.dsh_home == tmp_path.resolve()  # a stale `home` key in the file is ignored
     assert settings.workspace == Path("E:/work")
     assert settings.base_url == "https://az.example/v1"
     assert settings.lara_model == "deepseek-v4-pro"
@@ -346,12 +346,11 @@ def test_settings_file_and_environment_layers(tmp_path: Path) -> None:
 
     overridden = load_dsh_settings(
         tmp_path,
-        environ={"DEEPSEEK_BASE_URL": "http://local/v1", "DSH_MODEL": "deepseek-flash", "DSH_HOME": "elsewhere"},
+        environ={"DEEPSEEK_BASE_URL": "http://local/v1", "DSH_MODEL": "deepseek-flash"},
     )
     assert overridden.base_url == "http://local/v1"
     assert overridden.model == "deepseek-flash"
     assert overridden.lara_model == "deepseek-v4-pro"  # explicit lara_model is not the worker model
-    assert overridden.dsh_home == tmp_path / "elsewhere"
 
 
 def test_lara_model_mapping_points_pygent_at_dsh_route(tmp_path: Path) -> None:
@@ -373,13 +372,14 @@ def test_settings_file_roundtrip_and_validation(tmp_path: Path) -> None:
     from lara_shell.dsh_settings import read_dsh_settings_file, write_dsh_settings_file
 
     assert read_dsh_settings_file(tmp_path) == {}
-    path = write_dsh_settings_file(tmp_path, {"model": "deepseek-v4-pro", "home": "dsh-x"})
+    path = write_dsh_settings_file(tmp_path, {"model": "deepseek-v4-pro", "workspace": "E:/w"})
     assert path == tmp_path / "dsh.yaml"
-    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro", "home": "dsh-x"}
-    write_dsh_settings_file(tmp_path, {"home": None})
+    assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro", "workspace": "E:/w"}
+    write_dsh_settings_file(tmp_path, {"workspace": None})
     assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro"}
-    with pytest.raises(ValueError, match="unknown dsh setting"):
-        write_dsh_settings_file(tmp_path, {"connection": "az"})  # retired key
+    for retired in ("connection", "home"):
+        with pytest.raises(ValueError, match="unknown dsh setting"):
+            write_dsh_settings_file(tmp_path, {retired: "x"})
 
 
 def test_second_daemon_refuses_to_start_beside_a_live_one(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:

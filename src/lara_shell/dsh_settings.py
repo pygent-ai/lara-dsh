@@ -5,17 +5,17 @@ credential store (``$DSH_HOME/.credentials.yaml``, managed through dsh's own
 UI or ``lara dsh credentials``), and its llm service lists the providers and
 models that are actually available. Lara keeps no second copy of any key.
 
-``~/.lara-dsh/dsh.yaml`` holds only routing (no secrets)::
+``<dsh home>/lara/dsh.yaml`` holds only routing (no secrets)::
 
-    home: ~/.dsh                # dsh home; shared with any dsh front end
     provider: deepseek-official # dsh provider route for worker sessions
     model: deepseek-v4-flash    # model id the route resolves
     base_url: https://…/v1      # optional OpenAI-compatible endpoint override
     workspace: E:/work          # default cwd for new dsh sessions
     lara_model: deepseek-v4-flash   # optional; the pet's own model (default: model)
 
-``DSH_HOME``, ``DSH_MODEL`` and ``DEEPSEEK_BASE_URL`` in the process
-environment override the file. ``DEEPSEEK_API_KEY`` in the environment is
+The dsh home itself is ``$DSH_HOME`` or ``~/.dsh`` (see
+``lara_shell.dsh_home``); Lara's root lives inside it. ``DSH_MODEL`` and
+``DEEPSEEK_BASE_URL`` in the process environment override the file. ``DEEPSEEK_API_KEY`` in the environment is
 honoured only when set explicitly for this process by the caller — the
 shell's exported credential store is kept away from dsh (see
 ``lara_shell.dsh_gateway``).
@@ -28,15 +28,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from lara_shell import dsh_home
 from lara_shell.config.loader import load_mapping_file
 from lara_shell.config.yaml_subset import dump_yaml_subset
 from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DEFAULT_DSH_PROVIDER, DshGatewayConfig
 
 DSH_SETTINGS_FILENAME = "dsh.yaml"
-DEFAULT_DSH_HOME = Path.home() / ".dsh"
 DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com/v1"
 DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY"
-SETTABLE_KEYS = ("home", "provider", "model", "base_url", "workspace", "lara_model")
+SETTABLE_KEYS = ("provider", "model", "base_url", "workspace", "lara_model")
 
 
 @dataclass(frozen=True)
@@ -106,11 +106,10 @@ def load_dsh_settings(
     env = os.environ if environ is None else environ
     settings = read_dsh_settings_file(root)
 
-    home_value = _non_empty(env.get("DSH_HOME")) or _non_empty(settings.get("home"))
     workspace_value = _non_empty(settings.get("workspace"))
     model = _non_empty(env.get("DSH_MODEL")) or _non_empty(settings.get("model")) or DEFAULT_DSH_MODEL
     return DshSettings(
-        dsh_home=_resolve(root, home_value) if home_value else DEFAULT_DSH_HOME,
+        dsh_home=dsh_home(),
         workspace=_resolve(root, workspace_value) if workspace_value else root / "pet",
         provider=_non_empty(settings.get("provider")) or DEFAULT_DSH_PROVIDER,
         model=model,
@@ -162,7 +161,6 @@ def _non_empty(value: Any) -> str | None:
 __all__ = [
     "DEEPSEEK_API_KEY_REF",
     "DEEPSEEK_OFFICIAL_BASE_URL",
-    "DEFAULT_DSH_HOME",
     "DSH_SETTINGS_FILENAME",
     "SETTABLE_KEYS",
     "DshSettings",

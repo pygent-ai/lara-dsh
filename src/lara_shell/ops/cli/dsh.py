@@ -1,12 +1,12 @@
 """lara dsh：Lara 作为 dsh（DeepSeek Harness）系统 agent 的会话控制命令。
 
 常驻的 dsh 运行时由 DshDaemon 持有（pet sidecar 内嵌，或 ``lara dsh daemon``
-单独运行），端口发布在 ``~/.lara-dsh/dsh-daemon.json``。``send/wait`` 只在
+单独运行），端口发布在 ``<dsh home>/lara/dsh-daemon.json``。``send/wait`` 只在
 daemon 存在时可用；``run/resume/sessions/status`` 优先连 daemon，没有时自起一个
 临时运行时（命令结束即退出）。
 
-端点、凭据与模型来自 ``~/.lara-dsh/dsh.yaml``（见 lara_shell.dsh_settings），
-``DEEPSEEK_BASE_URL / DEEPSEEK_API_KEY / DSH_MODEL / DSH_HOME`` 环境变量可覆盖。
+路由来自 ``<dsh home>/lara/dsh.yaml``（见 lara_shell.dsh_settings），凭据在 dsh
+自己的凭据库；``DSH_HOME / DSH_MODEL / DEEPSEEK_BASE_URL`` 环境变量可覆盖。
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ def _add_dsh_target(parser: argparse.ArgumentParser) -> None:
         "--home",
         default=None,
         metavar="DIR",
-        help="dsh home directory holding durable sessions (default: from dsh.yaml)",
+        help="dsh home directory holding durable sessions (default: $DSH_HOME or ~/.dsh)",
     )
     parser.add_argument(
         "--cwd",

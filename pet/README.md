@@ -28,11 +28,11 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   `host.turns.submit` 提交 turn，`lara.realtime.speak` 事件经 Rust 中继到
   前端。协议：JSONL over stdio（`send` 进，`ready/turn_started/speak/
   speak_delta/turn_finished/error` 出）。模型与凭据沿用用户
-  `~/.lara-dsh/config.yaml` 与 keyring；workspace 默认 `~/.lara-dsh/pet`
+  `<dsh home>/lara/config.yaml` 与 keyring；workspace 默认 `<dsh home>/lara/pet`
   （`LARA_PET_WORKSPACE` 可覆盖）。sidecar 起不来时前端自动回退 mock。
 - **dsh 系统 agent**：sidecar 启动时内嵌一个 `lara_shell.dsh_daemon.DshDaemon`，
   常驻持有一个 DeepSeek Harness 运行时（叠加 `lara_shell/dsh_plugin/
-  lara-session-control` Cordis 插件），端口发布在 `~/.lara-dsh/dsh-daemon.json`，
+  lara-session-control` Cordis 插件），端口发布在 `<dsh home>/lara/dsh-daemon.json`，
   `ready` 事件带 `dsh_port`。Lara 通过 bash 跑 `lara dsh send/sessions/status/
   wait/resume/cancel` 管理 dsh 会话（`send --cwd` 新建的会话以该目录为根，也是它的
   沙箱写边界）；dsh 每做完一轮，daemon 把 `<dsh-event kind="turn_finished">` 投递
@@ -42,14 +42,18 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   纯文本结尾处也能生效并多跑一步），否则另起一个 `automation.trigger` 框架的 turn。dsh 会话的沙箱升权申请和 `ask_user_question` 由插件接住，以
   `<dsh-event kind="approval_request"/"question">` 投给 Lara，Lara 用 speak 转问用户后
   `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed。
-- **配置以 dsh 为准**：dsh home 是 `~/.dsh`（与 dsh 自己的前端共享），API key 存在
-  dsh 的凭据库 `~/.dsh/.credentials.yaml`（`lara dsh credentials DEEPSEEK_API_KEY
-  --set` 写入），`~/.lara-dsh/dsh.yaml` 只放路由（provider/model/base_url/workspace/
-  lara_model，`lara dsh config` 查改，`lara dsh models` 列可选模型）。**桌宠自己的模型
+- **Lara 住在 dsh 的 home 里**：dsh home 是 `$DSH_HOME`（默认 `~/.dsh`，与 dsh 自己的
+  前端共享），Lara 的全部用户态数据在 `<dsh home>/lara/`（config.yaml、projects、pet
+  配置、dsh.yaml……，`lara_shell.user_lara_root()` 唯一出处；首次运行会把旧的
+  `~/.lara-dsh` 复制过来，旧目录不删）。**注意 dsh 的卸载清理脚本会整个删除
+  `~/.dsh`，Lara 的数据随之一起删除。** API key 存在 dsh 的凭据库
+  `<dsh home>/.credentials.yaml`（`lara dsh credentials DEEPSEEK_API_KEY --set` 写入），
+  `<dsh home>/lara/dsh.yaml` 只放路由（provider/model/base_url/workspace/lara_model，
+  `lara dsh config` 查改，`lara dsh models` 列可选模型）。**桌宠自己的模型
   也从 dsh 借**：sidecar 启动时先起 dsh daemon，从其凭据库取 DeepSeek key，拼成
   pygent 的 connection（model group `dsh`）；dsh 没有 key 时才回退到 `config.yaml`。
   `lara dsh open` 在共享 home 上拉起 `dsh web`（带令牌 URL 缓存于
-  `~/.lara-dsh/dsh-web.json`）让用户直接浏览所有会话。dsh 起不来时桌宠照常运行，
+  `<dsh home>/lara/dsh-web.json`）让用户直接浏览所有会话。dsh 起不来时桌宠照常运行，
   只是没有 worker。
 - **speak 出口**：最终的 `speak` 气泡来自注册在运行时上的 `PetSpeakChannel`
   （`lara_sdk.execution_host.LaraExecutionHost(speak_channels=…)`），pygent 每执行
@@ -90,7 +94,7 @@ npm run tauri dev
 - **点击穿透**：Rust 每 120ms 轮询光标与窗口矩形，窗口外自动
   `ignore_cursor_events`，兔兔不再挡住后面的应用。
 - **设置**：右键兔兔打开面板——触发键（Shift/Ctrl/Alt/`/CapsLock）、连击次数、
-  时间窗、皮肤切换；持久化在 `~/.lara-dsh/pet-config.json`，热键即时生效。
+  时间窗、皮肤切换；持久化在 `<dsh home>/lara/pet-config.json`，热键即时生效。
 - **聊天面板**：气泡上的 💬 切换完整历史 + 输入框。
 
 ## 运行

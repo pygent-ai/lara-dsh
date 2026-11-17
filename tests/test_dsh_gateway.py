@@ -14,12 +14,13 @@ from pathlib import Path
 
 import pytest
 
+from lara_shell import dsh_home
 from lara_shell.dsh_gateway import DshGateway, ensure_primary_runtime
 
 from _dsh_support import real_gateway_config
 
 REQUIRES_API_KEY = pytest.mark.skipif(
-    not os.environ.get("DEEPSEEK_API_KEY") and not (Path.home() / ".dsh" / ".credentials.yaml").is_file(),
+    not os.environ.get("DEEPSEEK_API_KEY") and not (dsh_home() / ".credentials.yaml").is_file(),
     reason="real dsh runtime needs DEEPSEEK_API_KEY or a key in dsh's credential store",
 )
 

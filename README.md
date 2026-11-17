@@ -118,7 +118,7 @@ from lara_sdk.lara_rt import LaraSessionAgent, REALTIME_SESSION_MODE
 # 主 harness + 永续会话
 async with LaraSessionAgent(eternal_memory=True) as agent:
     agent.enable_eternal_memory()
-    result = await agent.run("你好")     # 真实模型调用（凭据来自 ~/.lara-dsh）
+    result = await agent.run("你好")     # 真实模型调用（凭据来自 <dsh home>/lara，默认 ~/.dsh/lara）
 
 # 实时对话会话（speak 是唯一可见输出通道）
 async with LaraSessionAgent(mode=REALTIME_SESSION_MODE) as rt: ...

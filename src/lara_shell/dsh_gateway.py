@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from deepseek_harness import DeepSeekHarness, DeepSeekHarnessConfig, RunResult
+
+from lara_shell import user_lara_root
 from deepseek_harness.client import NotificationSubscription
 
 DEFAULT_DSH_PROVIDER = "deepseek-official"
@@ -312,9 +314,7 @@ class DshGateway:
         # writable drive instead of the agent workspace's drive: with an
         # E:-drive workspace the extraction lands on E:\snapshot and every
         # turn fails with a koffi.node load error.
-        runtime_cwd = self._config.runtime_cwd or (
-            Path.home() / ".lara-dsh" / "dsh-runtime-cwd"
-        )
+        runtime_cwd = self._config.runtime_cwd or (user_lara_root() / "dsh-runtime-cwd")
         runtime_cwd.mkdir(parents=True, exist_ok=True)
         self._config.dsh_home.mkdir(parents=True, exist_ok=True)
         control_port = _free_loopback_port()
