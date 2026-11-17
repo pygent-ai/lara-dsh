@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from lara_shell import user_lara_root
-from lara_shell.dsh_daemon import DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, SessionView
+from lara_shell.dsh_daemon import DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, DshEventBatch, SessionView
 from lara_shell.dsh_gateway import DshGateway, DshGatewayConfig, DshSessionEntry
 from lara_shell.dsh_settings import (
     DSH_SETTINGS_FILENAME,
@@ -330,7 +330,7 @@ def _dsh_daemon(args: argparse.Namespace) -> None:
     config = _dsh_config(args)
     stop = threading.Event()
 
-    def announce(event: DshEvent) -> None:
+    def announce(event: DshEvent | DshEventBatch) -> None:
         print(event.envelope(), flush=True)
 
     with DshDaemon(config, state_dir=user_lara_root(), on_event=announce) as daemon:

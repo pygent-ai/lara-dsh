@@ -10,13 +10,14 @@ from __future__ import annotations
 import json
 import queue
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from lara_shell import dsh_daemon as daemon_module
-from lara_shell.dsh_daemon import DAEMON_STATE_FILENAME, DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, DshQuestion
+from lara_shell.dsh_daemon import DAEMON_STATE_FILENAME, DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, DshEventBatch, DshQuestion
 from lara_shell.dsh_gateway import DshGatewayConfig, DshSessionEntry, SessionControlError as SessionControlErrorAlias
 from lara_shell.dsh_settings import load_dsh_settings
 
@@ -172,8 +173,8 @@ def test_daemon_publishes_port_and_cleans_up(tmp_path: Path, fake_gateway: list[
 
 
 def test_send_wait_and_events_round_trip_over_loopback(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
-    events: list[DshEvent] = []
-    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append) as daemon:
+    events: list[DshEvent | DshEventBatch] = []
+    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append, batch_window_seconds=0) as daemon:
         gateway = fake_gateway[0]
         with DshDaemonClient.connect(tmp_path / "root") as client:
             sent = client.send("做点事", cwd="E:/proj")
@@ -235,22 +236,24 @@ def test_send_wait_and_events_round_trip_over_loopback(tmp_path: Path, fake_gate
             assert client.status("missing") is None
 
         _await(lambda: len(events) == 3)
-    assert events[0].kind == "turn_finished"
-    assert events[0].reply == "搞定了"
-    envelope = events[0].envelope()
+    single = [e for e in events if isinstance(e, DshEvent)]
+    assert len(single) == len(events)
+    assert single[0].kind == "turn_finished"
+    assert single[0].reply == "搞定了"
+    envelope = single[0].envelope()
     assert envelope.startswith('<dsh-event kind="turn_finished">')
     assert f'<session id="{session_id}" title="做点事" finish_reason="completed" />' in envelope
     assert "<reply>搞定了</reply>" in envelope
     assert "<error>" not in envelope
-    assert "<error>boom</error>" in events[2].envelope()
+    assert "<error>boom</error>" in single[2].envelope()
     # The tool-result append form is plain text: pygent escapes appended
     # context inside <runtime-context>, so XML there would reach the model inert.
-    text = events[0].context_text()
+    text = single[0].context_text()
     assert text.splitlines()[0] == f"dsh event: turn_finished — session {session_id} (做点事), finish_reason=completed"
     assert text.endswith("reply: 搞定了")
     assert "<" not in text
-    assert "error: boom" in events[2].context_text()
-    assert events[2].context_text().endswith("reply: (none)")
+    assert "error: boom" in single[2].context_text()
+    assert single[2].context_text().endswith("reply: (none)")
 
 
 def test_resume_marks_session_idle_and_restores_it(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
@@ -383,7 +386,7 @@ def test_settings_reject_unknown_connection_or_missing_credential(tmp_path: Path
 
 
 def test_runtime_questions_reach_lara_and_answers_go_back(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
-    events: list[DshEvent] = []
+    events: list[DshEvent | DshEventBatch] = []
     with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append):
         gateway = fake_gateway[0]
         gateway.control("lara/approval/request", {"requestId": "r-1", "sessionId": "s1", "toolName": "write", "callId": "c1", "reason": "escalate sandbox"})
@@ -429,21 +432,23 @@ def test_runtime_questions_reach_lara_and_answers_go_back(tmp_path: Path, fake_g
                 client.answer("r-7", "x")
             assert client.requests()[0]["request_id"] == "r-7"
 
-    kinds = [(e.kind, e.request_id) for e in events]
+    single = [e for e in events if isinstance(e, DshEvent)]
+    assert len(single) == len(events)
+    kinds = [(e.kind, e.request_id) for e in single]
     assert kinds == [("approval_request", "r-1"), ("question", "r-2"), ("question", "r-3"), ("question", "r-4"), ("approval_request", "r-5"), ("approval_request", "r-6"), ("request_cancelled", "r-6"), ("approval_request", "r-7")]
 
-    approval = events[0].envelope()
+    approval = single[0].envelope()
     assert approval.startswith('<dsh-event kind="approval_request">')
     assert '<request id="r-1" tool="write" />' in approval
     assert "<reason>escalate sandbox</reason>" in approval
-    question = events[1].envelope()
+    question = single[1].envelope()
     assert '<request id="r-2" />' in question
     assert '<question id="color" header="选颜色">' in question
     assert "<text>红还是蓝？</text>" in question and "<option>蓝色</option>" in question
     assert '<question id="why">' in question
-    assert "dsh event: approval_request — session s1, request_id=r-1, tool=write" in events[0].context_text()
-    assert "question [color]: 红还是蓝？ options: 红色 | 蓝色" in events[1].context_text()
-    assert events[6].context_text() == "dsh event: request_cancelled — session s1, request_id=r-6"
+    assert "dsh event: approval_request — session s1, request_id=r-1, tool=write" in single[0].context_text()
+    assert "question [color]: 红还是蓝？ options: 红色 | 蓝色" in single[1].context_text()
+    assert single[6].context_text() == "dsh event: request_cancelled — session s1, request_id=r-6"
 
 
 def test_cancel_marks_running_session(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
@@ -508,3 +513,36 @@ def test_settings_file_roundtrip_and_validation(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not defined"):
         write_dsh_settings_file(tmp_path, {"connection": "missing"})
     assert read_dsh_settings_file(tmp_path) == {"model": "deepseek-v4-pro"}
+
+
+def test_simultaneous_finished_reports_are_batched(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
+    events: list[Any] = []
+    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append, batch_window_seconds=0.3) as daemon:
+        gateway = fake_gateway[0]
+        gateway.finish_turn("s1", "A 做完了", title="任务A")
+        gateway.finish_turn("s2", "B 做完了", title="任务B")
+        # An approval in the same window is delivered on its own, immediately.
+        gateway.control("lara/approval/request", {"requestId": "r-1", "sessionId": "s3", "toolName": "write"})
+        _await(lambda: len(events) >= 1)
+        first = events[0]
+        assert isinstance(first, DshEvent) and first.kind == "approval_request"
+        _await(lambda: len(events) == 2, timeout=3)
+        batch = events[1]
+        assert isinstance(batch, DshEventBatch)
+        assert [e.session_id for e in batch.events] == ["s1", "s2"]
+        envelope = batch.envelope()
+        assert envelope.startswith('<dsh-events count="2">')
+        assert '<session id="s1" title="任务A" finish_reason="completed" />' in envelope
+        assert "<reply>B 做完了</reply>" in envelope
+        assert batch.context_text().count("dsh event: turn_finished") == 2
+
+        # A lone report after the window closes is delivered unbatched.
+        time.sleep(0.4)
+        gateway.finish_turn("s4", "C 做完了")
+        _await(lambda: len(events) == 3, timeout=3)
+        assert isinstance(events[2], DshEvent) and events[2].session_id == "s4"
+
+        # A report still held when the daemon closes is flushed, not lost.
+        gateway.finish_turn("s5", "D 做完了")
+        _await(lambda: bool(daemon._finished_batch))
+    assert len(events) == 4 and isinstance(events[3], DshEvent) and events[3].session_id == "s5"

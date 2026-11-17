@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from lara_shell.dsh_daemon import DshDaemon, DshDaemonClient, DshEvent
+from lara_shell.dsh_daemon import DshDaemon, DshDaemonClient, DshEvent, DshEventBatch
 from lara_shell.dsh_gateway import DshGatewayConfig, ensure_primary_runtime
 
 REQUIRES_API_KEY = pytest.mark.skipif(
@@ -34,7 +34,7 @@ def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) 
     workspace.mkdir()
     project = tmp_path / "project"
     project.mkdir()
-    events: list[DshEvent] = []
+    events: list[DshEvent | DshEventBatch] = []
     config = DshGatewayConfig.from_env(tmp_path / "dsh-home", workspace)
     with DshDaemon(config, state_dir=tmp_path / "root", on_event=events.append):
         with DshDaemonClient.connect(tmp_path / "root") as client:
@@ -57,7 +57,7 @@ def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) 
             client.answer(request["request_id"], "狗")
             view, _ = client.wait(asked["session_id"], timeout=120)
             assert view is not None and "狗" in view.reply
-    kinds = [e.kind for e in events]
+    kinds = [e.kind for e in events if isinstance(e, DshEvent)]
     assert kinds == ["turn_finished", "question", "turn_finished"]
 
 

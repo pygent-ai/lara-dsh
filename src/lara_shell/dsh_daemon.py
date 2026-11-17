@@ -44,6 +44,10 @@ REPLY_EXCERPT_CHARS = 2000
 # A runtime question nobody answered: approvals settle fail-closed
 # ("unavailable"), questions are cancelled so the dsh tool call errors out.
 REQUEST_TIMEOUT_SECONDS = 15 * 60
+# turn_finished reports arriving within this window of each other are
+# delivered together as one DshEventBatch; questions and approvals are never
+# batched because each needs its own answer.
+FINISHED_BATCH_WINDOW_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,24 @@ class DshEvent:
                 lines.append(f"question [{question.id}]: {question.question}{options}")
             return "\n".join(lines)
         return f"{head}, request_id={self.request_id}"
+
+
+@dataclass(frozen=True)
+class DshEventBatch:
+    """Several ``turn_finished`` reports that landed within one window.
+
+    Delivered as a single message so Lara summarizes them in one breath
+    instead of opening one turn (and one speak) per session.
+    """
+
+    events: tuple[DshEvent, ...]
+
+    def envelope(self) -> str:
+        body = "\n".join(_indent(event.envelope()) for event in self.events)
+        return str(Prompt(body).wrap("dsh-events", count=len(self.events)))
+
+    def context_text(self) -> str:
+        return "\n".join(event.context_text() for event in self.events)
 
 
 def _indent(text: str) -> str:
@@ -256,7 +278,8 @@ class DshDaemon:
         config: DshGatewayConfig,
         *,
         state_dir: Path,
-        on_event: Callable[[DshEvent], None] | None = None,
+        on_event: Callable[[DshEvent | DshEventBatch], None] | None = None,
+        batch_window_seconds: float = FINISHED_BATCH_WINDOW_SECONDS,
     ) -> None:
         self._config = config
         self._state_dir = Path(state_dir)
@@ -264,6 +287,9 @@ class DshDaemon:
         self._gateway = DshGateway(config, on_control_notification=self._on_control_notification)
         self._tracked: dict[str, _TrackedSession] = {}
         self._requests: dict[str, PendingRequest] = {}
+        self._batch_window = batch_window_seconds
+        self._finished_batch: list[DshEvent] = []
+        self._batch_timer: threading.Timer | None = None
         self._lock = threading.Lock()
         self._idle = threading.Condition(self._lock)
         self._server: socket.socket | None = None
@@ -318,6 +344,10 @@ class DshDaemon:
 
     def close(self) -> None:
         self._closing.set()
+        timer = self._batch_timer
+        if timer is not None:
+            timer.cancel()
+            self._flush_finished()
         if self._server is not None:
             try:
                 self._server.close()
@@ -504,8 +534,7 @@ class DshDaemon:
             event = DshEvent(kind="request_cancelled", session_id=pending.session_id, title=title, request_id=request_id)
         else:
             return
-        if self._on_event is not None:
-            self._on_event(event)
+        self._on_event_safe(event)
 
     def _expire_requests(self) -> None:
         while not self._closing.wait(30):
@@ -592,7 +621,36 @@ class DshDaemon:
                     error=tracked.error,
                 )
         if finished is not None and self._on_event is not None:
-            self._on_event(finished)
+            self._queue_finished(finished)
+
+    def _queue_finished(self, event: DshEvent) -> None:
+        """Hold a turn_finished report briefly so simultaneous ones ship together."""
+        if self._batch_window <= 0:
+            self._on_event_safe(event)
+            return
+        with self._lock:
+            self._finished_batch.append(event)
+            if self._batch_timer is None:
+                self._batch_timer = threading.Timer(self._batch_window, self._flush_finished)
+                self._batch_timer.daemon = True
+                self._batch_timer.start()
+
+    def _flush_finished(self) -> None:
+        with self._lock:
+            events = tuple(self._finished_batch)
+            self._finished_batch.clear()
+            self._batch_timer = None
+        if not events:
+            return
+        self._on_event_safe(events[0] if len(events) == 1 else DshEventBatch(events))
+
+    def _on_event_safe(self, event: "DshEvent | DshEventBatch") -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(event)
+        except Exception as exc:  # a host callback failure must not stop tracking
+            print(f"dsh daemon: on_event failed: {exc!r}", file=sys.stderr)
 
     # -- loopback RPC --------------------------------------------------------
 
@@ -804,6 +862,7 @@ __all__ = [
     "DshDaemon",
     "DshDaemonClient",
     "DshEvent",
+    "DshEventBatch",
     "DshQuestion",
     "PendingRequest",
     "SessionView",

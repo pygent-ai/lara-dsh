@@ -35,7 +35,7 @@ from lara_sdk.lara_profile import lara_prompt_modules
 from lara_shell import user_lara_root
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
-from lara_shell.dsh_daemon import DshDaemon, DshEvent
+from lara_shell.dsh_daemon import DshDaemon, DshEvent, DshEventBatch
 from lara_shell.dsh_settings import load_dsh_settings
 from pygent.agent.pygent_v1.core.io import plain_object
 from pygent.agent.pygent_v1.graph.prompt_models import PromptRenderContext
@@ -135,7 +135,7 @@ class PetSession:
         self._active_turn: ManagedSessionTurn | None = None
         # Appends handed to a running turn, by input id, until the react layer
         # applies them (silently) or rejects them (event → fallback turn).
-        self._pending_appends: dict[str, DshEvent] = {}
+        self._pending_appends: dict[str, DshEvent | DshEventBatch] = {}
 
     def _persona(self) -> str:
         ctx = PromptRenderContext(
@@ -185,7 +185,7 @@ class PetSession:
         log(f"dsh daemon on port {daemon.port}, home {settings.dsh_home}")
         return daemon
 
-    def _on_dsh_event(self, event: DshEvent) -> None:
+    def _on_dsh_event(self, event: DshEvent | DshEventBatch) -> None:
         """Called on the daemon's notification thread; hop onto the loop."""
         if self._loop is None or self._host is None:
             return
@@ -193,7 +193,7 @@ class PetSession:
             lambda: self._track(asyncio.create_task(self._route_dsh_event(event)))
         )
 
-    async def _route_dsh_event(self, event: DshEvent) -> None:
+    async def _route_dsh_event(self, event: DshEvent | DshEventBatch) -> None:
         """Deliver a dsh report the way Lara's own runtime context arrives.
 
         While Lara is mid-turn the report rides the next tool result as
@@ -230,7 +230,7 @@ class PetSession:
             self._pending_appends.pop(input_id, None)
         await self._start_event_turn(event)
 
-    async def _start_event_turn(self, event: DshEvent) -> None:
+    async def _start_event_turn(self, event: DshEvent | DshEventBatch) -> None:
         host = self._host
         if host is None:
             return
@@ -359,7 +359,7 @@ class PetSession:
         # (pygent whitelists the model-layer event kinds, so the bridge lives
         # here, on the renderer side of the bus).
         speak_bridge = SpeakStreamBridge()
-        rejected: list[DshEvent] = []
+        rejected: list[DshEvent | DshEventBatch] = []
         async with turn.subscribe() as stream:
             async for event in stream:
                 if event.kind == "pygent.v1.realtime.speak":
