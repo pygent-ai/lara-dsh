@@ -5,11 +5,12 @@
  * The SDK JSON-RPC server owns stdio and exposes no hook for extra methods,
  * so this plugin serves its own newline-delimited JSON-RPC on a loopback TCP
  * port that the launching Lara process selects through LARA_DSH_CONTROL_PORT.
- * Live session events already reach Lara through the SDK's runtime-wide
- * `session.event` / `session.status` notifications; this channel adds what
- * the SDK wire lacks: a session inventory with live status, sessions rooted
- * at their own directory, cancellation, and the runtime's questions to its
- * owner (approvals, ask_user_question) when a client registers as answerer.
+ * Live session events, approvals and user questions already reach Lara
+ * through the SDK wire (`session.event` / `session.status` notifications,
+ * `approval/request` and `user-question/ask` host requests); this channel
+ * adds only what that wire lacks: a session inventory with live status,
+ * sessions rooted at their own directory, cancellation, and dsh's model
+ * catalog and credential store.
  *
  * Client → plugin requests (all results are JSON objects):
  *   lara/ping                                    -> { ok, name, version }
@@ -21,23 +22,12 @@
  *   lara/credentials/describe { ref }            -> { configured, source?, writable?, masked? }
  *   lara/credentials/resolve  { ref }            -> { value, source } | { value: null }
  *   lara/credentials/set      { ref, value }     -> { ok }   (value "" unsets)
- *   lara/answerer/register                       -> { ok } (this connection answers
- *                                                   approvals and questions)
- *   lara/approval/respond { requestId, outcome } -> { ok }
- *   lara/question/respond { requestId, answers } | { requestId, cancelled: true } -> { ok }
- *
- * Plugin → answerer notifications (no id):
- *   lara/approval/request   { requestId, sessionId, toolName, callId?, reason? }
- *   lara/approval/cancelled { requestId }
- *   lara/question/request   { requestId, sessionId, questions }
- *   lara/question/cancelled { requestId }
  *
  * No imports from dsh packages: everything comes through `ctx`, so the file
  * loads from any absolute path via a `--patch` overlay or as an installed bundle.
  */
 
 import net from 'node:net'
-import { randomUUID } from 'node:crypto'
 
 export const name = 'lara-session-control'
 export const inject = ['sessionPersistence', 'agents', 'sessions']
@@ -46,19 +36,12 @@ const VERSION = '0.3.0'
 const JSONRPC_INVALID_REQUEST = -32600
 const JSONRPC_METHOD_NOT_FOUND = -32601
 const JSONRPC_INTERNAL_ERROR = -32603
-const APPROVAL_OUTCOMES = new Set(['allowed-once', 'rejected', 'cancelled', 'unavailable'])
 
 export function apply(ctx) {
   const port = Number(process.env.LARA_DSH_CONTROL_PORT)
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     process.stderr.write(`[${name}] LARA_DSH_CONTROL_PORT is not set; control channel disabled\n`)
     return
-  }
-
-  const state = {
-    answerers: new Set(),   // sockets that registered as answerer
-    approvals: new Map(),   // requestId -> { resolve }
-    questions: new Map(),   // requestId -> { resolve, reject }
   }
 
   const server = net.createServer((socket) => {
@@ -70,11 +53,10 @@ export function apply(ctx) {
       while (newline !== -1) {
         const line = buffer.slice(0, newline).trim()
         buffer = buffer.slice(newline + 1)
-        if (line) void handleLine(ctx, state, socket, line)
+        if (line) void handleLine(ctx, socket, line)
         newline = buffer.indexOf('\n')
       }
     })
-    socket.on('close', () => { state.answerers.delete(socket) })
     socket.on('error', () => { /* a dropped client is not a runtime fault */ })
   })
 
@@ -86,60 +68,9 @@ export function apply(ctx) {
     return () => new Promise((resolve) => server.close(() => resolve()))
   }, 'lara.session-control.serve')
 
-  // Approval answerer: Lara decides when it is listening; otherwise the
-  // composed chain continues (and fails closed without a terminal answerer).
-  ctx.on('approval/request', async (request, next) => {
-    if (state.answerers.size === 0) return next()
-    const requestId = randomUUID()
-    const outcome = await new Promise((resolve) => {
-      state.approvals.set(requestId, { resolve })
-      request.signal?.addEventListener('abort', () => {
-        if (state.approvals.delete(requestId)) {
-          broadcast(state, 'lara/approval/cancelled', { requestId })
-          resolve('cancelled')
-        }
-      }, { once: true })
-      broadcast(state, 'lara/approval/request', {
-        requestId,
-        sessionId: String(request.agent.session.id),
-        toolName: request.toolName,
-        ...(request.callId === undefined ? {} : { callId: String(request.callId) }),
-        ...(request.reason === undefined ? {} : { reason: request.reason }),
-      })
-    })
-    return outcome
-  })
-
-  // ask_user_question answerer, same shape; a cancelled question rejects the
-  // tool call instead of inventing an answer.
-  ctx.on('user-questions/request', async (request, next) => {
-    if (state.answerers.size === 0) return next()
-    const requestId = randomUUID()
-    return new Promise((resolve, reject) => {
-      state.questions.set(requestId, { resolve, reject })
-      request.signal?.addEventListener('abort', () => {
-        if (state.questions.delete(requestId)) {
-          broadcast(state, 'lara/question/cancelled', { requestId })
-          reject(new Error('user question cancelled by the runtime'))
-        }
-      }, { once: true })
-      broadcast(state, 'lara/question/request', {
-        requestId,
-        sessionId: request.agent === undefined ? null : String(request.agent.session.id),
-        questions: request.questions,
-      })
-    })
-  })
 }
 
-function broadcast(state, method, params) {
-  const line = `${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`
-  for (const socket of state.answerers) {
-    if (!socket.destroyed) socket.write(line)
-  }
-}
-
-async function handleLine(ctx, state, socket, line) {
+async function handleLine(ctx, socket, line) {
   let message
   try {
     message = JSON.parse(line)
@@ -153,7 +84,7 @@ async function handleLine(ctx, state, socket, line) {
     return
   }
   try {
-    const result = await dispatch(ctx, state, socket, message.method, message.params ?? {})
+    const result = await dispatch(ctx, message.method, message.params ?? {})
     write(socket, { jsonrpc: '2.0', id, result })
   } catch (error) {
     const code = error instanceof MethodNotFound ? JSONRPC_METHOD_NOT_FOUND : JSONRPC_INTERNAL_ERROR
@@ -173,7 +104,7 @@ function requireString(params, key) {
   return value
 }
 
-async function dispatch(ctx, state, socket, method, params) {
+async function dispatch(ctx, method, params) {
   switch (method) {
     case 'lara/ping':
       return { ok: true, name, version: VERSION }
@@ -211,32 +142,6 @@ async function dispatch(ctx, state, socket, method, params) {
       if (typeof value !== 'string') throw new Error('value must be a string')
       if (value === '') await credentials.unset(ref)
       else await credentials.set(ref, value)
-      return { ok: true }
-    }
-    case 'lara/answerer/register':
-      state.answerers.add(socket)
-      return { ok: true }
-    case 'lara/approval/respond': {
-      const requestId = requireString(params, 'requestId')
-      const outcome = requireString(params, 'outcome')
-      if (!APPROVAL_OUTCOMES.has(outcome)) throw new Error(`outcome must be one of ${[...APPROVAL_OUTCOMES].join(', ')}`)
-      const pending = state.approvals.get(requestId)
-      if (pending === undefined) throw new Error(`unknown or settled approval request: ${requestId}`)
-      state.approvals.delete(requestId)
-      pending.resolve(outcome)
-      return { ok: true }
-    }
-    case 'lara/question/respond': {
-      const requestId = requireString(params, 'requestId')
-      const pending = state.questions.get(requestId)
-      if (pending === undefined) throw new Error(`unknown or settled question request: ${requestId}`)
-      state.questions.delete(requestId)
-      if (params.cancelled === true) {
-        pending.reject(new Error('user question cancelled by Lara'))
-        return { ok: true }
-      }
-      if (!Array.isArray(params.answers)) throw new Error('answers must be an array')
-      pending.resolve({ answers: params.answers })
       return { ok: true }
     }
     default:

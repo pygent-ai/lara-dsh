@@ -5,8 +5,8 @@ description = "Lara — a standalone agent implementation: the complete agent ru
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "deepseek-harness-runtime-bin>=0.2.1rc2",
-    "deepseek-harness-sdk>=0.2.1rc2",
+    "deepseek-harness-runtime-bin==0.2.2rc2",
+    "deepseek-harness-sdk==0.2.2rc2",
     "pygent-ai[video]==0.6.2",
 ]
 

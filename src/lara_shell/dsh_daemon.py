@@ -175,7 +175,13 @@ def _indent(text: str) -> str:
 
 @dataclass
 class PendingRequest:
-    """A runtime question awaiting Lara's answer."""
+    """A runtime question awaiting Lara's answer.
+
+    Approvals arrive as SDK host requests and are settled by responding on
+    the wire with ``wire_id``; questions arrive through the SDK's blocking
+    handler, which waits on ``settled`` and then reads ``answers`` (or sees
+    ``declined``).
+    """
 
     request_id: str
     kind: str  # "approval" | "question"
@@ -184,6 +190,10 @@ class PendingRequest:
     tool_name: str | None = None
     reason: str | None = None
     questions: tuple[DshQuestion, ...] = ()
+    wire_id: str | int | None = field(default=None, repr=False)
+    settled: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
+    answers: list[dict[str, Any]] | None = field(default=None, repr=False)
+    declined: bool = field(default=False, repr=False)
 
     def to_wire(self) -> dict[str, Any]:
         return {
@@ -284,7 +294,9 @@ class DshDaemon:
         self._config = config
         self._state_dir = Path(state_dir)
         self._on_event = on_event
-        self._gateway = DshGateway(config, on_control_notification=self._on_control_notification)
+        self._gateway = DshGateway(
+            config, approval_requests=True, on_user_question=self._answer_user_question
+        )
         self._tracked: dict[str, _TrackedSession] = {}
         self._requests: dict[str, PendingRequest] = {}
         self._batch_window = batch_window_seconds
@@ -314,6 +326,7 @@ class DshDaemon:
         self._refuse_if_another_daemon_is_live()
         self._gateway.start()
         self._threads.append(_spawn(self._follow_notifications, "dsh-daemon-notifications"))
+        self._threads.append(_spawn(self._follow_requests, "dsh-daemon-requests"))
         self._threads.append(_spawn(self._expire_requests, "dsh-daemon-request-expiry"))
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.bind(("127.0.0.1", 0))
@@ -447,7 +460,7 @@ class DshDaemon:
         if outcome not in {"allowed-once", "rejected"}:
             raise ValueError("outcome must be allowed-once or rejected")
         pending = self._take_request(request_id, "approval")
-        self._gateway.respond_approval(request_id, outcome)
+        self._settle_approval(pending, outcome)
         return pending
 
     def answer(self, request_id: str, answers: dict[str, str] | str) -> PendingRequest:
@@ -468,7 +481,8 @@ class DshDaemon:
                 wire.append({"id": question.id, "selected": [text]})
             else:
                 wire.append({"id": question.id, "selected": [], "custom": text})
-        self._gateway.respond_question(request_id, wire)
+        pending.answers = wire
+        pending.settled.set()
         return pending
 
     def decline(self, request_id: str) -> PendingRequest:
@@ -480,8 +494,16 @@ class DshDaemon:
         if pending.kind == "approval":
             return self.approve(request_id, "rejected")
         self._take_request(request_id, "question")
-        self._gateway.respond_question(request_id, None, cancelled=True)
+        pending.declined = True
+        pending.settled.set()
         return pending
+
+    def _settle_approval(self, pending: PendingRequest, outcome: str) -> None:
+        assert pending.wire_id is not None
+        try:
+            self._gateway.respond(pending.wire_id, {"outcome": outcome})
+        except Exception as exc:  # the runtime withdrew it or went away
+            print(f"dsh daemon: approval {pending.request_id} could not be answered: {exc!r}", file=sys.stderr)
 
     def _take_request(self, request_id: str, kind: str) -> PendingRequest:
         with self._lock:
@@ -501,45 +523,76 @@ class DshDaemon:
         assert view is not None
         return view
 
-    # -- runtime questions (control-channel reader thread) -------------------
+    # -- runtime questions (SDK wire) ------------------------------------------
 
-    def _on_control_notification(self, method: str, params: dict[str, Any]) -> None:
-        if method in ("lara/approval/request", "lara/question/request"):
-            kind = "approval" if method == "lara/approval/request" else "question"
-            session_id = str(params.get("sessionId") or "")
-            pending = PendingRequest(
-                request_id=str(params["requestId"]),
-                kind=kind,
-                session_id=session_id,
-                created_at=time.monotonic(),
-                tool_name=params.get("toolName"),
-                reason=params.get("reason"),
-                questions=tuple(DshQuestion.from_wire(q) for q in params.get("questions") or () if isinstance(q, dict)),
-            )
-            with self._lock:
-                self._requests[pending.request_id] = pending
-                title = self._tracked.get(session_id, _TrackedSession()).title
-            event = DshEvent(
-                kind="approval_request" if kind == "approval" else "question",
-                session_id=session_id,
-                title=title,
-                request_id=pending.request_id,
-                tool_name=pending.tool_name,
-                reason=pending.reason,
-                questions=pending.questions,
-            )
-        elif method in ("lara/approval/cancelled", "lara/question/cancelled"):
-            request_id = str(params.get("requestId") or "")
-            with self._lock:
-                pending = self._requests.pop(request_id, None)
+    def _register(self, pending: PendingRequest) -> None:
+        with self._lock:
+            self._requests[pending.request_id] = pending
+            title = self._tracked.get(pending.session_id, _TrackedSession()).title
+        self._on_event_safe(DshEvent(
+            kind="approval_request" if pending.kind == "approval" else "question",
+            session_id=pending.session_id,
+            title=title,
+            request_id=pending.request_id,
+            tool_name=pending.tool_name,
+            reason=pending.reason,
+            questions=pending.questions,
+        ))
+
+    def _withdraw(self, request_id: str) -> None:
+        """The runtime stopped waiting (tool cancelled, turn ended) before Lara answered."""
+        with self._lock:
+            pending = self._requests.pop(request_id, None)
             if pending is None:
-                return  # already answered; nothing to withdraw
-            with self._lock:
-                title = self._tracked.get(pending.session_id, _TrackedSession()).title
-            event = DshEvent(kind="request_cancelled", session_id=pending.session_id, title=title, request_id=request_id)
-        else:
-            return
-        self._on_event_safe(event)
+                return
+            title = self._tracked.get(pending.session_id, _TrackedSession()).title
+        self._on_event_safe(DshEvent(kind="request_cancelled", session_id=pending.session_id, title=title, request_id=request_id))
+
+    def _follow_requests(self) -> None:
+        """``approval/request`` host requests, one PendingRequest each."""
+        while not self._closing.is_set():
+            try:
+                request = self._gateway.next_request()
+            except Exception:
+                return  # runtime closed
+            if request.method != "approval/request":
+                self._gateway.respond(request.id, {})  # unknown host request: acknowledge, do nothing
+                continue
+            payload = request.payload
+            self._register(PendingRequest(
+                request_id=f"approval-{request.id}",
+                kind="approval",
+                session_id=str(payload.get("sessionId") or ""),
+                created_at=time.monotonic(),
+                tool_name=str(payload.get("toolName") or "") or None,
+                reason=str(payload.get("reason") or "") or None,
+                wire_id=request.id,
+            ))
+
+    def _answer_user_question(self, request: Any, cancelled: threading.Event) -> dict[str, Any]:
+        """SDK ``on_user_question`` handler: block on this thread until Lara answers.
+
+        Raising fails the dsh tool call (the SDK responds with an error); a
+        runtime cancellation sets ``cancelled`` and the SDK discards whatever
+        we return afterwards.
+        """
+        pending = PendingRequest(
+            request_id=str(request.request_id),
+            kind="question",
+            session_id=str(request.session_id),
+            created_at=time.monotonic(),
+            questions=tuple(DshQuestion.from_wire(q) for q in request.questions if isinstance(q, dict)),
+        )
+        self._register(pending)
+        while not pending.settled.wait(0.5):
+            if cancelled.is_set():
+                self._withdraw(pending.request_id)
+                raise RuntimeError("user question cancelled by the runtime")
+            if self._closing.is_set():
+                raise RuntimeError("dsh daemon is closing")
+        if pending.declined or pending.answers is None:
+            raise RuntimeError("user question declined by Lara")
+        return {"answers": pending.answers}
 
     def _expire_requests(self) -> None:
         while not self._closing.wait(30):
@@ -552,13 +605,11 @@ class DshDaemon:
             for pending in expired:
                 del self._requests[pending.request_id]
         for pending in expired:
-            try:
-                if pending.kind == "approval":
-                    self._gateway.respond_approval(pending.request_id, "unavailable")
-                else:
-                    self._gateway.respond_question(pending.request_id, None, cancelled=True)
-            except SessionControlError:
-                pass  # the runtime withdrew it concurrently
+            if pending.kind == "approval":
+                self._settle_approval(pending, "unavailable")
+            else:
+                pending.declined = True
+                pending.settled.set()
 
     # -- notification following ---------------------------------------------
 

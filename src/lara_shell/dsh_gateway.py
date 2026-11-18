@@ -8,9 +8,12 @@ from any other DeepSeek Harness SDK client.
 The runtime boots with Lara's ``lara-session-control`` Cordis plugin
 (``dsh_plugin/lara-session-control``) layered on top of the profile. The SDK
 wire has no session inventory, so that plugin serves one over a loopback
-JSON-RPC channel whose port this process picks; live ``session.event`` /
-``session.status`` notifications for every session in the runtime already
-arrive on the SDK transport and are exposed through :meth:`DshGateway.notifications`.
+JSON-RPC channel whose port this process picks. Everything else is the
+official SDK wire: live ``session.event`` / ``session.status`` notifications
+for every session in the runtime (:meth:`DshGateway.notifications`),
+``approval/request`` host requests (:meth:`DshGateway.next_request` /
+:meth:`DshGateway.respond`) and ``user-question/ask`` (the ``on_user_question``
+callback).
 """
 
 from __future__ import annotations
@@ -27,9 +30,10 @@ from pathlib import Path
 from typing import Any
 
 from deepseek_harness import DeepSeekHarness, DeepSeekHarnessConfig, RunResult
+from deepseek_harness.client import NotificationSubscription, UserQuestionHandler
+from deepseek_harness.models import IncomingRequest
 
 from lara_shell import user_lara_root
-from deepseek_harness.client import NotificationSubscription
 
 DEFAULT_DSH_PROVIDER = "deepseek-official"
 DEFAULT_DSH_MODEL = "deepseek-v4-flash"
@@ -291,10 +295,16 @@ class DshGateway:
         self,
         config: DshGatewayConfig,
         *,
-        on_control_notification: ControlNotificationHandler | None = None,
+        approval_requests: bool = False,
+        on_user_question: UserQuestionHandler | None = None,
     ) -> None:
+        """``approval_requests`` routes sandbox escalations to :meth:`next_request`;
+        ``on_user_question`` answers ``ask_user_question`` (blocking, on an SDK
+        thread, with a cancellation event). Without them the runtime's own
+        fail-closed answerers apply."""
         self._config = config
-        self._on_control_notification = on_control_notification
+        self._approval_requests = approval_requests
+        self._on_user_question = on_user_question
         self._harness: DeepSeekHarness | None = None
         self._control: SessionControlChannel | None = None
 
@@ -329,20 +339,16 @@ class DshGateway:
             env={CONTROL_PORT_ENV: str(control_port)},
             base_url=self._config.base_url,
             api_key=self._config.api_key,
+            approval_requests=self._approval_requests,
+            on_user_question=self._on_user_question,
         )
         harness = DeepSeekHarness(config)
         with _without_inherited_deepseek_env(self._config):
             harness.start()
         self._harness = harness
-        control = SessionControlChannel(
-            control_port, on_notification=self._on_control_notification
-        )
+        control = SessionControlChannel(control_port)
         try:
             control.connect()
-            if self._on_control_notification is not None:
-                # Only a client that handles notifications may answer for the
-                # runtime; without one the approval chain fails closed as before.
-                control.call("lara/answerer/register")
         except SessionControlError:
             control.close()
             self.close()
@@ -439,20 +445,20 @@ class DshGateway:
         self.start()
         return bool(self.control.call("lara/session/cancel", {"sessionId": session_id})["cancelled"])
 
-    def respond_approval(self, request_id: str, outcome: str) -> None:
-        """Settle a ``lara/approval/request``: allowed-once, rejected, cancelled, or unavailable."""
-        self.control.call("lara/approval/respond", {"requestId": request_id, "outcome": outcome})
+    def next_request(self) -> IncomingRequest:
+        """Block for the next runtime→host request (``approval/request``).
 
-    def respond_question(
-        self, request_id: str, answers: list[dict[str, Any]] | None, *, cancelled: bool = False
-    ) -> None:
-        """Settle a ``lara/question/request`` with per-question answers, or cancel it."""
-        params: dict[str, Any] = {"requestId": request_id}
-        if cancelled:
-            params["cancelled"] = True
-        else:
-            params["answers"] = answers or []
-        self.control.call("lara/question/respond", params)
+        Raises once the runtime closes. User questions never appear here when
+        ``on_user_question`` is set; the SDK answers them on their own thread.
+        """
+        self.start()
+        assert self._harness is not None
+        return self._harness.client.next_request()
+
+    def respond(self, request_id: str | int, result: dict[str, Any]) -> None:
+        """Answer a request from :meth:`next_request` (approval: ``{"outcome": ...}``)."""
+        assert self._harness is not None
+        self._harness.client.respond(request_id, result)
 
     def set_working_directory(self, session_id: str, path: str | Path) -> str:
         """Point a session (creating it when unknown) at ``path``; return the effective cwd."""

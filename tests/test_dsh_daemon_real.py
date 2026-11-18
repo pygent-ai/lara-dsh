@@ -117,8 +117,9 @@ def test_pet_sidecar_relays_a_dsh_task_and_its_report(tmp_path: Path) -> None:
             time.sleep(2)
         else:
             pytest.fail(f"no dsh report reached the pet; messages={messages[-6:]}")
-        # The report turn is harness-framed (automation.trigger), not a user turn.
-        assert any(m.get("type") == "turn_started" and str(m.get("turn_id", "")).startswith("dsh-event-") for m in messages)
+        # The report either rode the running turn (steered) or opened a
+        # harness-framed turn of its own; both end with Lara speaking about it.
+        assert any("relay.md" in m["text"] for m in messages if m.get("type") == "speak")
     finally:
         process.stdin.close()
         try:

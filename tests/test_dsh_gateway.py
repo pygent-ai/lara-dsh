@@ -144,11 +144,9 @@ def test_created_session_is_rooted_at_its_own_cwd(tmp_path: Path) -> None:
 
 
 @REQUIRES_API_KEY
-def test_plugin_routes_approvals_and_questions_to_the_owner(tmp_path: Path) -> None:
-    """A registered answerer receives sandbox escalations and ask_user_question."""
+def test_sdk_wire_routes_approvals_and_questions_to_the_owner(tmp_path: Path) -> None:
+    """Sandbox escalations and ask_user_question reach the gateway's owner over the SDK wire."""
     import queue
-    import threading
-
     import shutil
     import uuid
 
@@ -158,35 +156,38 @@ def test_plugin_routes_approvals_and_questions_to_the_owner(tmp_path: Path) -> N
     # tmp_path lives; a real escalation needs a directory outside both.
     outside = Path.cwd() / ".tmp" / f"pytest-outside-{uuid.uuid4().hex[:8]}"
     outside.mkdir(parents=True)
-    notifications: queue.Queue[tuple[str, dict]] = queue.Queue()
+    answered: queue.Queue[str] = queue.Queue()
     try:
-        _exercise_owner_requests(tmp_path, workspace, outside, notifications)
+        _exercise_owner_requests(tmp_path, workspace, outside, answered)
     finally:
         shutil.rmtree(outside, ignore_errors=True)
 
 
-def _exercise_owner_requests(tmp_path: Path, workspace: Path, outside: Path, notifications) -> None:
+def _exercise_owner_requests(tmp_path: Path, workspace: Path, outside: Path, answered) -> None:
     import threading
+
+    from deepseek_harness.models import UserQuestionRequest
+
+    def on_user_question(request: UserQuestionRequest, cancelled: threading.Event) -> dict:
+        answered.put("user-question/ask")
+        return {"answers": [{"id": q["id"], "selected": [q["options"][-1]["label"]]} for q in request.questions]}  # type: ignore[index]
 
     with DshGateway(
         real_gateway_config(tmp_path / "dsh-home", workspace),
-        on_control_notification=lambda method, params: notifications.put((method, params)),
+        approval_requests=True,
+        on_user_question=on_user_question,
     ) as gateway:
-        answered: list[str] = []
-
-        def answer_loop() -> None:
+        def approval_loop() -> None:
             while True:
-                method, params = notifications.get()
-                answered.append(method)
-                if method == "lara/approval/request":
-                    gateway.respond_approval(params["requestId"], "allowed-once")
-                elif method == "lara/question/request":
-                    gateway.respond_question(
-                        params["requestId"],
-                        [{"id": q["id"], "selected": [q["options"][-1]["label"]]} for q in params["questions"]],
-                    )
+                try:
+                    request = gateway.next_request()
+                except Exception:
+                    return
+                answered.put(request.method)
+                if request.method == "approval/request":
+                    gateway.respond(request.id, {"outcome": "allowed-once"})
 
-        threading.Thread(target=answer_loop, daemon=True).start()
+        threading.Thread(target=approval_loop, daemon=True).start()
         subscription = gateway.notifications()
 
         def run(session_id: str, prompt: str) -> str:
@@ -212,14 +213,16 @@ def _exercise_owner_requests(tmp_path: Path, workspace: Path, outside: Path, not
             "被拒后按提示用 sandbox_permissions=danger-full-access + justification 重试一次申请审批。完成后只回答 done",
         )
         assert (outside / "out.txt").read_text(encoding="utf-8").strip() == "OUT"
-        assert "lara/approval/request" in answered
+        seen = [answered.get(timeout=5)]
+        assert "approval/request" in seen
 
         reply = run(
             "lara-ask-001",
             "用 ask_user_question 工具问我喜欢红色还是蓝色（给两个选项 红色/蓝色），拿到答案后只回答：答案是<颜色>",
         )
         assert "蓝色" in reply
-        assert "lara/question/request" in answered
+        seen.append(answered.get(timeout=5))
+        assert "user-question/ask" in seen
 
         gateway.submit("lara-cancel-001", "用 pwsh 执行 Start-Sleep -Seconds 120，然后回答 done")
         time.sleep(8)

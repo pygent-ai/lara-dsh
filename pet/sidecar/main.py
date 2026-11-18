@@ -400,7 +400,34 @@ class PetSession:
 
     async def _watch_turn(self, turn: ManagedSessionTurn, turn_id: str) -> None:
         out({"type": "turn_started", "turn_id": turn_id})
+        try:
+            await self._stream_turn(turn)
+            output, _ = await turn.result()
+        except Exception as exc:
+            # A turn that failed before or while running (pygent raises its
+            # startup error from result()) must still close out in the UI.
+            out({"type": "turn_finished", "turn_id": turn_id, "status": "error", "error": repr(exc)})
+            return
+        finally:
+            if self._active_turn is turn:
+                self._active_turn = None
+        # A skipped (cancelled) turn finalizes without an output envelope.
+        result = (
+            plain_object(plain_object(output.data).get("result"))
+            if output is not None
+            else {}
+        )
+        out({
+            "type": "turn_finished",
+            "turn_id": turn_id,
+            "status": str(result.get("status") or turn.status),
+            "error": str(result.get("error") or "") or None,
+        })
+
+    async def _stream_turn(self, turn: ManagedSessionTurn) -> None:
         await turn.wait_ready()
+        if turn.execution_handle is None:
+            return  # failed at startup; result() reports why
         self._active_turn = turn
         # Consumer-side streaming bridge: model.tool_call.delta events flow
         # through the turn stream; decode the speak arguments incrementally
@@ -415,21 +442,6 @@ class PetSession:
                     continue
                 for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
                     out({"type": "speak_delta", "text": suffix})
-        output, _ = await turn.result()
-        if self._active_turn is turn:
-            self._active_turn = None
-        # A skipped (cancelled) turn finalizes without an output envelope.
-        result = (
-            plain_object(plain_object(output.data).get("result"))
-            if output is not None
-            else {}
-        )
-        out({
-            "type": "turn_finished",
-            "turn_id": turn_id,
-            "status": str(result.get("status") or turn.status),
-            "error": str(result.get("error") or "") or None,
-        })
 
 
 def main() -> None:

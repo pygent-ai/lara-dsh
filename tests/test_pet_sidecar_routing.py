@@ -119,3 +119,29 @@ def test_send_failure_falls_back_to_a_new_turn() -> None:
     session, opened = _session(_turn(handle=Broken()))
     asyncio.run(session._route_dsh_event(_event()))
     assert len(opened) == 1
+
+
+def test_turn_startup_failure_is_reported_not_swallowed(capsys) -> None:
+    """A turn whose result() raises (pygent startup error) still emits turn_finished."""
+    import asyncio
+
+    class FailedTurn:
+        status = "error"
+        execution_handle = None
+        run_ref = None
+
+        async def wait_ready(self) -> None:
+            return None
+
+        async def result(self):
+            raise PermissionError("bootstrap.json locked")
+
+    session, _ = _session(None)
+    asyncio.run(session._watch_turn(FailedTurn(), "turn-x"))
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+    import json
+
+    events = [json.loads(l) for l in lines]
+    assert [e["type"] for e in events] == ["turn_started", "turn_finished"]
+    assert events[1]["status"] == "error" and "bootstrap.json locked" in events[1]["error"]
+    assert session._active_turn is None
