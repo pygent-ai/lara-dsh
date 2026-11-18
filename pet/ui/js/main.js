@@ -233,7 +233,8 @@ async function main() {
     setKey.value = config.hotkey.key;
     setTaps.value = String(config.hotkey.taps);
     setWindow.value = String(config.hotkey.window_ms);
-    const skins = await invoke("list_skins");
+    // Bundled skin packs are listed in skins/index.json (ships with the UI).
+    const skins = await fetch("./skins/index.json").then((r) => (r.ok ? r.json() : ["default"]));
     setSkin.innerHTML = "";
     for (const name of skins) {
       const option = document.createElement("option");

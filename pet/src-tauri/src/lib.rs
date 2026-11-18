@@ -125,31 +125,12 @@ fn set_pet_config(patch: serde_json::Value) -> Result<(), String> {
         .map_err(|e| format!("config write failed: {e}"))
 }
 
-/// Skin pack names available under pet/ui/skins (a dir with skin.json).
-#[tauri::command]
-fn list_skins() -> Vec<String> {
-    let mut skins = Vec::new();
-    if let Some(repo) = find_repo_dir() {
-        if let Ok(entries) = std::fs::read_dir(repo.join("pet/ui/skins")) {
-            for entry in entries.flatten() {
-                if entry.path().join("skin.json").is_file() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        skins.push(name.to_string());
-                    }
-                }
-            }
-        }
-    }
-    skins.sort();
-    skins
-}
-
 /// Locate the repo root by walking up from the exe (dev layout: pet/src-tauri/target/debug).
 fn find_repo_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     exe.ancestors()
         .skip(1)
-        .find(|dir| dir.join("pet/ui/skins").is_dir() && dir.join("pyproject.toml").is_file())
+        .find(|dir| dir.join("pet/src-tauri/Cargo.toml").is_file() && dir.join("pyproject.toml").is_file())
         .map(|dir| dir.to_path_buf())
 }
 
@@ -176,11 +157,12 @@ fn sidecar_command() -> Option<PathBuf> {
 fn spawn_sidecar(app: &tauri::AppHandle) {
     let state = app.state::<Sidecar>();
     let Some(sidecar) = sidecar_command() else {
-        *state.error.lock().unwrap() = Some(
-            "lara-pet-sidecar not found: install the lara wheel (uv sync) or set LARA_PET_SIDECAR".into(),
-        );
+        let message = "lara-pet-sidecar not found: install the lara wheel (uv sync) or set LARA_PET_SIDECAR";
+        eprintln!("lara-pet: {message}");
+        *state.error.lock().unwrap() = Some(message.into());
         return;
     };
+    eprintln!("lara-pet: sidecar {}", sidecar.display());
 
     let mut command = Command::new(sidecar);
     if let Ok(workspace) = std::env::var("LARA_PET_WORKSPACE") {
@@ -194,6 +176,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
     {
         Ok(child) => child,
         Err(e) => {
+            eprintln!("lara-pet: sidecar spawn failed: {e}");
             *state.error.lock().unwrap() = Some(format!("sidecar spawn failed: {e}"));
             return;
         }
@@ -308,8 +291,7 @@ pub fn run() {
             agent_send,
             sidecar_status,
             get_pet_config,
-            set_pet_config,
-            list_skins
+            set_pet_config
         ])
         .build(tauri::generate_context!())
         .expect("error while building lara pet")

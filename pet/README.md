@@ -77,9 +77,13 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   （pygent 托管执行的绑定不会把 prompt registry 带到执行副本，所以注册表
   方式在此路径不生效——sidecar 改走静态渲染。）
 - **皮肤**：`ui/skins/<name>/skin.json + sheet.png`。manifest 声明每状态的帧
-  序列与 fps（idle/listening/thinking/speaking），换肤 = 加文件夹 + 设置面板
-  下拉切换。默认兔由 `python pet/tools/gen_assets.py` 生成（可重跑再生成，
+  序列与 fps（idle/listening/thinking/speaking），换肤 = 加文件夹并登记到
+  `ui/skins/index.json`，设置面板下拉切换（皮肤随前端资源打进安装包）。默认兔由 `python pet/tools/gen_assets.py` 生成（可重跑再生成，
   改 FRAMES/参数可自定义）。
+
+## 安装
+
+见 [INSTALL.md](INSTALL.md)：Python wheel（`lara` + `lara-pet-sidecar`）+ NSIS 安装包（`npx tauri build`）。
 
 ## 运行（M1）
 
