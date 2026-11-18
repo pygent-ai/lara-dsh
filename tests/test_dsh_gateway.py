@@ -127,12 +127,13 @@ def test_created_session_is_rooted_at_its_own_cwd(tmp_path: Path) -> None:
         assert entry.cwd == str(project)
         assert entry.live is True and entry.status == "idle"
 
-        subscription = gateway.notifications("lara-proj-001")
+        subscription = gateway.notifications()
         gateway.submit("lara-proj-001", "在当前工作目录创建文件 rooted.txt，内容写 ROOTED。完成后只回答：done")
         deadline = time.monotonic() + 180
         while time.monotonic() < deadline:
             notification = subscription.next()
-            if notification.method == "session.status" and notification.payload["status"] == "idle":
+            if (notification.method == "session.status" and notification.payload["status"] == "idle"
+                    and notification.payload["sessionId"] == "lara-proj-001"):
                 break
         else:
             pytest.fail("session never went idle")

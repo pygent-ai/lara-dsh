@@ -23,7 +23,7 @@ from typing import Any
 
 from lara_shell import user_lara_root
 from lara_shell.dsh_daemon import DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, DshEventBatch, SessionView
-from lara_shell.dsh_gateway import DshGateway, DshGatewayConfig, DshSessionEntry
+from lara_shell.dsh_gateway import DshGatewayConfig, DshSessionEntry, open_gateway
 from lara_shell.dsh_settings import (
     DEEPSEEK_API_KEY_REF,
     DSH_SETTINGS_FILENAME,
@@ -56,7 +56,7 @@ def register_dsh_parser(subparsers: Any) -> None:
     wait.set_defaults(handler=_dsh_wait)
 
     run = commands.add_parser(
-        "run", help="Run one prompt and wait for the reply (daemon if running, else a temporary runtime)"
+        "run", help="Run one prompt and wait for the reply (daemon if running, else the user's dsh or a temporary runtime)"
     )
     run.add_argument("prompt", help="Prompt for the dsh agent")
     run.add_argument(
@@ -173,6 +173,16 @@ def register_dsh_parser(subparsers: Any) -> None:
     _add_dsh_target(daemon)
     daemon.set_defaults(handler=_dsh_daemon)
 
+    plugin = commands.add_parser(
+        "plugin", help="Install or inspect Lara's plugin inside dsh (needed to attach to the user's own dsh)"
+    )
+    plugin.add_argument(
+        "action", choices=("install", "status"),
+        help="install: `dsh plugin add` the bundled plugin into a dsh profile; status: installed version and live endpoint",
+    )
+    plugin.add_argument("--profile", default="web", help="dsh profile to install into (default: web, the desktop/web UI)")
+    plugin.set_defaults(handler=_dsh_plugin)
+
 
 def _add_dsh_target(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -274,9 +284,9 @@ def _dsh_run(args: argparse.Namespace) -> dict[str, Any]:
         assert view is not None
         return {"session_id": view.session_id, "response": view.reply, "finish_reason": view.finish_reason, "error": view.error, "via": "daemon"}
     config = _dsh_config(args)
-    with DshGateway(config) as gateway:
+    with open_gateway(config) as gateway:
         response, session_id = gateway.run(args.prompt, session_id=args.session_id)
-    return _dsh_result(session_id, response, config)
+    return _dsh_result(session_id, response, config, gateway.mode)
 
 
 def _dsh_resume(args: argparse.Namespace) -> dict[str, Any]:
@@ -289,9 +299,9 @@ def _dsh_resume(args: argparse.Namespace) -> dict[str, Any]:
         assert view is not None
         return {"session_id": view.session_id, "response": view.reply, "finish_reason": view.finish_reason, "error": view.error, "via": "daemon"}
     config = _dsh_config(args)
-    with DshGateway(config) as gateway:
+    with open_gateway(config) as gateway:
         response, session_id = gateway.resume_run(args.session_id, args.prompt)
-    return _dsh_result(session_id, response, config)
+    return _dsh_result(session_id, response, config, gateway.mode)
 
 
 def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
@@ -301,9 +311,10 @@ def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
             views = client.sessions()
         return {"via": "daemon", "sessions": [_view_payload(view) for view in views]}
     config = _dsh_config(args)
-    with DshGateway(config) as gateway:
+    with open_gateway(config) as gateway:
         entries = gateway.list_sessions()
     return {
+        "via": gateway.mode,
         "home": str(config.dsh_home),
         "sessions": [_session_payload(entry) for entry in entries],
     }
@@ -316,21 +327,22 @@ def _dsh_status(args: argparse.Namespace) -> dict[str, Any]:
             view = client.status(args.session_id)
         return {"via": "daemon", "session": None if view is None else _view_payload(view)}
     config = _dsh_config(args)
-    with DshGateway(config) as gateway:
+    with open_gateway(config) as gateway:
         entry = gateway.stat_session(args.session_id)
     return {
+        "via": gateway.mode,
         "home": str(config.dsh_home),
         "session": None if entry is None else _session_payload(entry),
     }
 
 
 def _with_runtime(call_daemon, call_gateway):
-    """Run against the daemon when one is up, else a temporary runtime."""
+    """Run against the daemon when one is up, else attach to the user's dsh or spawn a temporary runtime."""
     client = _daemon_client()
     if client is not None:
         with client:
             return call_daemon(client)
-    with DshGateway(load_dsh_settings(user_lara_root()).gateway_config(Path.cwd())) as gateway:
+    with open_gateway(load_dsh_settings(user_lara_root()).gateway_config(Path.cwd())) as gateway:
         return call_gateway(gateway)
 
 
@@ -391,10 +403,18 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
     started = False
     if url is None:
         # The web UI is token-gated: only the URL dsh prints opens it, so run
-        # it detached with --no-open, read that line, and remember it.
+        # it detached with --no-open, read that line, and remember it. The
+        # web profile carries the Lara plugin once `lara dsh plugin install`
+        # ran, so this runtime is also what the daemon attaches to. It gets
+        # the endpoint Lara's dsh.yaml names and dsh's own credential store,
+        # never a DEEPSEEK_API_KEY Lara's shell happens to export.
+        env = {k: v for k, v in os.environ.items() if k not in ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL")}
+        env["DSH_HOME"] = str(settings.dsh_home)
+        if settings.base_url:
+            env["DEEPSEEK_BASE_URL"] = settings.base_url
         process = subprocess.Popen(
             [*resolve_bundled_launch_args(), "--profile", "web", "--no-open", "--port", "0"],
-            env=dict(os.environ, DSH_HOME=str(settings.dsh_home)),
+            env=env,
             cwd=str(settings.workspace) if settings.workspace.is_dir() else None,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
@@ -469,11 +489,69 @@ def _dsh_daemon(args: argparse.Namespace) -> None:
         print(event.envelope(), flush=True)
 
     with DshDaemon(config, state_dir=user_lara_root(), on_event=announce) as daemon:
-        print(f"lara dsh daemon: port {daemon.port}, home {config.dsh_home}", flush=True)
+        print(f"lara dsh daemon: port {daemon.port}, home {config.dsh_home}, mode {daemon.mode}", flush=True)
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
         while not stop.wait(0.5):
             pass
+
+
+def _dsh_plugin(args: argparse.Namespace) -> dict[str, Any]:
+    """Install Lara's dsh plugin into a profile the way any dsh plugin is installed.
+
+    ``dsh plugin --profile <p> add file:<bundled plugin dir>`` makes the user's
+    own dsh (desktop / ``dsh web`` on that profile) load the plugin, which
+    publishes the endpoint the daemon attaches to. Reinstalling upgrades it.
+    """
+    import json
+    import subprocess
+
+    from deepseek_harness_runtime import resolve_bundled_launch_args
+
+    from lara_shell.dsh_gateway import SESSION_CONTROL_PLUGIN_DIR, probe_plugin_endpoint
+
+    settings = load_dsh_settings(user_lara_root())
+    manifest = json.loads((SESSION_CONTROL_PLUGIN_DIR / "package.json").read_text(encoding="utf-8"))
+    profile_manifest = settings.dsh_home / "profiles" / args.profile / "package.json"
+    log = ""
+    if args.action == "install":
+        # pnpm keeps a `file:` dependency it already resolved, so an upgrade
+        # of the bundled plugin only lands after a remove; a missing package
+        # makes the remove a harmless no-op.
+        for pnpm_args in (["remove", manifest["name"]], ["add", f"file:{SESSION_CONTROL_PLUGIN_DIR}"]):
+            completed = subprocess.run(
+                [*resolve_bundled_launch_args(), "plugin", "--profile", args.profile, *pnpm_args],
+                env=dict(os.environ, DSH_HOME=str(settings.dsh_home)),
+                cwd=str(settings.dsh_home),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=600,
+            )
+            log = (log + "\n" + completed.stdout + completed.stderr).strip()
+            if completed.returncode != 0 and pnpm_args[0] == "add":
+                raise RuntimeError(f"dsh plugin add failed (exit {completed.returncode}):\n{log}")
+    installed: str | None = None
+    try:
+        dependencies = json.loads(profile_manifest.read_text(encoding="utf-8")).get("dependencies") or {}
+        spec = dependencies.get(manifest["name"])
+        installed = str(spec) if spec else None
+    except (OSError, ValueError):
+        installed = None
+    endpoint = probe_plugin_endpoint(settings.dsh_home)
+    return {
+        "action": args.action,
+        "plugin": manifest["name"],
+        "bundled_version": manifest["version"],
+        "profile": args.profile,
+        "profile_manifest": str(profile_manifest),
+        "installed": installed,
+        "live": None if endpoint is None else {"port": endpoint.port, "pid": endpoint.pid, "version": endpoint.version, "attach": endpoint.attach},
+        "log": log or None,
+        "note": None if installed else f"not installed; run `lara dsh plugin install --profile {args.profile}`",
+    }
 
 
 def _view_payload(view: SessionView) -> dict[str, Any]:
@@ -499,11 +577,12 @@ def _session_payload(entry: DshSessionEntry) -> dict[str, Any]:
 
 
 def _dsh_result(
-    session_id: str, response: str, config: DshGatewayConfig
+    session_id: str, response: str, config: DshGatewayConfig, via: str
 ) -> dict[str, Any]:
     return {
         "session_id": session_id,
         "response": response,
+        "via": via,
         "home": str(config.dsh_home),
         "cwd": str(config.cwd),
     }

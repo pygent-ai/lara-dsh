@@ -232,7 +232,7 @@ class PetSession:
         except Exception as exc:
             log(f"dsh daemon unavailable: {exc!r}")
             return None
-        log(f"dsh daemon on port {daemon.port}, home {settings.dsh_home}")
+        log(f"dsh daemon on port {daemon.port}, home {settings.dsh_home}, mode {daemon.mode}")
         return daemon
 
     def _on_dsh_event(self, event: DshEvent | DshEventBatch) -> None:

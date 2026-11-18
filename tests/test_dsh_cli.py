@@ -17,10 +17,11 @@ from lara_shell.ops.cli.main import build_parser, main
 
 
 class FakeGateway:
-    """Stand-in for DshGateway that records calls without touching dsh."""
+    """Stand-in for the gateway `open_gateway` returns; records calls without touching dsh."""
 
     instances: list["FakeGateway"] = []
     inventory: list[DshSessionEntry] = []
+    mode = "fake"
 
     def __init__(self, config: DshGatewayConfig) -> None:
         self.config = config
@@ -60,7 +61,7 @@ def _reset_fake_instances() -> None:
 
 def _use_fake_gateway(monkeypatch: pytest.MonkeyPatch, user_root: Path) -> None:
     """Fake gateway, an empty user root (so no dsh.yaml and no daemon), no DEEPSEEK env."""
-    monkeypatch.setattr(dsh_cli, "DshGateway", FakeGateway)
+    monkeypatch.setattr(dsh_cli, "open_gateway", FakeGateway)
     monkeypatch.setattr(dsh_cli, "user_lara_root", lambda: user_root)
     for name in ("DSH_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):
         monkeypatch.delenv(name, raising=False)

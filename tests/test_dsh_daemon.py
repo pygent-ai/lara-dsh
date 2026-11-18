@@ -43,6 +43,8 @@ class _Subscription:
 class FakeGateway:
     """Records calls; `emit` replays notifications into the daemon's follower."""
 
+    mode = "fake"
+
     def __init__(self, config: DshGatewayConfig, *, approval_requests: bool = False, on_user_question=None) -> None:
         self.config = config
         self.approval_requests = approval_requests
@@ -72,7 +74,9 @@ class FakeGateway:
     def notifications(self, session_id: str | None = None) -> _Subscription:
         return _Subscription(self._queue)
 
-    def submit(self, session_id: str, prompt: str) -> str:
+    def submit(self, session_id: str, prompt: str, *, cwd: str | None = None) -> str:
+        if cwd is not None:
+            self.create_session(session_id, cwd)
         self.submits.append((session_id, prompt))
         return f"msg-{len(self.submits)}"
 
@@ -163,7 +167,7 @@ def fake_gateway(monkeypatch: pytest.MonkeyPatch) -> list[FakeGateway]:
         created.append(gateway)
         return gateway
 
-    monkeypatch.setattr(daemon_module, "DshGateway", factory)
+    monkeypatch.setattr(daemon_module, "open_gateway", factory)
     return created
 
 
@@ -520,7 +524,7 @@ def test_second_daemon_refuses_to_start_beside_a_live_one(tmp_path: Path, fake_g
         second = DshDaemon(_config(tmp_path), state_dir=tmp_path / "root")
         with pytest.raises(RuntimeError, match="already serving"):
             second.start()
-        assert fake_gateway[1].started is False  # refused before booting a runtime
+        assert len(fake_gateway) == 1  # refused before opening a second runtime
     # A stale state file (daemon gone) does not block a new daemon.
     (tmp_path / "root" / DAEMON_STATE_FILENAME).write_text(json.dumps({"port": 1, "pid": 0, "home": "x"}), encoding="utf-8")
     with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root") as daemon:
@@ -531,8 +535,12 @@ def test_simultaneous_finished_reports_are_batched(tmp_path: Path, fake_gateway:
     events: list[Any] = []
     with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append, batch_window_seconds=0.3) as daemon:
         gateway = fake_gateway[0]
+        daemon.send("A", session_id="s1")
+        daemon.send("B", session_id="s2")
         gateway.finish_turn("s1", "A 做完了", title="任务A")
         gateway.finish_turn("s2", "B 做完了", title="任务B")
+        # A turn of a session nobody dispatched through the daemon is not reported.
+        gateway.finish_turn("someone-elses", "quiet")
         # An approval in the same window is delivered on its own, immediately.
         gateway.approval(1, "s3", "write")
         _await(lambda: len(events) >= 1)
@@ -550,11 +558,13 @@ def test_simultaneous_finished_reports_are_batched(tmp_path: Path, fake_gateway:
 
         # A lone report after the window closes is delivered unbatched.
         time.sleep(0.4)
+        daemon.send("C", session_id="s4")
         gateway.finish_turn("s4", "C 做完了")
         _await(lambda: len(events) == 3, timeout=3)
         assert isinstance(events[2], DshEvent) and events[2].session_id == "s4"
 
         # A report still held when the daemon closes is flushed, not lost.
+        daemon.send("D", session_id="s5")
         gateway.finish_turn("s5", "D 做完了")
         _await(lambda: bool(daemon._finished_batch))
     assert len(events) == 4 and isinstance(events[3], DshEvent) and events[3].session_id == "s5"

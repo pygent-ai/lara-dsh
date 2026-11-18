@@ -1,7 +1,7 @@
 {
   "name": "lara-dsh-session-control",
-  "version": "0.3.0",
-  "description": "Lara's control plane inside a DeepSeek Harness (dsh) runtime: session inventory and creation, cancellation, credentials/model catalog, and forwarding of approvals and user questions to the owning Lara process over a loopback JSON-RPC channel.",
+  "version": "0.4.0",
+  "description": "Lara's control plane inside a DeepSeek Harness (dsh) runtime: attach to the dsh you already run, prompt and create sessions, follow session events, and relay approvals and user questions to Lara over a loopback JSON-RPC channel.",
   "type": "module",
   "main": "index.js",
   "files": [
