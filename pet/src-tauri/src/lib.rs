@@ -149,27 +149,40 @@ fn find_repo_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     exe.ancestors()
         .skip(1)
-        .find(|dir| dir.join("pet/sidecar/main.py").is_file())
+        .find(|dir| dir.join("pet/ui/skins").is_dir() && dir.join("pyproject.toml").is_file())
         .map(|dir| dir.to_path_buf())
+}
+
+/// The sidecar command: the installed `lara-pet-sidecar` console script.
+///
+/// Resolution order: `LARA_PET_SIDECAR` (explicit executable), the script on
+/// `PATH` (installed wheel), then the development checkout's virtualenv.
+fn sidecar_command() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("LARA_PET_SIDECAR") {
+        return Some(PathBuf::from(explicit));
+    }
+    let script = if cfg!(windows) { "lara-pet-sidecar.exe" } else { "lara-pet-sidecar" };
+    if let Some(found) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path).map(|dir| dir.join(script)).find(|p| p.is_file())
+    }) {
+        return Some(found);
+    }
+    let venv_bin = if cfg!(windows) { "Scripts" } else { "bin" };
+    find_repo_dir()
+        .map(|repo| repo.join(".venv").join(venv_bin).join(script))
+        .filter(|p| p.is_file())
 }
 
 fn spawn_sidecar(app: &tauri::AppHandle) {
     let state = app.state::<Sidecar>();
-    let Some(repo) = find_repo_dir() else {
-        *state.error.lock().unwrap() = Some("pet/sidecar/main.py not found".into());
+    let Some(sidecar) = sidecar_command() else {
+        *state.error.lock().unwrap() = Some(
+            "lara-pet-sidecar not found: install the lara wheel (uv sync) or set LARA_PET_SIDECAR".into(),
+        );
         return;
     };
-    let python = std::env::var("LARA_PET_PYTHON")
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| {
-            let venv = repo.join(".venv/Scripts/python.exe");
-            venv.is_file().then_some(venv)
-        })
-        .unwrap_or_else(|| PathBuf::from("python"));
 
-    let mut command = Command::new(python);
-    command.arg(repo.join("pet/sidecar/main.py"));
+    let mut command = Command::new(sidecar);
     if let Ok(workspace) = std::env::var("LARA_PET_WORKSPACE") {
         command.arg("--workspace").arg(workspace);
     }

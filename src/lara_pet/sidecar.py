@@ -1,5 +1,8 @@
 """Lara Pet sidecar: owns THE single realtime lara session for the pet.
 
+Installed as the ``lara-pet-sidecar`` console script; the Tauri shell spawns
+it (``lara-pet-sidecar --workspace <dir>``) and talks JSON lines over stdio.
+
 Protocol (JSON lines over stdio):
   in:  {"type": "send", "text": "...", "attachments": [...]}
   out: {"type": "ready", "session_id": ..., "workspace": ...}
@@ -58,7 +61,7 @@ from pygent.core import UserMessage
 from pygent.agent.pygent_v1.schema import RuntimeApprovalConfig
 from pygent.agent.pygent_v1.schema.models import RealtimeInteractionConfig
 from pygent.agent.pygent_v1.sessions import PYGENT_SAYS_SESSION_MODE, SessionManager
-from speak_stream import SpeakStreamBridge
+from lara_pet.speak_stream import SpeakStreamBridge
 
 CASE_ID = "pet"
 
@@ -166,9 +169,10 @@ class PetSession:
         return "\n\n".join(
             [
                 *(
-                    module.render(ctx)
+                    rendered
                     for module in lara_prompt_modules()
                     if module.phase == "static"
+                    if (rendered := module.render(ctx)) is not None
                 ),
                 SPEAK_CHANNEL_RULES,
             ]
@@ -447,7 +451,9 @@ class PetSession:
 def main() -> None:
     # Windows pipes default to the locale codec; the Tauri host speaks UTF-8.
     for stream in (sys.stdin, sys.stdout, sys.stderr):
-        stream.reconfigure(encoding="utf-8", errors="replace")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
     workspace = (
         Path(sys.argv[sys.argv.index("--workspace") + 1])
         if "--workspace" in sys.argv

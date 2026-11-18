@@ -1,12 +1,8 @@
 """SpeakStreamBridge: streaming speak tool-call text → delta suffixes."""
 
 import json
-import sys
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pet" / "sidecar"))
-
-from speak_stream import SpeakStreamBridge  # noqa: E402
+from lara_pet.speak_stream import SpeakStreamBridge
 
 
 def _event(kind: str, data: dict[str, object]) -> tuple[str, dict[str, object]]:

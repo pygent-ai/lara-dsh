@@ -22,13 +22,14 @@ credentials = [
 
 [project.scripts]
 lara = "lara_shell.ops.cli.main:main"
+lara-pet-sidecar = "lara_pet.sidecar:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lara_shell", "src/lara_sdk"]
+packages = ["src/lara_shell", "src/lara_sdk", "src/lara_pet"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -39,5 +40,4 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["src/lara_sdk", "src/lara_shell", "tests", "examples"]
-extraPaths = ["pet/sidecar"]
+include = ["src/lara_sdk", "src/lara_shell", "src/lara_pet", "tests", "examples"]

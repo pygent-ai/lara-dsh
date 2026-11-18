@@ -7,16 +7,12 @@ is set, so ``_route_dsh_event`` can be driven with a fake turn.
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pet" / "sidecar"))
-
-import main as sidecar  # noqa: E402  (pet/sidecar/main.py)
-from lara_shell.dsh_daemon import DshEvent, DshEventBatch  # noqa: E402
-from pygent.agent.react_projection_operations import (  # noqa: E402
+from lara_shell.dsh_daemon import DshEvent, DshEventBatch
+from lara_pet import sidecar
+from pygent.agent.react_projection_operations import (
     REACT_PROJECTION_OPERATION_KIND,
     StandaloneUserMessage,
     SteeringMode,

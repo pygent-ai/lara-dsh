@@ -10,7 +10,7 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
 │  pet/            Tauri 工程                      │
 │   ├─ src-tauri/   Rust：透明置顶窗口、全局键盘钩子 │
 │   │               sidecar 进程管理、事件中继      │
-│   ├─ sidecar/     Python：唯一 lara-says 会话     │
+│   │  (sidecar 在 src/lara_pet/，见下)          │
 │   ├─ ui/          前端：宠物画布、气泡、输入条     │
 │   └─ tools/       资产生成（sprite / 图标）        │
 └──────────────────────────────────────────────────┘
@@ -22,7 +22,9 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
 - **气泡**：`ui/js/bubble.js`。FIFO 队列逐条冒泡，打字机逐字显示；打完若队列里
   还有下一条，停留 6s 后自动顶上；最后一条常驻，直到点 × 或被 × 跳过。
   未读红点/聊天面板切换在 M2 后半。
-- **sidecar**：`sidecar/main.py`（`.venv` Python 运行）。持有内核唯一的
+- **sidecar**：`src/lara_pet/sidecar.py`，随 lara wheel 安装为 `lara-pet-sidecar`
+  命令；Tauri 壳按 `LARA_PET_SIDECAR` → `PATH` 上的 `lara-pet-sidecar` → 仓库
+  `.venv/Scripts/lara-pet-sidecar.exe` 的顺序找到它并 spawn。持有内核唯一的
   `lara-says` realtime 会话（session id 即 `"lara-says"`，由内核保证单例），
   开启 realtime interaction、关闭无人值守没人点的审批弹窗；每条用户消息经
   `host.turns.submit` 提交 turn，`lara.realtime.speak` 事件经 Rust 中继到
@@ -63,7 +65,7 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   结尾补的 finalizer 轮、dsh-event 轮都能到。turn 事件流只用于 `speak_delta` 预览，
   其终态 speak 事件不再重复输出。channel 只给文本，附件以相对路径逐行附在文本尾，
   sidecar 用 `split_speak_delivery` 还原。
-- **真流式**：内核 `lara.runtime.agent.speak_stream.SpeakStreamBridge` 把
+- **真流式**：`lara_pet.speak_stream.SpeakStreamBridge` 把
   `model.tool_call.delta` 里的 speak 参数增量解码成文本后缀；桥放在 sidecar
   消费端（pygent 对模型层 emit 的 kind 有白名单），以 `speak_delta` 事件送
   前端实时上屏，最终 `speak` 事件为准收尾。

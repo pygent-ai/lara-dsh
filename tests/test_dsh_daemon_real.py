@@ -68,11 +68,10 @@ def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) 
 @REQUIRES_API_KEY
 def test_pet_sidecar_relays_a_dsh_task_and_its_report(tmp_path: Path) -> None:
     """User → Lara → `lara dsh send` → dsh writes the file → Lara speaks the report."""
-    sidecar = Path(__file__).resolve().parents[1] / "pet" / "sidecar" / "main.py"
     workspace = tmp_path / "pet-ws"
     workspace.mkdir()
     process = subprocess.Popen(
-        [sys.executable, str(sidecar), "--workspace", str(workspace)],
+        [sys.executable, "-m", "lara_pet.sidecar", "--workspace", str(workspace)],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
