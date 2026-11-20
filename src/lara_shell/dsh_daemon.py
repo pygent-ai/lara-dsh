@@ -255,6 +255,7 @@ class SessionView:
     step: int = 0
     last_tool: str | None = None
     running_seconds: float | None = None
+    event_count: int | None = None
 
     @classmethod
     def build(cls, entry: DshSessionEntry | None, tracked: _TrackedSession | None, session_id: str) -> "SessionView":
@@ -283,6 +284,7 @@ class SessionView:
             step=tracked.step,
             last_tool=tracked.last_tool,
             running_seconds=running_seconds,
+            event_count=entry.event_count if entry else None,
         )
 
     def to_wire(self) -> dict[str, Any]:

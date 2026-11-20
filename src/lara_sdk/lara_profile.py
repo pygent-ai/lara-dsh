@@ -66,7 +66,8 @@ DSH_MANAGEMENT_PROMPT = """Managing dsh sessions
 
 dsh (DeepSeek Harness) is the worker that does the heavy lifting; you are its
 owner. Everything goes through the `lara dsh` CLI via the bash tool; output is
-JSON.
+JSON. The `lara` command is already on PATH: call it directly as `lara dsh ...`;
+never probe for its location first.
 
 Dispatching and following work
 - `lara dsh send "<task>" --cwd <project dir>` opens a new session rooted at

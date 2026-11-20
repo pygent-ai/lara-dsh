@@ -78,6 +78,10 @@ def register_dsh_parser(subparsers: Any) -> None:
     sessions = commands.add_parser(
         "sessions", help="List dsh sessions (persisted and live) with status"
     )
+    sessions.add_argument(
+        "--all", action="store_true",
+        help="Include blank sessions (never prompted, e.g. the one dsh web opens on start); hidden by default",
+    )
     _add_dsh_target(sessions)
     sessions.set_defaults(handler=_dsh_sessions)
 
@@ -304,19 +308,48 @@ def _dsh_resume(args: argparse.Namespace) -> dict[str, Any]:
     return _dsh_result(session_id, response, config, gateway.mode)
 
 
+# A root session whose log holds only its opening records (policy, model
+# selection), i.e. nothing was ever prompted; the dsh web UI opens one such
+# session on every start. Subagent children are born from a prompt, and a
+# persisted-only entry reports no count: neither is ever hidden.
+BLANK_SESSION_MAX_EVENTS = 3
+
+
+def _is_blank_session(payload: dict[str, Any]) -> bool:
+    event_count = payload.get("event_count")
+    return (
+        payload.get("origin") == "root"
+        and not payload.get("title")
+        and payload.get("status") != "running"
+        and not payload.get("turns")
+        and isinstance(event_count, int)
+        and event_count <= BLANK_SESSION_MAX_EVENTS
+    )
+
+
 def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
+    show_all = bool(getattr(args, "all", False))
     client = _daemon_client()
     if client is not None:
         with client:
             views = client.sessions()
-        return {"via": "daemon", "sessions": [_view_payload(view) for view in views]}
+        payloads = [_view_payload(view) for view in views]
+        hidden = sum(_is_blank_session(p) for p in payloads)
+        if not show_all:
+            payloads = [p for p in payloads if not _is_blank_session(p)]
+        return {"via": "daemon", "sessions": payloads, "hidden_blank": 0 if show_all else hidden}
     config = _dsh_config(args)
     with open_gateway(config) as gateway:
         entries = gateway.list_sessions()
+    payloads = [_session_payload(entry) for entry in entries]
+    hidden = sum(_is_blank_session(p) for p in payloads)
+    if not show_all:
+        payloads = [p for p in payloads if not _is_blank_session(p)]
     return {
         "via": gateway.mode,
         "home": str(config.dsh_home),
-        "sessions": [_session_payload(entry) for entry in entries],
+        "sessions": payloads,
+        "hidden_blank": 0 if show_all else hidden,
     }
 
 
