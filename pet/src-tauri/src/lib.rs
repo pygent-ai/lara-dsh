@@ -154,6 +154,13 @@ fn sidecar_command() -> Option<PathBuf> {
         .filter(|p| p.is_file())
 }
 
+/// `<lara root>/pet/sidecar.log`, truncated on every pet start.
+fn sidecar_log_file() -> Option<std::fs::File> {
+    let dir = lara_root().join("pet");
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::File::create(dir.join("sidecar.log")).ok()
+}
+
 fn spawn_sidecar(app: &tauri::AppHandle) {
     let state = app.state::<Sidecar>();
     let Some(sidecar) = sidecar_command() else {
@@ -168,10 +175,22 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
     if let Ok(workspace) = std::env::var("LARA_PET_WORKSPACE") {
         command.arg("--workspace").arg(workspace);
     }
+    // The sidecar is a console script; without this flag Windows opens a
+    // console window for it next to the pet. Its stderr (the sidecar's own
+    // log) has nowhere to go from a GUI process, so it is kept in a file.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let stderr = sidecar_log_file()
+        .map(Stdio::from)
+        .unwrap_or_else(Stdio::null);
     let mut child = match command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(stderr)
         .spawn()
     {
         Ok(child) => child,
