@@ -69,6 +69,10 @@ body.chat-open #input-bar {
   width: max-content;
   min-width: 0;
   max-width: 272px;
+  /* 长回复不能把气泡顶出窗口：高度封顶，正文内部滚动，按钮始终在角上 */
+  max-height: calc(100vh - 230px);
+  display: flex;
+  flex-direction: column;
   padding: 8px 46px 8px 12px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(59, 59, 79, 0.25);
@@ -120,8 +124,11 @@ body.chat-open #input-bar {
 
 #bubble-text {
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   /* speak 文本可能带换行；只让文本保留换行，容器不吃标签间空白 */
   white-space: pre-wrap;
+  user-select: text;
 }
 
 /* speak 附带的文件：文字下方一排文件名 chip，全路径在 tooltip */
@@ -184,12 +191,17 @@ body.input-open #bubble {
   min-width: 0;
   padding: 9px 14px;
   border: 1px solid rgba(59, 59, 79, 0.35);
-  border-radius: 999px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.97);
   box-shadow: 0 4px 14px rgba(30, 30, 50, 0.25);
   font-size: 13px;
+  font-family: inherit;
+  line-height: 1.4;
   color: #2b2b3a;
   outline: none;
+  resize: none;
+  max-height: 96px;
+  overflow-y: auto;
 }
 
 #chat-input::placeholder {
@@ -300,6 +312,46 @@ body.chat-open #resize-handles {
   color: #2b2b3a;
 }
 
+/* 这轮出错：面板里与气泡同一句话，标成红边好认 */
+.chat-msg.error {
+  background: #fdecec;
+  color: #8a2a2a;
+  border: 1px solid rgba(180, 60, 60, 0.35);
+}
+
+/* 思考中的占位：三个跳动的点；收到第一段流式文字后变成普通消息 */
+.chat-msg.typing {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-height: 28px;
+}
+.chat-msg.typing i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9a9ab0;
+  animation: typing-dot 1.2s infinite ease-in-out;
+}
+.chat-msg.typing i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.chat-msg.typing i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes typing-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
 /* 面板里的 speak 附件行：完整相对路径 */
 .chat-attachments {
   display: flex;
@@ -322,6 +374,7 @@ body.chat-open #resize-handles {
 
 .chat-row {
   display: flex;
+  align-items: flex-end;
   gap: 6px;
   padding: 8px;
   border-top: 1px solid rgba(59, 59, 79, 0.15);
@@ -329,12 +382,18 @@ body.chat-open #resize-handles {
 
 #panel-input {
   flex: 1;
+  min-width: 0;
   padding: 7px 12px;
   border: 1px solid rgba(59, 59, 79, 0.35);
-  border-radius: 999px;
+  border-radius: 16px;
   font-size: 12.5px;
+  font-family: inherit;
+  line-height: 1.4;
   outline: none;
   color: #2b2b3a;
+  resize: none;
+  max-height: 96px;
+  overflow-y: auto;
 }
 
 /* 面板行与输入条里的形态切换/收起小按钮共用一个样式 */

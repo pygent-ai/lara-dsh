@@ -9,7 +9,8 @@ Protocol (JSON lines over stdio):
        {"type": "turn_started", "turn_id": ...}
        {"type": "speak", "text": ..., "attachments": [...]}
        {"type": "turn_finished", "turn_id": ..., "status": ..., "error": ...}
-       {"type": "error", "msg": ...}
+       {"type": "error", "msg": ..., "fatal": bool}   (fatal: the session is gone —
+                 bootstrap failure; delivery/request glitches are transient)
        {"type": "log", "msg": ...}
 
 The session is the kernel's singleton ``lara-says`` realtime session (the
@@ -348,7 +349,7 @@ class PetSession:
             try:
                 request = json.loads(line)
             except ValueError:
-                out({"type": "error", "msg": f"bad request line: {line[:120]}"})
+                out({"type": "error", "msg": f"bad request line: {line[:120]}", "fatal": False})
                 continue
             if request.get("type") == "ping":
                 out({"type": "pong"})
@@ -363,7 +364,7 @@ class PetSession:
                 # detached so a long turn never blocks the next message.
                 self._track(asyncio.create_task(self._deliver(host, text)))
                 continue
-            out({"type": "error", "msg": f"unknown request type: {request.get('type')!r}"})
+            out({"type": "error", "msg": f"unknown request type: {request.get('type')!r}", "fatal": False})
 
     async def _deliver(self, host: LaraExecutionHost, text: str) -> None:
         self.turn_count += 1
@@ -378,7 +379,7 @@ class PetSession:
                 interactive_approvals=False,
             )
         except Exception as exc:
-            out({"type": "error", "msg": f"delivery failed: {exc!r}"})
+            out({"type": "error", "msg": f"delivery failed: {exc!r}", "fatal": False})
             return
         if delivery.mode == "interrupt":
             self._emit_fork_reply(delivery.outcome)
@@ -462,7 +463,7 @@ def main() -> None:
     try:
         session = PetSession(workspace)
     except Exception as exc:
-        out({"type": "error", "msg": f"bootstrap failed: {exc!r}"})
+        out({"type": "error", "msg": f"bootstrap failed: {exc!r}", "fatal": True})
         return
     log(f"session {session.session_id} workspace {session.workspace}")
     try:

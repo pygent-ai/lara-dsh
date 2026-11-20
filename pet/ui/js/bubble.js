@@ -12,7 +12,13 @@
 // - × dismisses: counts as read; queued messages still rise one by one.
 const TYPE_MS = 26;
 const HOLD_MS = 6000;      // advance to the next queued bubble after this hold
-const UNSEEN_MS = 25000;   // no interaction -> collapse to the unread dot
+// No interaction -> collapse to the unread dot. The clock starts once the
+// text has fully appeared (typewriter / stream done), and the allowance
+// scales with length so a long reply gets reading time; bounded both ways
+// so every message collapses eventually and none collapses instantly.
+const UNSEEN_MIN_MS = 25000;
+const UNSEEN_MAX_MS = 90000;
+const UNSEEN_MS_PER_CHAR = 60;
 
 // 附件是 workspace 相对路径；气泡 chip 只显示文件名。
 const basename = (path) => String(path).split(/[\\/]/).pop() || String(path);
@@ -155,7 +161,9 @@ export class Bubble {
     this.dot.classList.add("hidden");
     this.visible = true;
     this.setUnread(0);
-    this.armUnseen();
+    // The unseen clock is armed by afterDone(), once the text is complete.
+    clearTimeout(this.unseenTimer);
+    this.unseenTimer = null;
   }
 
   hide() {
@@ -187,9 +195,11 @@ export class Bubble {
 
   armUnseen() {
     clearTimeout(this.unseenTimer);
+    const length = this.textEl.textContent.length;
+    const delay = Math.min(UNSEEN_MAX_MS, Math.max(UNSEEN_MIN_MS, length * UNSEEN_MS_PER_CHAR));
     this.unseenTimer = setTimeout(() => {
       if (this.visible && !this.typing && !this.streaming) this.collapseToDot();
-    }, UNSEEN_MS);
+    }, delay);
   }
 
   typewriter(text) {
@@ -217,7 +227,9 @@ export class Bubble {
         this.hide();
         this.next();
       }, HOLD_MS);
+      return;
     }
-    // last message: stays visible (or collapses to the dot when ignored)
+    // last message: stays visible, then collapses to the dot when ignored
+    this.armUnseen();
   }
 }

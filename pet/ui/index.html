@@ -9,20 +9,20 @@
   <body>
     <div id="stage">
       <div id="input-bar" class="hidden">
-        <input
+        <textarea
           id="chat-input"
-          type="text"
+          rows="1"
           autocomplete="off"
           spellcheck="false"
-          placeholder="跟兔兔说点什么…（Enter 发送 · Esc 关闭）"
-        />
+          placeholder="跟兔兔说点什么…（Enter 发送 · Shift+Enter 换行 · Esc 关闭）"
+        ></textarea>
         <button id="input-to-panel" title="切换到聊天面板">💬</button>
       </div>
 
       <div id="chat-panel" class="hidden">
         <div id="chat-history"></div>
         <div class="chat-row">
-          <input id="panel-input" type="text" autocomplete="off" spellcheck="false" placeholder="发消息…" />
+          <textarea id="panel-input" rows="1" autocomplete="off" spellcheck="false" placeholder="发消息…（Shift+Enter 换行）"></textarea>
           <button id="panel-to-input" title="切换到输入条">⌨</button>
           <button id="panel-collapse" title="收起面板">▾</button>
         </div>

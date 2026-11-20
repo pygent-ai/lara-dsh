@@ -24,14 +24,25 @@ export class SidecarTransport {
           attachments: Array.isArray(event.attachments) ? event.attachments : [],
         });
         break;
+      case "speak_delta":
+        // Streaming preview of the speak text being generated; the final
+        // speak event confirms (and replaces) what streamed.
+        this.onEvent({ type: "speak_delta", text: String(event.text || "") });
+        break;
       case "turn_finished":
         this.onEvent({ type: "turn_finished", error: event.error || null });
         break;
       case "error":
-        this.onEvent({ type: "sidecar_error", msg: String(event.msg || "sidecar error") });
+        // fatal marks a dead session (bootstrap failure); everything else is
+        // a glitch on one message and the sidecar keeps serving.
+        this.onEvent({
+          type: "sidecar_error",
+          msg: String(event.msg || "sidecar error"),
+          fatal: event.fatal === true,
+        });
         break;
       case "sidecar_exited":
-        this.onEvent({ type: "sidecar_error", msg: "sidecar exited" });
+        this.onEvent({ type: "sidecar_error", msg: "sidecar exited", fatal: true });
         break;
       case "log":
         console.log("[sidecar]", event.msg);
@@ -42,7 +53,7 @@ export class SidecarTransport {
   send(text) {
     window.__TAURI__.core
       .invoke("agent_send", { text })
-      .catch((e) => this.onEvent({ type: "sidecar_error", msg: String(e) }));
+      .catch((e) => this.onEvent({ type: "sidecar_error", msg: String(e), fatal: false }));
   }
 }
 
@@ -50,6 +61,10 @@ export class MockAgent {
   constructor(emit) {
     this.emit = emit;
   }
+
+  // Events keep flowing through the shared listener after a fallback; the
+  // mock owns nothing on that wire, so it just absorbs them.
+  handle() {}
 
   send(text) {
     this.emit({ type: "turn_started" });

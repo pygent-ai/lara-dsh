@@ -44,29 +44,84 @@ async function main() {
   const history = document.getElementById("chat-history");
   const panelInput = document.getElementById("panel-input");
   const transcript = [];
+  // 用户正读着上面的历史时（离底部超过这个距离）新消息不抢滚动位置。
+  const SCROLL_STICKY_PX = 24;
+  const atBottom = () =>
+    history.scrollHeight - history.scrollTop - history.clientHeight <= SCROLL_STICKY_PX;
+  const scrollToBottom = () => {
+    history.scrollTop = history.scrollHeight;
+  };
+  const buildMessage = (item) => {
+    const div = document.createElement("div");
+    div.className = `chat-msg ${item.role}`;
+    // speak 允许只发文件不发文字；文字为空时面板只显示附件块。
+    if (item.text) div.textContent = item.text;
+    const attachments = item.role === "assistant" ? item.attachments || [] : [];
+    if (attachments.length > 0) {
+      const files = document.createElement("div");
+      files.className = "chat-attachments";
+      for (const path of attachments) {
+        const file = document.createElement("div");
+        file.className = "chat-file";
+        file.textContent = `📄 ${path}`;
+        file.title = path;
+        files.appendChild(file);
+      }
+      div.appendChild(files);
+    }
+    return div;
+  };
+  // 流式中的助手消息和"正在输入"占位共用一个活动行，排在历史末尾；
+  // 最终 speak 到达时它变成普通历史项，不重建其他 DOM。
+  let liveRow = null;
+  let liveText = "";
+  const removeLive = () => {
+    liveRow?.remove();
+    liveRow = null;
+    liveText = "";
+  };
+  const ensureLive = () => {
+    if (liveRow) return liveRow;
+    liveRow = document.createElement("div");
+    liveRow.className = "chat-msg assistant live";
+    history.appendChild(liveRow);
+    return liveRow;
+  };
+  const showTyping = () => {
+    const row = ensureLive();
+    if (liveText) return; // already streaming text
+    row.classList.add("typing");
+    row.textContent = "";
+    for (let i = 0; i < 3; i += 1) row.appendChild(document.createElement("i"));
+    if (atBottom()) scrollToBottom();
+  };
+  const appendDelta = (delta) => {
+    const stick = atBottom();
+    const row = ensureLive();
+    if (!liveText) {
+      row.classList.remove("typing");
+      row.textContent = "";
+    }
+    liveText += delta;
+    row.textContent = liveText;
+    if (stick) scrollToBottom();
+  };
+  // 新消息追加到面板：只插入这一条，用户滚到上面在读时保持原位置。
+  const appendTranscript = (item) => {
+    const stick = atBottom();
+    transcript.push(item);
+    removeLive();
+    history.appendChild(buildMessage(item));
+    if (stick) scrollToBottom();
+  };
   const renderTranscript = () => {
     history.innerHTML = "";
-    for (const item of transcript) {
-      const div = document.createElement("div");
-      div.className = `chat-msg ${item.role}`;
-      // speak 允许只发文件不发文字；文字为空时面板只显示附件块。
-      if (item.text) div.textContent = item.text;
-      const attachments = item.role === "assistant" ? item.attachments || [] : [];
-      if (attachments.length > 0) {
-        const files = document.createElement("div");
-        files.className = "chat-attachments";
-        for (const path of attachments) {
-          const file = document.createElement("div");
-          file.className = "chat-file";
-          file.textContent = `📄 ${path}`;
-          file.title = path;
-          files.appendChild(file);
-        }
-        div.appendChild(files);
-      }
-      history.appendChild(div);
-    }
-    history.scrollTop = history.scrollHeight;
+    for (const item of transcript) history.appendChild(buildMessage(item));
+    liveRow = null;
+    const pending = liveText;
+    liveText = "";
+    if (pending) appendDelta(pending);
+    scrollToBottom();
   };
   const panelOpen = () => !panel.classList.contains("hidden");
   const togglePanel = (open = panelOpen()) => {
@@ -101,20 +156,42 @@ async function main() {
   }
   const sendText = (text) => {
     if (!text) return;
-    transcript.push({ role: "user", text });
-    renderTranscript();
+    appendTranscript({ role: "user", text });
     bubble.engage();
     transport.send(text);
   };
-  panelInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && panelInput.value.trim()) {
-      const text = panelInput.value.trim();
-      panelInput.value = "";
-      sendText(text);
-    } else if (e.key === "Escape") {
-      togglePanel(false);
-    }
-  });
+  // 两个输入框都是 textarea：Enter 发送，Shift+Enter 换行；中文输入法
+  // 组合期间（选候选词）的 Enter 属于输入法，不发送。
+  const bindComposer = (box, onSend, onEscape) => {
+    let composing = false;
+    // 多行时随内容长高，封顶由 CSS max-height 管；发送后缩回一行。
+    const autosize = () => {
+      box.style.height = "auto";
+      box.style.height = `${box.scrollHeight}px`;
+    };
+    box.addEventListener("input", autosize);
+    box.addEventListener("compositionstart", () => {
+      composing = true;
+    });
+    box.addEventListener("compositionend", () => {
+      composing = false;
+    });
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        if (e.shiftKey) return; // newline
+        if (composing || e.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        const text = box.value.trim();
+        if (!text) return;
+        box.value = "";
+        autosize();
+        onSend(text);
+      } else if (e.key === "Escape") {
+        onEscape();
+      }
+    });
+  };
+  bindComposer(panelInput, sendText, () => togglePanel(false));
 
   // 未读红点：点击重新展开最后一条。
   document.getElementById("unread-dot").addEventListener("click", () => {
@@ -134,31 +211,46 @@ async function main() {
         break; // real session attached; bubbles now carry real speak events
       case "turn_started":
         pet.setState("thinking");
+        showTyping();
         break;
       case "speak":
         bubble.finalize(event.text, event.attachments);
-        transcript.push({
+        appendTranscript({
           role: "assistant",
           text: event.text,
           attachments: event.attachments,
         });
-        if (panelOpen()) renderTranscript();
         break;
       case "speak_delta":
         bubble.stream(event.text);
+        appendDelta(event.text);
         pet.setState("speaking");
         break;
       case "turn_finished":
         pet.setState(petIdleState());
+        removeLive();
         if (event.error) {
-          bubble.finalize(`这轮没跑完：${event.error}`);
+          const text = `这轮没跑完：${event.error}`;
+          bubble.finalize(text);
+          // 面板开着时气泡被抑制，错误要在面板里内联可见。
+          appendTranscript({ role: "assistant error", text });
         }
         break;
       case "sidecar_error":
         if (fellBack) return;
-        fellBack = true;
-        transport = mock;
-        bubble.say(`sidecar 不可用（${event.msg}），暂时进入演示模式。`);
+        if (event.fatal) {
+          // 会话没了（bootstrap 失败 / 进程退出）：唯一进入演示模式的路径。
+          fellBack = true;
+          transport = mock;
+          const notice = `sidecar 不可用（${event.msg}），暂时进入演示模式。`;
+          bubble.say(notice);
+          appendTranscript({ role: "assistant error", text: notice });
+        } else {
+          // 瞬时错误（单条投递失败等）：sidecar 还活着，提示后照常收发。
+          const text = `这轮没送达：${event.msg}`;
+          bubble.say(text);
+          appendTranscript({ role: "assistant error", text });
+        }
         break;
     }
   };
@@ -168,7 +260,8 @@ async function main() {
   invoke("sidecar_status")
     .then((status) => {
       if (!status.running && status.error) {
-        handleAgentEvent({ type: "sidecar_error", msg: status.error });
+        // the sidecar never came up: the only fatal kind at startup
+        handleAgentEvent({ type: "sidecar_error", msg: status.error, fatal: true });
       }
     })
     .catch(() => {});
@@ -198,15 +291,7 @@ async function main() {
 
   await listen("pet://triple-shift", () => toggleInput());
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && input.value.trim()) {
-      const text = input.value.trim();
-      input.value = "";
-      sendText(text);
-    } else if (e.key === "Escape") {
-      toggleInput(false);
-    }
-  });
+  bindComposer(input, sendText, () => toggleInput(false));
   input.addEventListener("input", () => bubble.engage());
 
   // Drag the bunny; right-click menu: settings / quit (tray covers quit too).
