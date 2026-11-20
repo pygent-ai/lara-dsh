@@ -546,14 +546,20 @@ def _dsh_plugin(args: argparse.Namespace) -> dict[str, Any]:
     from lara_shell.dsh_gateway import SESSION_CONTROL_PLUGIN_DIR, probe_plugin_endpoint
 
     settings = load_dsh_settings(user_lara_root())
-    manifest = json.loads((SESSION_CONTROL_PLUGIN_DIR / "package.json").read_text(encoding="utf-8"))
+    # Prefer the assembled npm package (plugin + bundled pet/sidecar/CLI under
+    # `bin/`); the bare source plugin dir is the fallback for a checkout that
+    # has not run scripts/build_npm_package.py yet.
+    repo_root = Path(__file__).resolve().parents[4]
+    packaged = repo_root / "dist" / "npm" / "lara-dsh"
+    target = packaged if (packaged / "package.json").is_file() else SESSION_CONTROL_PLUGIN_DIR
+    manifest = json.loads((target / "package.json").read_text(encoding="utf-8"))
     profile_manifest = settings.dsh_home / "profiles" / args.profile / "package.json"
     log = ""
     if args.action == "install":
         # pnpm keeps a `file:` dependency it already resolved, so an upgrade
         # of the bundled plugin only lands after a remove; a missing package
         # makes the remove a harmless no-op.
-        for pnpm_args in (["remove", manifest["name"]], ["add", f"file:{SESSION_CONTROL_PLUGIN_DIR}"]):
+        for pnpm_args in (["remove", manifest["name"]], ["add", f"file:{target}"]):
             completed = subprocess.run(
                 [*resolve_bundled_launch_args(), "plugin", "--profile", args.profile, *pnpm_args],
                 env=dict(os.environ, DSH_HOME=str(settings.dsh_home)),

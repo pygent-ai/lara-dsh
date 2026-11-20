@@ -150,7 +150,7 @@ class FakePlugin:
                     "default": {"provider": "deepseek-official", "model": "deepseek-flash"},
                     "providers": [{"id": "deepseek-official", "name": "DeepSeek", "models": [{"id": "deepseek-flash", "name": "V4.1-Flash"}]}],
                     "apiKey": {"configured": True, "value": "sk-test"},
-                    "account": {"signedIn": False},
+                    "account": {"signedIn": False, "token": None, "baseURL": "https://api.deepseek.com/anthropic"},
                     "baseURL": "https://api.deepseek.com/v1",
                 }
             case "lara/session/list":
@@ -206,7 +206,8 @@ def test_model_route_exposes_dsh_default_and_credential_material(tmp_path: Path,
         route = gateway.model_route()
     assert route["default"] == {"provider": "deepseek-official", "model": "deepseek-flash"}
     assert route["apiKey"] == {"configured": True, "value": "sk-test"}
-    assert route["account"] == {"signedIn": False}
+    assert route["account"]["signedIn"] is False and route["account"]["token"] is None
+    assert route["account"]["baseURL"] == "https://api.deepseek.com/anthropic"
     assert route["baseURL"] == "https://api.deepseek.com/v1"
     assert route["providers"][0]["models"][0]["id"] == "deepseek-flash"
 

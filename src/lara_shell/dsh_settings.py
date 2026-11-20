@@ -35,6 +35,7 @@ from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DEFAULT_DSH_PROVIDER, OFFI
 
 DSH_SETTINGS_FILENAME = "dsh.yaml"
 DEEPSEEK_OFFICIAL_BASE_URL = OFFICIAL_BASE_URL
+DEEPSEEK_MESSAGES_BASE_URL = "https://api.deepseek.com/anthropic"
 DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY"
 SETTABLE_KEYS = ("provider", "model", "base_url", "workspace", "lara_model")
 
@@ -50,7 +51,7 @@ class DshSettings:
 
     def lara_model_mapping(self, api_key_env: str) -> dict[str, Any]:
         """Pygent ``connections/models/model_groups`` for the pet's own model."""
-        return build_model_mapping(self.lara_model, self.base_url, api_key_env)
+        return build_model_mapping(self.lara_model, self.base_url or DEEPSEEK_OFFICIAL_BASE_URL, api_key_env)
 
     def gateway_config(self, cwd: Path | None = None) -> DshGatewayConfig:
         return DshGatewayConfig(
@@ -62,32 +63,40 @@ class DshSettings:
         )
 
 
-def build_model_mapping(model: str, base_url: str | None, api_key_env: str) -> dict[str, Any]:
+def build_model_mapping(
+    model: str,
+    base_url: str,
+    api_key_env: str | None = None,
+    *,
+    protocol: str = "openai_chat_completions",
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Pygent ``connections/models/model_groups`` for one DeepSeek route.
 
     ``api_key_env`` names the environment variable the host supplies
-    transiently (the key itself travels from dsh's credential store); the
-    endpoint follows dsh's own resolution — ``DEEPSEEK_BASE_URL`` when set,
-    otherwise the official API.
+    transiently (the key itself travels from dsh's credential store); pass
+    ``None`` for routes whose credential travels in ``headers`` instead
+    (e.g. the account token's ``x-dsh-auth-token``). The endpoint follows
+    dsh's own resolution per route.
     """
+    connection: dict[str, Any] = {
+        "provider": "dsh",
+        # pygent requires a credential ref; with ``api_key_env=None`` it
+        # resolves to nothing and auth travels in ``headers`` alone.
+        "credential": {"env": api_key_env or "LARA_DSH_NO_CREDENTIAL"},
+        # 0.6.4 shape: each protocol endpoint is an object with base_url.
+        "protocols": {protocol: {"base_url": base_url or DEEPSEEK_OFFICIAL_BASE_URL}},
+        "verify_ssl": True,
+    }
+    if headers:
+        connection["headers"] = dict(headers)
     return {
-        "connections": {
-            "dsh": {
-                "provider": "dsh",
-                "credential": {"env": api_key_env},
-                "protocols": {
-                    "openai_chat_completions": {
-                        "base_url": base_url or DEEPSEEK_OFFICIAL_BASE_URL
-                    }
-                },
-                "verify_ssl": True,
-            }
-        },
+        "connections": {"dsh": connection},
         "models": {
             model: {
                 "connection": "dsh",
                 "model_id": model,
-                "protocol": "openai_chat_completions",
+                "protocol": protocol,
                 "capabilities": {
                     "modalities": {"input": ["text"], "output": ["text"]},
                     "streaming": {"output": ["text"]},
@@ -195,6 +204,7 @@ def _non_empty(value: Any) -> str | None:
 
 __all__ = [
     "DEEPSEEK_API_KEY_REF",
+    "DEEPSEEK_MESSAGES_BASE_URL",
     "DEEPSEEK_OFFICIAL_BASE_URL",
     "DSH_SETTINGS_FILENAME",
     "SETTABLE_KEYS",

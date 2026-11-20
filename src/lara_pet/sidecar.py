@@ -37,6 +37,7 @@ import sys
 import time
 import uuid
 from collections.abc import Sequence
+from typing import Any
 from pathlib import Path
 
 from lara_sdk.execution_host import LaraExecutionHost
@@ -45,7 +46,7 @@ from lara_shell import user_lara_root
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
 from lara_shell.dsh_daemon import DshDaemon, DshEvent, DshEventBatch
-from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, DshSettings, load_dsh_settings
+from lara_shell.dsh_settings import DEEPSEEK_MESSAGES_BASE_URL, DEEPSEEK_OFFICIAL_BASE_URL, DshSettings, build_model_mapping, load_dsh_settings
 from pygent.agent.pygent_v1.schema import ResolvedAgentConfig
 from pygent.llm import ModelConfig
 from pygent.agent.pygent_v1.core.io import plain_object
@@ -145,7 +146,7 @@ class PetSession:
         # a second model setup in config.yaml.
         self._dsh_settings = load_dsh_settings(self.user_root)
         self._dsh = self._start_dsh(self._dsh_settings)
-        self._lara_model_key = self._borrow_dsh_key()
+        self._lara_model = self._borrow_dsh_model()
         self._apply_lara_model(self.config)
         self.manager = SessionManager(self.config)
         self.session_id = resolve_session(self.manager)
@@ -184,23 +185,71 @@ class PetSession:
         self._apply_lara_model(config)
         return config
 
-    def _borrow_dsh_key(self) -> str | None:
+    def _borrow_dsh_model(self) -> dict[str, Any] | None:
+        """The pet's own model route taken from dsh's official configuration.
+
+        Returns ``{"model", "base_url", "protocol", "headers", "key_env",
+        "key"}`` for either dsh route: the api-key route (official or relay
+        endpoint, key from dsh's credential store) or the account route (the
+        signed-in grant token as ``x-dsh-auth-token`` on the official
+        Messages protocol, pygent 0.6.4+ connection ``headers``). ``None``
+        when no route is rideable; the pet keeps its config.yaml model.
+        """
         if self._dsh is None:
             return None
         try:
-            key = self._dsh.gateway.resolve_credential(DEEPSEEK_API_KEY_REF)
+            route = self._dsh.gateway.model_route()
         except Exception as exc:
-            log(f"could not read {DEEPSEEK_API_KEY_REF} from dsh: {exc!r}")
+            log(f"could not read dsh's model route: {exc!r}")
             return None
-        if key is None:
-            log(f"dsh has no {DEEPSEEK_API_KEY_REF}; the pet keeps its config.yaml model")
-        return key
+        default = route.get("default") or {}
+        provider = str(default.get("provider") or "deepseek-official")
+        model = str(default.get("model") or "") or str(self._dsh_settings.lara_model)
+        if provider == "deepseek-account":
+            account = route.get("account") or {}
+            token = account.get("token")
+            if not token:
+                log("dsh's default provider is deepseek-account but no signed-in grant; the pet keeps its config.yaml model")
+                return None
+            return {
+                "model": model,
+                "base_url": str(account.get("baseURL") or DEEPSEEK_MESSAGES_BASE_URL),
+                "protocol": "anthropic_messages",
+                "headers": {"x-dsh-auth-token": str(token)},
+                "key_env": None,
+                "key": None,
+            }
+        if provider != "deepseek-official":
+            log(f"dsh's default provider is {provider!r}; the pet keeps its config.yaml model")
+            return None
+        key = (route.get("apiKey") or {}).get("value")
+        if not key:
+            log("dsh has no DEEPSEEK_API_KEY credential; the pet keeps its config.yaml model")
+            return None
+        return {
+            "model": model,
+            "base_url": str(route.get("baseURL") or DEEPSEEK_OFFICIAL_BASE_URL),
+            "protocol": "openai_chat_completions",
+            "headers": None,
+            "key_env": LARA_DSH_KEY_ENV,
+            "key": str(key),
+        }
 
     def _apply_lara_model(self, config) -> None:
-        """Point the pet's model at dsh's DeepSeek route when its key is available."""
-        if self._lara_model_key is None:
+        """Point the pet's model at dsh's official route when it is rideable."""
+        if self._lara_model is None:
             return
-        mapping = self._dsh_settings.lara_model_mapping(LARA_DSH_KEY_ENV)
+        route = self._lara_model
+        model = route["model"]
+        if self._dsh_settings.lara_model and self._dsh_settings.lara_model != model:
+            model = self._dsh_settings.lara_model  # explicit pet-side override
+        mapping = build_model_mapping(
+            model,
+            route["base_url"],
+            route.get("key_env"),
+            protocol=route["protocol"],
+            headers=route.get("headers"),
+        )
         config.model_config_mapping = mapping
         config.model_config = ModelConfig.from_mapping(mapping)
         config.model_configuration_status = "configured"
@@ -211,7 +260,8 @@ class PetSession:
         )
 
     def _credential_environ(self):
-        transient = {} if self._lara_model_key is None else {LARA_DSH_KEY_ENV: self._lara_model_key}
+        key = None if self._lara_model is None else self._lara_model.get("key")
+        transient = {} if not key else {LARA_DSH_KEY_ENV: key}
         return build_credential_environment(self.config.user_pygent_root, transient=transient)
 
     def _start_dsh(self, settings: DshSettings) -> DshDaemon | None:

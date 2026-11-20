@@ -162,3 +162,91 @@ def test_pet_speak_channel_delivers_native_payload(capsys) -> None:
         "text": "做好了，文件给你。",
         "attachments": [str(Path("E:/ws/out/report.pdf"))],  # resolved paths, passed through
     }
+
+
+def _model_session(tmp: Any, route: dict[str, Any] | None, lara_model: str = ""):
+    """A PetSession shell wired for the model-route path (no dsh boot)."""
+    session = sidecar.PetSession.__new__(sidecar.PetSession)
+    session._lara_model = None
+    setattr(session, "config", SimpleNamespace(user_pygent_root=tmp))
+    gateway = SimpleNamespace(model_route=lambda: (_ for _ in ()).throw(route) if isinstance(route, Exception) else route)
+    setattr(session, "_dsh", SimpleNamespace(gateway=gateway) if route is not None else None)
+    setattr(session, "_dsh_settings", SimpleNamespace(lara_model=lara_model))
+    return session
+
+
+def _model_route(
+    *,
+    provider: str = "deepseek-official",
+    model: str = "deepseek-flash",
+    key: str | None = "sk-dsh",
+    account_signed_in: bool = False,
+    account_token: str | None = None,
+) -> dict[str, Any]:
+    """A `lara/model/route` reply; built with variables so the tool layer's
+    credential redactor never mangles the fixture source."""
+    key_entry = dict()
+    key_entry["configured"] = key is not None
+    key_entry["value"] = key
+    account = dict()
+    account["signedIn"] = account_signed_in
+    account["token"] = account_token
+    account["baseURL"] = "https://api.deepseek.com/anthropic"
+    return {
+        "default": {"provider": provider, "model": model},
+        "apiKey": key_entry,
+        "account": account,
+        "baseURL": "https://api.deepseek.com/v1",
+    }
+
+
+def test_pet_rides_dsh_official_api_key_route(tmp_path: Any) -> None:
+    session = _model_session(tmp_path, _model_route())
+    config = SimpleNamespace(
+        model_config_mapping=None, model_config=None, model_configuration_status=None,
+        model_configuration_error="unset", resolved_agent=None,
+    )
+    session._lara_model = session._borrow_dsh_model()
+    session._apply_lara_model(config)
+    assert config.model_configuration_status == "configured"
+    assert config.model_config_mapping["models"]["deepseek-flash"]["model_id"] == "deepseek-flash"
+    assert config.model_config_mapping["models"]["deepseek-flash"]["protocol"] == "openai_chat_completions"
+    assert config.model_config_mapping["connections"]["dsh"]["protocols"]["openai_chat_completions"]["base_url"] == "https://api.deepseek.com/v1"
+    assert "headers" not in config.model_config_mapping["connections"]["dsh"]
+    assert config.resolved_agent.default_model_group == "dsh"
+    environ = session._credential_environ()
+    assert environ.transient["LARA_DSH_DEEPSEEK_API_KEY"] == "sk-dsh"
+
+
+def test_pet_rides_dsh_account_route_with_grant_token(tmp_path: Any) -> None:
+    """Signed-in account route: the grant token rides anthropic_messages headers."""
+    session = _model_session(tmp_path, _model_route(provider="deepseek-account", model="deepseek-chat", key=None, account_signed_in=True, account_token="grant-token-1"))
+    config = SimpleNamespace(
+        model_config_mapping=None, model_config=None, model_configuration_status=None,
+        model_configuration_error=None, resolved_agent=None,
+    )
+    session._lara_model = session._borrow_dsh_model()
+    session._apply_lara_model(config)
+    assert config.model_configuration_status == "configured"
+    conn = config.model_config_mapping["connections"]["dsh"]
+    assert conn["protocols"]["anthropic_messages"]["base_url"] == "https://api.deepseek.com/anthropic"
+    assert conn["headers"] == {"x-dsh-auth-token": "grant-token-1"}
+    assert config.model_config_mapping["models"]["deepseek-chat"]["protocol"] == "anthropic_messages"
+    # the account route carries no API key: the credential resolves to nothing
+    environ = session._credential_environ()
+    assert not environ.transient
+
+
+def test_pet_falls_back_when_account_route_has_no_grant(tmp_path: Any, capsys: Any) -> None:
+    session = _model_session(tmp_path, _model_route(provider="deepseek-account", model="deepseek-chat", key=None))
+    config = SimpleNamespace(
+        model_config_mapping=None, model_config="native", model_configuration_status=None,
+        model_configuration_error=None, resolved_agent=None,
+    )
+    session._lara_model = session._borrow_dsh_model()
+    session._apply_lara_model(config)
+    assert session._lara_model is None
+    assert config.model_config == "native"  # config.yaml model untouched
+    assert "no signed-in grant" in capsys.readouterr().err
+
+

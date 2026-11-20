@@ -528,6 +528,8 @@ async function resolveAgent(ctx, sessionId) {
 
 /** The official inference origin for the DeepSeek API-key route. */
 const OFFICIAL_BASE_URL = 'https://api.deepseek.com/v1'
+/** The official Messages origin the account route authenticates against. */
+const OFFICIAL_MESSAGES_BASE_URL = 'https://api.deepseek.com/anthropic'
 
 /**
  * The official model-config view in one call: the saved default selection,
@@ -536,10 +538,10 @@ const OFFICIAL_BASE_URL = 'https://api.deepseek.com/v1'
  * `default` is agentDefaultModel (what the web/desktop model picker saves);
  * new sessions ride it unless a caller selects per session. `apiKey` is the
  * deepseek-official credential (credential store first, then the trusted
- * launch environment), and `account` reports whether a DeepSeek account
- * sign-in would authenticate — the account provider's token is host-scoped
- * and speaks the official Messages protocol, not an OpenAI-compatible one,
- * so OpenAI-protocol consumers can only ride the api-key route.
+ * launch environment). `account` carries the signed-in grant token, which
+ * authenticates the official Messages protocol via `x-dsh-auth-token` at
+ * `baseURL` — consumers that speak that wire (e.g. an anthropic_messages
+ * connection) ride the account route with it.
  */
 async function modelRoute(ctx) {
   const defaults = ctx.get('agentDefaultModel')
@@ -559,17 +561,20 @@ async function modelRoute(ctx) {
     const ambient = (process.env.DEEPSEEK_API_KEY || '').trim()
     apiKey = { configured: ambient.length > 0, value: ambient.length > 0 ? ambient : null }
   }
-  let account = { signedIn: false }
+  let account = { signedIn: false, token: null, baseURL: OFFICIAL_MESSAGES_BASE_URL }
   try {
     const deepseekAccount = ctx.get('deepseekAccount')
     if (deepseekAccount !== undefined) {
       // resolveToken only releases the grant for the account's own inference
       // origin, so probe that origin — not the api-key route's baseURL, which
-      // DEEPSEEK_BASE_URL may point anywhere.
-      account = { signedIn: (await deepseekAccount.resolveToken('https://api.deepseek.com')) !== undefined }
+      // DEEPSEEK_BASE_URL may point anywhere. The token authenticates the
+      // official Messages protocol (x-dsh-auth-token), which OpenAI-protocol
+      // consumers replay through an anthropic_messages connection.
+      const token = await deepseekAccount.resolveToken('https://api.deepseek.com')
+      account = { signedIn: token !== undefined, token: token ?? null, baseURL: OFFICIAL_MESSAGES_BASE_URL }
     }
   } catch {
-    account = { signedIn: false }
+    account = { signedIn: false, token: null, baseURL: OFFICIAL_MESSAGES_BASE_URL }
   }
   return {
     default: selection === null ? null : { ...selection },
