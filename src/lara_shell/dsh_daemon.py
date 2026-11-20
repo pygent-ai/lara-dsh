@@ -48,6 +48,7 @@ from lara_shell.dsh_gateway import (
     assistant_text,
     open_gateway,
 )
+from lara_shell.dsh_settings import migrate_endpoint_to_dsh_env
 
 DAEMON_STATE_FILENAME = "dsh-daemon.json"
 REPLY_EXCERPT_CHARS = 2000
@@ -344,6 +345,7 @@ class DshDaemon:
         if self._server is not None:
             return
         self._refuse_if_another_daemon_is_live()
+        migrate_endpoint_to_dsh_env(self._state_dir, self._config.dsh_home)
         self._gateway_slot = open_gateway(
             self._config, approval_requests=True, on_user_question=self._answer_user_question
         )

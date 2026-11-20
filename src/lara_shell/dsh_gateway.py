@@ -45,6 +45,7 @@ DEFAULT_DSH_MODEL = "deepseek-v4-flash"
 SESSION_CONTROL_PLUGIN_DIR = Path(__file__).resolve().parent / "dsh_plugin" / "lara-session-control"
 SESSION_CONTROL_PATCH = SESSION_CONTROL_PLUGIN_DIR / "cordis.patch.yml"
 CONTROL_PORT_ENV = "LARA_DSH_CONTROL_PORT"
+OFFICIAL_BASE_URL = "https://api.deepseek.com/v1"
 # Written by the plugin when it runs inside a dsh Lara did not spawn.
 PLUGIN_ENDPOINT_FILENAME = "dsh-plugin.json"
 
@@ -412,6 +413,11 @@ class DshRuntimeGateway:
         """Answer a request from :meth:`next_request` (approval: ``{"outcome": ...}``)."""
         raise NotImplementedError
 
+    def model_route(self) -> dict[str, Any]:
+        """The official model-config view: default selection, provider catalogs,
+        and the credential material dsh itself would use (api key or account)."""
+        raise NotImplementedError
+
     # -- plugin-served, shared -----------------------------------------------
 
     def list_sessions(self) -> list[DshSessionEntry]:
@@ -621,6 +627,23 @@ class DshGateway(DshRuntimeGateway):
     def notifications(self) -> EventSubscription:
         return _SdkEventSubscription(self._client().subscribe_notifications())
 
+    def model_route(self) -> dict[str, Any]:
+        """The route the spawned runtime rides: its own initialize parameters.
+
+        The SDK server keeps no account sign-in and no separate default-model
+        service, so the route is exactly what this gateway was configured
+        with (dsh.yaml), resolved the way the plugin resolves credentials.
+        """
+        self.start()
+        key = self.resolve_credential("DEEPSEEK_API_KEY")
+        return {
+            "default": {"provider": self._config.provider, "model": self._config.model},
+            "providers": self.list_models(),
+            "apiKey": {"configured": key is not None, "value": key},
+            "account": {"signedIn": False},
+            "baseURL": self._config.base_url or OFFICIAL_BASE_URL,
+        }
+
     @staticmethod
     def _is_bootstrap_race(result: RunResult) -> bool:
         return result.finish_reason == "error" and not result.final_response
@@ -754,15 +777,10 @@ class AttachedDshGateway(DshRuntimeGateway):
 
     def submit(self, session_id: str, prompt: str, *, cwd: str | Path | None = None) -> str:
         self.start()
-        # provider/model take effect only on a session the plugin creates for
-        # this prompt: Lara's configured model for Lara's sessions, the user's
-        # own choice untouched on theirs.
-        params: dict[str, Any] = {
-            "text": prompt,
-            "sessionId": session_id,
-            "provider": self._config.provider,
-            "model": self._config.model,
-        }
+        # The model is dsh's own default (agentDefaultModel — what the user's
+        # model picker saves), exactly like a session created in the dsh UI;
+        # lara/session/select-model is the explicit session-local override.
+        params: dict[str, Any] = {"text": prompt, "sessionId": session_id}
         if cwd is not None:
             params["cwd"] = str(Path(cwd).resolve())
         return str(self.control.call("lara/session/prompt", params)["messageId"])
@@ -774,6 +792,10 @@ class AttachedDshGateway(DshRuntimeGateway):
             "lara/session/select-model",
             {"sessionId": session_id, "provider": provider, "model": model},
         )
+
+    def model_route(self) -> dict[str, Any]:
+        self.start()
+        return self.control.call("lara/model/route")
 
     def resume(self, session_id: str) -> None:
         self.start()

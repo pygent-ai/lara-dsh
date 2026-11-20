@@ -145,6 +145,14 @@ class FakePlugin:
                 return {"sessionId": session_id, "messageId": f"req-{len(self.prompts)}", "created": created}
             case "lara/session/resume":
                 return {"sessionId": params["sessionId"], "status": "idle"}
+            case "lara/model/route":
+                return {
+                    "default": {"provider": "deepseek-official", "model": "deepseek-flash"},
+                    "providers": [{"id": "deepseek-official", "name": "DeepSeek", "models": [{"id": "deepseek-flash", "name": "V4.1-Flash"}]}],
+                    "apiKey": {"configured": True, "value": "sk-test"},
+                    "account": {"signedIn": False},
+                    "baseURL": "https://api.deepseek.com/v1",
+                }
             case "lara/session/list":
                 return {"sessions": list(self.sessions.values())}
             case "lara/session/stat":
@@ -193,6 +201,16 @@ def test_open_gateway_attaches_only_to_a_live_plugin_with_prompt_support(tmp_pat
         web.close()
 
 
+def test_model_route_exposes_dsh_default_and_credential_material(tmp_path: Path, plugin: FakePlugin) -> None:
+    with AttachedDshGateway(_config(tmp_path)) as gateway:
+        route = gateway.model_route()
+    assert route["default"] == {"provider": "deepseek-official", "model": "deepseek-flash"}
+    assert route["apiKey"] == {"configured": True, "value": "sk-test"}
+    assert route["account"] == {"signedIn": False}
+    assert route["baseURL"] == "https://api.deepseek.com/v1"
+    assert route["providers"][0]["models"][0]["id"] == "deepseek-flash"
+
+
 def test_attached_gateway_requires_a_live_plugin(tmp_path: Path) -> None:
     with pytest.raises(SessionControlError, match="no running dsh"):
         AttachedDshGateway(_config(tmp_path)).start()
@@ -210,10 +228,8 @@ def test_submit_roots_a_new_session_at_cwd_and_run_waits_for_the_turn(tmp_path: 
     with AttachedDshGateway(_config(tmp_path)) as gateway:
         message_id = gateway.submit("s1", "hi", cwd=tmp_path / "proj")
         assert message_id == "req-1"
-        assert plugin.prompts[0] == {
-            "text": "hi", "sessionId": "s1", "cwd": str((tmp_path / "proj").resolve()),
-            "provider": "deepseek-official", "model": "deepseek-v4-flash",
-        }
+        # The model is dsh's own default (agentDefaultModel) — no override is sent.
+        assert plugin.prompts[0] == {"text": "hi", "sessionId": "s1", "cwd": str((tmp_path / "proj").resolve())}
         # An existing session keeps its directory; a matching path is a no-op, another is refused.
         assert gateway.set_working_directory("s1", tmp_path / "proj") == str((tmp_path / "proj").resolve())
         with pytest.raises(SessionControlError, match="fixed"):

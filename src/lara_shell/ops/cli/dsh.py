@@ -29,6 +29,7 @@ from lara_shell.dsh_settings import (
     DSH_SETTINGS_FILENAME,
     SETTABLE_KEYS,
     load_dsh_settings,
+    migrate_endpoint_to_dsh_env,
     read_dsh_settings_file,
     write_dsh_settings_file,
 )
@@ -422,6 +423,7 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
     from deepseek_harness_runtime import resolve_bundled_launch_args
 
     settings = load_dsh_settings(user_lara_root())
+    migrate_endpoint_to_dsh_env(user_lara_root(), settings.dsh_home)
     state_path = user_lara_root() / WEB_STATE_FILENAME
     url: str | None = None
     try:

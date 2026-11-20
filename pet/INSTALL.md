@@ -10,6 +10,25 @@ Lara Pet is two parts that share one home directory (`~/.dsh`):
 The desktop app finds the sidecar on `PATH` (or via `LARA_PET_SIDECAR`); it does
 not bundle Python. Install the wheel first.
 
+## 0. The dsh-plugin way (one command, preferred)
+
+The `lara-dsh` npm package bundles the control plugin **and** both
+executables (pet + a frozen, Python-free sidecar). With dsh installed:
+
+```powershell
+dsh plugin --profile web add lara-dsh        # or: dsh plugin ... add file:<path to the package>
+```
+
+Starting dsh now launches the pet automatically — the plugin spawns it
+through dsh's managed subprocess seam, and the pet lives with the dsh that
+started it. Nothing else to install: the bundled `bin/lara.exe` is on the
+pet's own PATH, so the pet's agent runs `lara dsh ...` without a Python
+wheel. (The wheel below remains the way to get the `lara` CLI in your own
+shell.)
+
+Build the package locally with `uv run python scripts/build_npm_package.py`
+(see the script's docstring for the two build steps it expects).
+
 ## 1. Install the Python side
 
 Requires Python 3.13+. With [uv](https://docs.astral.sh/uv/):

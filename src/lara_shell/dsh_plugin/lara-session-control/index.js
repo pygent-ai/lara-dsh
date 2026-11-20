@@ -15,11 +15,13 @@
  *   lara/session/list                            -> { sessions: SessionEntry[] }
  *   lara/session/stat     { sessionId }          -> { session: SessionEntry | null }
  *   lara/session/create   { sessionId, cwd }     -> { sessionId, cwd, createdAt }
- *   lara/session/prompt   { text, sessionId?, cwd?, provider?, model? }
- *                                                -> { sessionId, messageId, created }   (attach only;
- *                                                   provider/model select the model of a session created here)
+ *   lara/session/prompt   { text, sessionId?, cwd? }
+ *                                                -> { sessionId, messageId, created }   (attach only)
  *   lara/session/resume   { sessionId }          -> { sessionId, status }               (attach only)
  *   lara/session/select-model { sessionId, provider, model } -> { sessionId, provider, model }  (attach only)
+ *   lara/model/route                             -> { default?, providers, apiKey, account, baseURL }
+ *                                                   (the official model-config view: agentDefaultModel plus
+ *                                                    the credential material dsh itself would use)
  *   lara/session/cancel   { sessionId }          -> { cancelled: boolean }
  *   lara/events/subscribe                        -> { ok }   this socket becomes the Lara wire (below)
  *   lara/models/list                             -> { providers: [{ id, name, models: [{ id, name, description? }] }] }
@@ -49,17 +51,30 @@ import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import Schema from '@deepseek-ai/schemastery'
 
 export const name = 'lara-session-control'
-export const inject = ['sessionPersistence', 'agents', 'sessions']
+export const inject = ['sessionPersistence', 'agents', 'sessions', 'subprocess']
 
-const VERSION = '0.4.0'
+/**
+ * Plugin row configuration (override in the profile patch layer's config
+ * entries for this plugin id). `petPath` names the desktop-pet executable;
+ * empty uses the one shipped in this package (`bin/lara-pet.exe`).
+ */
+export const Config = Schema.object({
+  autoLaunch: Schema.boolean().default(true),
+  petPath: Schema.string(),
+})
+
+const VERSION = '0.5.0'
+const DAEMON_STATE_FILENAME = 'dsh-daemon.json'
 const ENDPOINT_FILENAME = 'dsh-plugin.json'
 const JSONRPC_INVALID_REQUEST = -32600
 const JSONRPC_METHOD_NOT_FOUND = -32601
 const JSONRPC_INTERNAL_ERROR = -32603
 
-export function apply(ctx) {
+export function apply(ctx, config) {
   const configuredPort = process.env.LARA_DSH_CONTROL_PORT
   const port = configuredPort === undefined ? 0 : Number(configuredPort)
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -78,6 +93,11 @@ export function apply(ctx) {
     server.listen(port, '127.0.0.1', () => {
       if (configuredPort !== undefined) return
       endpoint = publishEndpoint(server.address().port)
+      // The user's dsh owns Lara's lifecycle: bring the pet up with it (the
+      // managed child dies with this dsh, so a restart brings a fresh pet).
+      // Lara spawned this runtime itself (spawn mode) only when the port came
+      // from the environment, and then it already manages the pet.
+      if (config.autoLaunch) void autoLaunchPet(ctx, config)
     })
     return () => new Promise((resolve) => {
       lara.closeAll()
@@ -100,6 +120,71 @@ export function apply(ctx) {
   // still fall through to the UI untouched.
   ctx.on('approval/request', (request, next) => lara.answerApproval(request, next), { prepend: true })
   ctx.on('user-questions/request', (request, next) => lara.answerQuestion(request, next), { prepend: true })
+}
+
+/**
+ * Start the desktop pet alongside this dsh through the managed subprocess
+ * seam, at most one per machine.
+ *
+ * The pet executable ships in this package (`bin/lara-pet.exe`); `petPath`
+ * in the plugin row config overrides it, as does `LARA_PET_EXE`. A live
+ * answer on the daemon state file's port means the pet is already up, so a
+ * dsh restart never spawns a second one. The spawn is managed: the child
+ * dies with this dsh, so a restart brings a fresh pet.
+ */
+async function autoLaunchPet(ctx, config) {
+  const explicit = (process.env.LARA_PET_EXE || '').trim()
+  const petPath = explicit || (config.petPath || '').trim() || bundledPetPath()
+  if (!petPath || !fs.existsSync(petPath)) {
+    process.stderr.write(`[${name}] no pet executable at ${petPath || '<unset>'}; install it with 'dsh plugin add' or set LARA_PET_EXE\n`)
+    return
+  }
+  const state = readDaemonState()
+  if (state !== null && (await liveListener(state.port))) {
+    return // the pet from a previous dsh run is still up
+  }
+  try {
+    const handle = ctx.subprocess.spawn({
+      argv: [petPath],
+      cwd: path.dirname(petPath),
+      stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+      graceMs: 2000,
+      // The scrub drops every DSH_* entry; the pet and its sidecar must
+      // target the same home this dsh serves, so forward it deliberately.
+      env: { DSH_HOME: process.env.DSH_HOME || path.join(os.homedir(), '.dsh') },
+    })
+    process.stderr.write(`[${name}] launched the pet (pid ${handle.pid})\n`)
+  } catch (error) {
+    process.stderr.write(`[${name}] could not launch the pet at ${petPath}: ${error.message}\n`)
+  }
+}
+
+/** The pet executable shipped next to this plugin file. */
+function bundledPetPath() {
+  const candidate = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bin', 'lara-pet.exe')
+  return fs.existsSync(candidate) ? candidate : null
+}
+
+function readDaemonState() {
+  try {
+    const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+    const record = JSON.parse(fs.readFileSync(path.join(home, 'lara', DAEMON_STATE_FILENAME), 'utf8'))
+    const port = Number(record.port)
+    return Number.isInteger(port) && port > 0 && record.pid !== process.pid ? { port, pid: record.pid } : null
+  } catch {
+    return null
+  }
+}
+
+/** A daemon that accepts a TCP connection on its port is alive (the JSON-RPC layer needs no probe). */
+function liveListener(port) {
+  return new Promise((resolve) => {
+    const probe = net.createConnection({ host: '127.0.0.1', port })
+    const settle = (alive) => { probe.destroy(); resolve(alive) }
+    probe.once('connect', () => settle(true))
+    probe.once('error', () => settle(false))
+    setTimeout(() => settle(false), 400).unref()
+  })
 }
 
 /** Where Lara looks for a running dsh: `<DSH_HOME>/lara/dsh-plugin.json`. */
@@ -328,6 +413,8 @@ class LaraWire {
       }
       case 'lara/models/list':
         return { providers: await listModels(ctx) }
+      case 'lara/model/route':
+        return await modelRoute(ctx)
       case 'lara/credentials/describe': {
         const credentials = requireService(ctx, 'credentials')
         const info = await credentials.describe(requireString(params, 'ref'))
@@ -356,8 +443,9 @@ class LaraWire {
    * Queue one user prompt on a session, creating it first when unknown.
    * Goes through `sessionController` (the web/desktop Host API), so the
    * session gets the deployment's default model and preset and shows up in
-   * the dsh UI like any other; `cwd` and `provider`/`model` apply only to a
-   * session created here (an existing session keeps the model its user chose).
+   * the dsh UI like any other. The model is dsh's own default
+   * (agentDefaultModel — what the web/desktop model picker saves); use
+   * lara/session/select-model for an explicit session-local override.
    */
   async prompt(params) {
     const ctx = this.ctx
@@ -375,9 +463,6 @@ class LaraWire {
       })
       sessionId = String(value.sessionId)
       created = true
-      if (typeof params.provider === 'string' && typeof params.model === 'string') {
-        await selectModel(ctx, await resolveAgent(ctx, sessionId), { provider: params.provider, model: params.model })
-      }
     }
     this.owned.add(sessionId)
     const requestId = randomUUID()
@@ -439,6 +524,60 @@ async function resolveAgent(ctx, sessionId) {
   const found = await requireService(ctx, 'sessionController').resolveAgent(sessionId)
   if ('error' in found) throw found.error
   return found.agent
+}
+
+/** The official inference origin for the DeepSeek API-key route. */
+const OFFICIAL_BASE_URL = 'https://api.deepseek.com/v1'
+
+/**
+ * The official model-config view in one call: the saved default selection,
+ * the provider catalogs, and the credential material dsh itself would use.
+ *
+ * `default` is agentDefaultModel (what the web/desktop model picker saves);
+ * new sessions ride it unless a caller selects per session. `apiKey` is the
+ * deepseek-official credential (credential store first, then the trusted
+ * launch environment), and `account` reports whether a DeepSeek account
+ * sign-in would authenticate — the account provider's token is host-scoped
+ * and speaks the official Messages protocol, not an OpenAI-compatible one,
+ * so OpenAI-protocol consumers can only ride the api-key route.
+ */
+async function modelRoute(ctx) {
+  const defaults = ctx.get('agentDefaultModel')
+  const selection = defaults !== undefined ? defaults.currentSelection() : null
+  const baseURL = (process.env.DEEPSEEK_BASE_URL || '').trim() || OFFICIAL_BASE_URL
+  let apiKey = { configured: false, value: null }
+  try {
+    const credentials = requireService(ctx, 'credentials')
+    const described = await credentials.describe('DEEPSEEK_API_KEY')
+    apiKey = { configured: Boolean(described.configured), value: null }
+    if (apiKey.configured) {
+      const resolved = await credentials.resolve('DEEPSEEK_API_KEY')
+      apiKey.value = resolved === undefined ? null : resolved.value
+    }
+  } catch {
+    // no credentials service: the launch environment is the only source
+    const ambient = (process.env.DEEPSEEK_API_KEY || '').trim()
+    apiKey = { configured: ambient.length > 0, value: ambient.length > 0 ? ambient : null }
+  }
+  let account = { signedIn: false }
+  try {
+    const deepseekAccount = ctx.get('deepseekAccount')
+    if (deepseekAccount !== undefined) {
+      // resolveToken only releases the grant for the account's own inference
+      // origin, so probe that origin — not the api-key route's baseURL, which
+      // DEEPSEEK_BASE_URL may point anywhere.
+      account = { signedIn: (await deepseekAccount.resolveToken('https://api.deepseek.com')) !== undefined }
+    }
+  } catch {
+    account = { signedIn: false }
+  }
+  return {
+    default: selection === null ? null : { ...selection },
+    providers: await listModels(ctx),
+    apiKey,
+    account,
+    baseURL,
+  }
 }
 
 /**

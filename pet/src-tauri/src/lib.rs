@@ -136,13 +136,20 @@ fn find_repo_dir() -> Option<PathBuf> {
 
 /// The sidecar command: the installed `lara-pet-sidecar` console script.
 ///
-/// Resolution order: `LARA_PET_SIDECAR` (explicit executable), the script on
+/// Resolution order: `LARA_PET_SIDECAR` (explicit executable), the one
+/// shipped next to this pet (the npm package's `bin/` layout), the script on
 /// `PATH` (installed wheel), then the development checkout's virtualenv.
 fn sidecar_command() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("LARA_PET_SIDECAR") {
         return Some(PathBuf::from(explicit));
     }
     let script = if cfg!(windows) { "lara-pet-sidecar.exe" } else { "lara-pet-sidecar" };
+    if let Ok(exe) = std::env::current_exe() {
+        let bundled = exe.parent()?.join(script);
+        if bundled.is_file() {
+            return Some(bundled);
+        }
+    }
     if let Some(found) = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path).map(|dir| dir.join(script)).find(|p| p.is_file())
     }) {
@@ -174,6 +181,16 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
     let mut command = Command::new(sidecar);
     if let Ok(workspace) = std::env::var("LARA_PET_WORKSPACE") {
         command.arg("--workspace").arg(workspace);
+    }
+    // The pet's agent drives dsh through `lara dsh ...` bash calls; when the
+    // bundled CLI (npm package bin/) is next to this pet, put it on the
+    // sidecar's PATH so those calls resolve without a Python wheel.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let dir = dir.to_string_lossy().to_string();
+            let path = std::env::var("PATH").map(|existing| format!("{dir};{existing}")).unwrap_or(dir);
+            command.env("PATH", path);
+        }
     }
     // The sidecar is a console script; without this flag Windows opens a
     // console window for it next to the pet. Its stderr (the sidecar's own

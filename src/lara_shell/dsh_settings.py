@@ -31,10 +31,10 @@ from typing import Any, Mapping
 from lara_shell import dsh_home
 from lara_shell.config.loader import load_mapping_file
 from lara_shell.config.yaml_subset import dump_yaml_subset
-from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DEFAULT_DSH_PROVIDER, DshGatewayConfig
+from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DEFAULT_DSH_PROVIDER, OFFICIAL_BASE_URL, DshGatewayConfig
 
 DSH_SETTINGS_FILENAME = "dsh.yaml"
-DEEPSEEK_OFFICIAL_BASE_URL = "https://api.deepseek.com/v1"
+DEEPSEEK_OFFICIAL_BASE_URL = OFFICIAL_BASE_URL
 DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY"
 SETTABLE_KEYS = ("provider", "model", "base_url", "workspace", "lara_model")
 
@@ -48,6 +48,10 @@ class DshSettings:
     base_url: str | None
     lara_model: str
 
+    def lara_model_mapping(self, api_key_env: str) -> dict[str, Any]:
+        """Pygent ``connections/models/model_groups`` for the pet's own model."""
+        return build_model_mapping(self.lara_model, self.base_url, api_key_env)
+
     def gateway_config(self, cwd: Path | None = None) -> DshGatewayConfig:
         return DshGatewayConfig(
             dsh_home=self.dsh_home,
@@ -57,44 +61,75 @@ class DshSettings:
             base_url=self.base_url,
         )
 
-    def lara_model_mapping(self, api_key_env: str) -> dict[str, Any]:
-        """Pygent ``connections/models/model_groups`` for the pet's own model.
 
-        The key is referenced through ``api_key_env``, which the host supplies
-        transiently from dsh's credential store. Only the DeepSeek route is
-        mapped: it is the one OpenAI-compatible endpoint whose location dsh
-        and Lara agree on.
-        """
-        return {
-            "connections": {
-                "dsh": {
-                    "provider": "dsh",
-                    "credential": {"env": api_key_env},
-                    "protocols": {
-                        "openai_chat_completions": {
-                            "base_url": self.base_url or DEEPSEEK_OFFICIAL_BASE_URL
-                        }
-                    },
-                    "verify_ssl": True,
-                }
-            },
-            "models": {
-                self.lara_model: {
-                    "connection": "dsh",
-                    "model_id": self.lara_model,
-                    "protocol": "openai_chat_completions",
-                    "capabilities": {
-                        "modalities": {"input": ["text"], "output": ["text"]},
-                        "streaming": {"output": ["text"]},
-                        "tools": {"call": True, "choice": ["none", "auto", "required", "named"], "parallel": True},
-                        "structured_output": {"json_object": True, "json_schema": False},
-                        "reasoning": {"supported": True, "controllable": True},
-                        "limits": {"context_tokens": 128000, "max_output_tokens": 32000},
-                    },
-                }
-            },
-            "model_groups": {"dsh": {"models": [self.lara_model]}},
-        }
+def build_model_mapping(model: str, base_url: str | None, api_key_env: str) -> dict[str, Any]:
+    """Pygent ``connections/models/model_groups`` for one DeepSeek route.
+
+    ``api_key_env`` names the environment variable the host supplies
+    transiently (the key itself travels from dsh's credential store); the
+    endpoint follows dsh's own resolution — ``DEEPSEEK_BASE_URL`` when set,
+    otherwise the official API.
+    """
+    return {
+        "connections": {
+            "dsh": {
+                "provider": "dsh",
+                "credential": {"env": api_key_env},
+                "protocols": {
+                    "openai_chat_completions": {
+                        "base_url": base_url or DEEPSEEK_OFFICIAL_BASE_URL
+                    }
+                },
+                "verify_ssl": True,
+            }
+        },
+        "models": {
+            model: {
+                "connection": "dsh",
+                "model_id": model,
+                "protocol": "openai_chat_completions",
+                "capabilities": {
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "streaming": {"output": ["text"]},
+                    "tools": {"call": True, "choice": ["none", "auto", "required", "named"], "parallel": True},
+                    "structured_output": {"json_object": True, "json_schema": False},
+                    "reasoning": {"supported": True, "controllable": True},
+                    "limits": {"context_tokens": 128000, "max_output_tokens": 32000},
+                },
+            }
+        },
+        "model_groups": {"dsh": {"models": [model]}},
+    }
+
+
+def migrate_endpoint_to_dsh_env(user_lara_root: str | Path, dsh_home_override: str | Path | None = None) -> bool:
+    """Move dsh.yaml's legacy ``base_url`` into dsh's native trusted layer.
+
+    The official way to point dsh at a custom OpenAI-compatible endpoint is
+    ``DEEPSEEK_BASE_URL`` in the Harness-home ``.env`` (dsh materializes it
+    into its environment at boot); dsh.yaml's ``base_url`` was Lara's
+    duplicate. Copies the value once when the ``.env`` does not name it yet;
+    returns whether the file changed.
+    """
+    settings = read_dsh_settings_file(user_lara_root)
+    base_url = _non_empty(settings.get("base_url"))
+    if base_url is None:
+        return False
+    home = Path(dsh_home_override).expanduser() if dsh_home_override else dsh_home()
+    env_path = home / ".env"
+    existing = ""
+    if env_path.is_file():
+        existing = env_path.read_text(encoding="utf-8")
+    for line in existing.splitlines():
+        if line.strip().startswith("DEEPSEEK_BASE_URL"):
+            return False
+    entry = f"DEEPSEEK_BASE_URL={base_url}"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    with env_path.open("a", encoding="utf-8") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write(entry + "\n")
+    return True
 
 
 def load_dsh_settings(
@@ -164,7 +199,9 @@ __all__ = [
     "DSH_SETTINGS_FILENAME",
     "SETTABLE_KEYS",
     "DshSettings",
+    "build_model_mapping",
     "load_dsh_settings",
+    "migrate_endpoint_to_dsh_env",
     "read_dsh_settings_file",
     "write_dsh_settings_file",
 ]
