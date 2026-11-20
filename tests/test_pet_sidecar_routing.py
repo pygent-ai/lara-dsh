@@ -6,6 +6,7 @@ is set, so ``_route_dsh_event`` can be driven with a fake turn.
 
 from __future__ import annotations
 
+import json
 import asyncio
 from types import SimpleNamespace
 from typing import Any
@@ -141,3 +142,23 @@ def test_turn_startup_failure_is_reported_not_swallowed(capsys) -> None:
     assert [e["type"] for e in events] == ["turn_started", "turn_finished"]
     assert events[1]["status"] == "error" and "bootstrap.json locked" in events[1]["error"]
     assert session._active_turn is None
+
+
+def test_pet_speak_channel_delivers_native_payload(capsys) -> None:
+    """The 0.6.3 native deliver(text, attachments) reaches the pet as one speak event."""
+    from pathlib import Path
+
+    async def drive() -> bool:
+        loop = asyncio.get_running_loop()
+        channel = sidecar.PetSpeakChannel(loop)
+        return channel.deliver("做好了，文件给你。", [Path("E:/ws/out/report.pdf")])
+
+    delivered = asyncio.run(drive())
+    assert delivered is True
+    line = [l for l in capsys.readouterr().out.splitlines() if l.strip()][0]
+    event = json.loads(line)
+    assert event == {
+        "type": "speak",
+        "text": "做好了，文件给你。",
+        "attachments": [str(Path("E:/ws/out/report.pdf"))],  # resolved paths, passed through
+    }

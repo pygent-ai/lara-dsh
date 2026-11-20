@@ -7,13 +7,16 @@ turn a host submitted, from the finalizer round pygent appends to a
 plain-text ending, from dsh-event turns, from fork replies — so a surface
 (desktop bubble, TTS, chat bridge) sees the complete spoken stream without
 subscribing to each turn individually.
+
+Since pygent 0.6.3 a channel's ``deliver(text, attachments)`` receives the
+spoken text and the workspace-resolved attachment paths as separate
+arguments; surfaces consume them directly instead of parsing the payload.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import partial
-from pathlib import Path
 from typing import Any
 
 from pygent.agent.pygent_v1.orchestration import LocalExecutionHost
@@ -40,27 +43,4 @@ class LaraExecutionHost(LocalExecutionHost):
         )
 
 
-def split_speak_delivery(text: str, workspace_root: str | Path) -> tuple[str, list[str]]:
-    """Recover ``(text, attachments)`` from one ``SpeakChannel.deliver`` payload.
-
-    The runtime's speak executor hands channels a single string: the spoken
-    text followed by one workspace-relative attachment path per line. Trailing
-    lines that name an existing file under the workspace are attachments; the
-    first line that does not ends the attachment block.
-    """
-    root = Path(workspace_root)
-    lines = text.split("\n")
-    attachments: list[str] = []
-    while lines:
-        candidate = lines[-1].strip()
-        if not candidate or candidate != lines[-1] or Path(candidate).is_absolute():
-            break
-        if not (root / candidate).is_file():
-            break
-        attachments.append(candidate)
-        lines.pop()
-    attachments.reverse()
-    return "\n".join(lines), attachments
-
-
-__all__ = ["LaraExecutionHost", "SpeakChannel", "split_speak_delivery"]
+__all__ = ["LaraExecutionHost", "SpeakChannel"]

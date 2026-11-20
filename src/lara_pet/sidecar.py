@@ -36,9 +36,10 @@ import json
 import sys
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 
-from lara_sdk.execution_host import LaraExecutionHost, split_speak_delivery
+from lara_sdk.execution_host import LaraExecutionHost
 from lara_sdk.lara_profile import lara_prompt_modules
 from lara_shell import user_lara_root
 from lara_shell.config.loader import load_run_config
@@ -111,14 +112,12 @@ def resolve_session(manager: SessionManager) -> str:
 class PetSpeakChannel:
     """Runtime → pet bubble. ``deliver`` runs on a runtime worker thread."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, workspace: Path) -> None:
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
-        self._workspace = workspace
 
-    def deliver(self, text: str) -> bool:
-        spoken, attachments = split_speak_delivery(text, self._workspace)
+    def deliver(self, text: str, attachments: Sequence[Path]) -> bool:
         self._loop.call_soon_threadsafe(
-            out, {"type": "speak", "text": spoken, "attachments": attachments}
+            out, {"type": "speak", "text": text, "attachments": [str(p) for p in attachments]}
         )
         return True
 
@@ -320,7 +319,7 @@ class PetSession:
         async with LaraExecutionHost(
             credential_environ=self._credential_environ(),
             run_config_loader=self._config_loader,
-            speak_channels=[PetSpeakChannel(loop, self.workspace)],
+            speak_channels=[PetSpeakChannel(loop)],
         ) as host:
             self._loop = loop
             self._host = host
