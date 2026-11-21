@@ -11,7 +11,7 @@ models that are actually available. Lara keeps no second copy of any key.
     model: deepseek-v4-flash    # model id the route resolves
     base_url: https://…/v1      # optional OpenAI-compatible endpoint override
     workspace: E:/work          # default cwd for new dsh sessions
-    lara_model: deepseek-v4-flash   # optional; the pet's own model (default: model)
+    lara_model: deepseek-flash  # optional; the pet's own model (default: dsh's route model)
 
 The dsh home itself is ``$DSH_HOME`` or ``~/.dsh`` (see
 ``lara_shell.dsh_home``); Lara's root lives inside it. ``DSH_MODEL`` and
@@ -23,6 +23,7 @@ shell's exported credential store is kept away from dsh (see
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,11 +48,19 @@ class DshSettings:
     provider: str
     model: str
     base_url: str | None
-    lara_model: str
+    # Explicit pet-side model override; ``None`` follows dsh's route model.
+    # Defaulting this to ``model`` used to shadow the model id dsh actually
+    # serves (``deepseek-flash``) with the local placeholder, so the pet asked
+    # the account endpoint for a model that does not exist.
+    lara_model: str | None = None
 
     def lara_model_mapping(self, api_key_env: str) -> dict[str, Any]:
         """Pygent ``connections/models/model_groups`` for the pet's own model."""
-        return build_model_mapping(self.lara_model, self.base_url or DEEPSEEK_OFFICIAL_BASE_URL, api_key_env)
+        return build_model_mapping(
+            self.lara_model or self.model,
+            self.base_url or DEEPSEEK_OFFICIAL_BASE_URL,
+            api_key_env,
+        )
 
     def gateway_config(self, cwd: Path | None = None) -> DshGatewayConfig:
         return DshGatewayConfig(
@@ -81,9 +90,14 @@ def build_model_mapping(
     """
     connection: dict[str, Any] = {
         "provider": "dsh",
-        # pygent requires a credential ref; with ``api_key_env=None`` it
-        # resolves to nothing and auth travels in ``headers`` alone.
-        "credential": {"env": api_key_env or "LARA_DSH_NO_CREDENTIAL"},
+        # Header-authenticated routes (the signed-in account's grant token)
+        # carry no key at all: pygent's ``{"none": true}`` is the ref that
+        # resolves to None. An unset env ref would make pygent raise
+        # LookupError, which the agent swallows into llm=None — the pet then
+        # answers "API key is not configured" and the message vanishes.
+        "credential": (
+            {"none": True} if api_key_env is None else {"env": api_key_env}
+        ),
         # 0.6.4 shape: each protocol endpoint is an object with base_url.
         "protocols": {protocol: {"base_url": base_url or DEEPSEEK_OFFICIAL_BASE_URL}},
         "verify_ssl": True,
@@ -141,6 +155,49 @@ def migrate_endpoint_to_dsh_env(user_lara_root: str | Path, dsh_home_override: s
     return True
 
 
+def default_dsh_workspace(home: str | Path | None = None) -> Path | None:
+    """The workspace dsh desktop has selected, from its own ``workspace.json``.
+
+    Sessions are filed per working directory and the desktop UI lists only the
+    workspaces it has registered, so a session created in an unregistered
+    directory is invisible there. Preferring this path keeps Lara's dsh
+    sessions in the workspace the user is looking at.
+    """
+    base = Path(home).expanduser() if home is not None else dsh_home()
+    store = base / "storages" / "workspace.json"
+    try:
+        # dsh stores this one as JSON; load_mapping_file only parses the YAML
+        # subset, so read it directly.
+        data = json.loads(store.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, Mapping):
+        return None
+    glob = data.get("global")
+    tables = data.get("tables")
+    if not isinstance(glob, Mapping) or not isinstance(tables, Mapping):
+        return None
+    workspaces = tables.get("workspaces")
+    if not isinstance(workspaces, Mapping):
+        return None
+    default_id = glob.get("defaultWorkspaceId")
+    entry = workspaces.get(default_id) if isinstance(default_id, str) else None
+    if not isinstance(entry, Mapping):
+        return None
+    path = entry.get("path")
+    if not isinstance(path, str) or not path.strip():
+        return None
+    return Path(path).expanduser()
+
+
+def _dsh_session_cwd(root: Path) -> Path:
+    """Explicit ``workspace:`` wins; otherwise follow dsh's own default workspace."""
+    registered = default_dsh_workspace()
+    if registered is not None:
+        return registered
+    return root / "pet"
+
+
 def load_dsh_settings(
     user_lara_root: str | Path,
     *,
@@ -154,11 +211,11 @@ def load_dsh_settings(
     model = _non_empty(env.get("DSH_MODEL")) or _non_empty(settings.get("model")) or DEFAULT_DSH_MODEL
     return DshSettings(
         dsh_home=dsh_home(),
-        workspace=_resolve(root, workspace_value) if workspace_value else root / "pet",
+        workspace=_resolve(root, workspace_value) if workspace_value else _dsh_session_cwd(root),
         provider=_non_empty(settings.get("provider")) or DEFAULT_DSH_PROVIDER,
         model=model,
         base_url=_non_empty(env.get("DEEPSEEK_BASE_URL")) or _non_empty(settings.get("base_url")),
-        lara_model=_non_empty(settings.get("lara_model")) or model,
+        lara_model=_non_empty(settings.get("lara_model")),
     )
 
 
@@ -203,6 +260,7 @@ def _non_empty(value: Any) -> str | None:
 
 
 __all__ = [
+    "default_dsh_workspace",
     "DEEPSEEK_API_KEY_REF",
     "DEEPSEEK_MESSAGES_BASE_URL",
     "DEEPSEEK_OFFICIAL_BASE_URL",

@@ -355,7 +355,11 @@ def test_settings_default_without_files(tmp_path: Path, monkeypatch: pytest.Monk
     assert settings.dsh_home == (tmp_path / "dsh").resolve()  # dsh's own home, shared with its front ends
     assert settings.workspace == tmp_path / "pet"
     assert settings.provider == "deepseek-official"
-    assert settings.model == "deepseek-v4-flash" and settings.lara_model == "deepseek-v4-flash"
+    assert settings.model == "deepseek-v4-flash"
+    # Unset lara_model must not shadow dsh's own route model: the pet follows
+    # whatever model id dsh actually serves (the account route serves
+    # ``deepseek-flash``; the local default placeholder is not a valid id there).
+    assert settings.lara_model is None
     assert settings.base_url is None
     config = settings.gateway_config()
     assert config.api_key is None and config.base_url is None  # dsh resolves its own key

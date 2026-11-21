@@ -425,6 +425,12 @@ class DshDaemon:
             raise ValueError("prompt must not be empty")
         created = session_id is None
         target = session_id or f"dsh-{uuid.uuid4().hex[:12]}"
+        # A session's directory is fixed at creation and becomes its write
+        # sandbox, and dsh desktop only lists sessions of workspaces it has
+        # registered. Root new sessions at the configured workspace (Lara
+        # resolves it from dsh's own default workspace) instead of letting the
+        # runtime stamp its process cwd.
+        created_cwd = cwd or (str(self._config.cwd) if created else None)
         if cwd and not created:
             self.gateway.set_working_directory(target, cwd)
         with self._lock:
@@ -434,7 +440,7 @@ class DshDaemon:
             tracked.error = None
             tracked.status = "running"
             tracked.turn_started_at = time.time()
-        message_id = self.gateway.submit(target, prompt, cwd=cwd if (cwd and created) else None)
+        message_id = self.gateway.submit(target, prompt, cwd=created_cwd if created else None)
         return {"session_id": target, "message_id": message_id, "created": created}
 
     def sessions(self) -> list[SessionView]:
