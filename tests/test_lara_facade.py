@@ -239,7 +239,11 @@ async def test_scheduler_gate_approve_and_execution(configure) -> None:
 
         approved = await facade.tasks().approve(task.id)
         assert approved.status == "approved"
-        await _wait_until(lambda: bool(facade.tasks().runs(task.id)))
+        # pygent 0.6.5 records the run when it starts, so a non-empty `runs()`
+        # is the in-flight row; wait for it to reach a terminal status.
+        await _wait_until(
+            lambda: any(r.status != "running" for r in facade.tasks().runs(task.id))
+        )
         runs = facade.tasks().runs(task.id)
         assert len(runs) == 1
         assert runs[0].status == "success"
@@ -305,7 +309,9 @@ async def test_scheduler_embedded_loop_processes_shared_store(configure) -> None
         )
         await facade.tasks().approve(task.id)
         # No manual poll: the embedded loop must pick up the approved due task.
-        await _wait_until(lambda: bool(facade.tasks().runs(task.id)))
+        await _wait_until(
+            lambda: any(r.status != "running" for r in facade.tasks().runs(task.id))
+        )
         assert "loop picked it up" in facade.tasks().runs(task.id)[0].output
     finally:
         await facade.stop()
