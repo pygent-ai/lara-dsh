@@ -1,4 +1,4 @@
-// Speech bubble: FIFO queue, streaming + typewriter reveal, unread dot.
+// Speech bubble: FIFO queue, streaming as-is (no replay animation), unread dot.
 //
 // Interaction contract (per design discussion):
 // - speak_delta events stream the words into the current bubble live;
@@ -10,10 +10,9 @@
 // - 面板开着时到达的消息只在面板历史里出场；收起面板后气泡接力，
 //   把队列里的消息接着放完（见 setSuppressed(false)）。
 // - × dismisses: counts as read; queued messages still rise one by one.
-const TYPE_MS = 26;
 const HOLD_MS = 6000;      // advance to the next queued bubble after this hold
 // No interaction -> collapse to the unread dot. The clock starts once the
-// text has fully appeared (typewriter / stream done), and the allowance
+// text has fully appeared (stream done), and the allowance
 // scales with length so a long reply gets reading time; bounded both ways
 // so every message collapses eventually and none collapses instantly.
 const UNSEEN_MIN_MS = 25000;
@@ -140,7 +139,7 @@ export class Bubble {
     if (item === undefined) return;
     this.show();
     this.renderAttachments(item.attachments);
-    this.typewriter(item.text);
+    this.reveal(item.text);
   }
 
   // speak 附件：workspace 相对路径，气泡里只放文件名，全路径进 tooltip。
@@ -202,23 +201,13 @@ export class Bubble {
     }, delay);
   }
 
-  typewriter(text) {
-    this.typing = true;
-    this.textEl.textContent = "";
-    this.onTyping(true);
-    let i = 0;
-    const step = () => {
-      if (i < text.length) {
-        i += 1;
-        this.textEl.textContent = text.slice(0, i);
-        setTimeout(step, TYPE_MS);
-        return;
-      }
-      this.typing = false;
-      this.onTyping(false);
-      this.afterDone();
-    };
-    step();
+  // speak 流出多少就显示多少：非流式消息也整段直接呈现，不再做逐字回放。
+  // 流式消息由 stream() 逐块追加，两条路径看到的就是 speak 实际产生的文本。
+  reveal(text) {
+    this.typing = false;
+    this.textEl.textContent = text;
+    this.onTyping(false);
+    this.afterDone();
   }
 
   afterDone() {
