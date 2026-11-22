@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "deepseek-harness-runtime-bin==0.2.2rc2",
     "deepseek-harness-sdk==0.2.2rc2",
-    "pygent-ai[video]==0.6.5",
+    "pygent-ai[video]==0.6.6",
 ]
 
 [dependency-groups]

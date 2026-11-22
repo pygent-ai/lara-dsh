@@ -78,7 +78,11 @@ async def test_lara_facade_from_config_to_scheduled_execution(
             "execute the scheduled facade task",
         )
         assert task.source == "agent"
-        await _wait_until(lambda: bool(facade.tasks().runs(task.id)))
+        # pygent records the run when it starts, so a non-empty `runs()` is the
+        # in-flight row; wait for it to reach a terminal status.
+        await _wait_until(
+            lambda: any(r.status != "running" for r in facade.tasks().runs(task.id))
+        )
 
         runs = facade.tasks().runs(task.id)
         assert len(runs) == 1
