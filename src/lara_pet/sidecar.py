@@ -132,7 +132,15 @@ class PetSession:
         self.config = load_run_config(workspace_root=str(workspace))
         # The pet runs unattended: realtime speak interaction on, approval
         # prompts off (nobody is watching a dialog box).
-        self.config.realtime_interaction = RealtimeInteractionConfig(enabled=True)
+        # The fork reply forces tool_choice="speak"; DeepSeek's Anthropic
+        # endpoint rejects that while thinking is on ("Thinking mode does not
+        # support this tool_choice"), which used to drop every message sent
+        # during a running turn. effort "none" turns thinking off for the fork
+        # only (pygent >= 0.6.5 passes it as output_config.effort), trading a
+        # little reasoning depth in the one-line ack for a delivered message.
+        self.config.realtime_interaction = RealtimeInteractionConfig(
+            enabled=True, fork_reasoning_effort="none"
+        )
         self.config.runtime_approvals = RuntimeApprovalConfig(
             enabled=False, timeout_seconds=300.0, preauthorized_tools=()
         )
@@ -196,6 +204,7 @@ class PetSession:
         when no route is rideable; the pet keeps its config.yaml model.
         """
         if self._dsh is None:
+            log("no dsh daemon, so no route to borrow; the pet keeps its own config.yaml model")
             return None
         try:
             route = self._dsh.gateway.model_route()
@@ -415,9 +424,34 @@ class PetSession:
                 continue
             out({"type": "error", "msg": f"unknown request type: {request.get('type')!r}", "fatal": False})
 
+    def _model_unavailable_notice(self) -> str | None:
+        """Why the pet cannot answer right now, as one actionable line."""
+        if self._lara_model is not None:
+            return None
+        if self.config.model_configuration_status == "configured":
+            return None
+        hint = (
+            "我这边没有可用的模型：dsh 里还没有登录，Lara 也没有自己的 config.yaml。"
+            "在 dsh 里登录后重试，或者运行 `lara dsh credentials DEEPSEEK_API_KEY --set`。"
+            if self._dsh is None
+            else "我这边没有可用的模型：dsh 没有返回可用的 provider/key。"
+            "请在 dsh 里登录，或运行 `lara dsh credentials DEEPSEEK_API_KEY --set`。"
+        )
+        return hint
+
     async def _deliver(self, host: LaraExecutionHost, text: str) -> None:
         self.turn_count += 1
         input_id = f"turn-{time.time() * 1000:.0f}-{self.turn_count}"
+        notice = self._model_unavailable_notice()
+        if notice is not None:
+            # Without a model the agent still runs and answers in plain text,
+            # which the pet never renders: the user sees a message vanish.
+            # Say why, in the one channel the pet does show.
+            out({"type": "speak", "text": notice, "attachments": []})
+            out({"type": "turn_started", "turn_id": input_id})
+            out({"type": "turn_finished", "turn_id": input_id, "status": "error",
+                 "error": "no usable model route"})
+            return
         try:
             delivery = await host.deliver_user_message(
                 config=self.config,
