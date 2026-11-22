@@ -166,3 +166,48 @@ DSH_HOME=$(mktemp -d) lara-pet-sidecar --workspace $(mktemp -d)
 ### ISSUE-10（新，轻~中）面板滚上去之后，新回复落在视口外且无提示
 `appendTranscript()`/`appendDelta()` 只在 `atBottom()` 为真时自动滚到底（注释："用户滚到上面在读时保持原位置"）。实测：手动往上滚过之后连发两条，回复都渲染在视口下方，面板上**没有任何"有新消息"提示**，看起来像没回复（我一度误判为"面板不显示回复"，滚动后才看到）。
 建议：滚上去时给一个"↓ 新消息"浮标，或新回复时轻微提示。
+
+---
+
+## 补充（2026-11-22 第三轮：当前源码前端回归）
+
+本轮只验证前端显示相关问题。先从当前源码重建 `lara-pet.exe`、
+`lara-pet-sidecar.exe` 和 `lara.exe`，组装 `dist/npm/lara-dsh`，再按 dsh
+官方插件方式安装到 `web` profile：
+
+```powershell
+npx --yes --package=@deepseek-ai/dsh@0.2.2-rc.5 --package=pnpm@11.28.5 -- `
+  dsh plugin --profile web remove lara-dsh
+npx --yes --package=@deepseek-ai/dsh@0.2.2-rc.5 --package=pnpm@11.28.5 -- `
+  dsh plugin --profile web add file:E:/Projects/lara-dsh/dist/npm/lara-dsh
+npx --yes --package=@deepseek-ai/dsh@0.2.2-rc.5 --package=pnpm@11.28.5 -- `
+  dsh --profile web --no-open --port 0
+```
+
+安装后 profile 内三枚 exe 与本地构建产物的 SHA-256 均一致。直接重复
+`plugin add file:...` 仍只会输出 `Already up to date`，不会覆盖同版本二进制；
+ISSUE-9 的建议（本地更新先 remove 再 add）仍然必要。
+
+### 前端结果
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| 失败反馈是否静默 | **部分通过** | `ModelProfileSelectionError` 会以完整气泡显示，中文、英文、换行和按钮布局正常；未单独重测空 `DSH_HOME`。 |
+| ISSUE-2：输入条展开时回复不冒泡 | **未复现，当前错误回复路径已修复** | 输入条保持展开，`turn_finished.error` 气泡仍显示在输入条上方，没有只变成未读角标。 |
+| ISSUE-3：未读角标没有消息入口 | **仍复现** | 气泡自动折叠为红色 `1` 后，点击角标只会清掉角标，没有重新展开气泡，也没有打开历史。 |
+| ISSUE-4：发送后 Esc 关不掉 | **未复现，当前已修复** | 输入条发送后内容清空，随后按 Esc 能立即关闭输入条。 |
+| ISSUE-8：重启后窗口位置漂移 | **仍复现** | 未拖动窗口，连续三次由 dsh 插件拉起时坐标为 `(294,294)` → `(245,245)` → `(49,49)`；尺寸始终为 `300×400`。 |
+| ISSUE-10：滚动后没有新消息提示 | **仍复现** | 面板停在较早消息时，历史从 6 条增加到 7 条，视口保持原处，但没有“↓ 新消息”、角标或其它提示。 |
+
+### 本轮阻断与未覆盖项
+
+- 项目当时锁定的 Python runtime 是 dsh `0.2.2-rc.2`，本机运行会话时报
+  `@koromix/koffi-win32-x64/.../koffi.node` 缺失；切换到 npm 官方当前版本
+  `@deepseek-ai/dsh@0.2.2-rc.5` 后该原生模块错误消失。
+- 当前 dsh endpoint 返回 `Invalid token`；同时持久化的 Lara 会话仍选择
+  `preferred:deepseek-v4-flash`，而当前 `pygent.v1:dsh` 模型组没有该 profile，
+  因而又触发 `ModelProfileSelectionError`。
+- 受上述高层失败影响，本轮只能验证错误气泡及面板行为，不能重新验证正常
+  `speak_delta` 流式输出、连续多条 speak 的 FIFO、附件 chip。
+
+本轮结束后恢复用户原有的 `Ctrl × 3` 快捷键设置；未修改业务代码。
