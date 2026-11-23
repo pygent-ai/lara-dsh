@@ -243,14 +243,51 @@ fn kill_sidecar(app: &tauri::AppHandle) {
     }
 }
 
-/// Cursor polling: click-through outside the window, interactive inside.
-/// Transparent corners still catch clicks while the cursor is inside the
-/// rect; a full per-pixel hit-test needs the M3 cursor-forwarding design.
+/// Latest webview hit-test answer for the click-through poller: cursor
+/// position in CSS px relative to the window, whether that point carries
+/// visible/interactive content, and when it was measured.
+#[derive(Clone, Copy)]
+struct CursorHitReport {
+    x: f64,
+    y: f64,
+    solid: bool,
+    at: std::time::Instant,
+}
+
+/// Shared slot the webview reports into (``report_hit_test``) and the poller
+/// reads from.
+#[derive(Default)]
+struct CursorHit(Mutex<Option<CursorHitReport>>);
+
+/// Webview → poller: hit-test result at a window-relative CSS position.
+#[tauri::command]
+fn report_hit_test(state: tauri::State<CursorHit>, x: f64, y: f64, solid: bool) {
+    if let Ok(mut guard) = state.0.lock() {
+        *guard = Some(CursorHitReport {
+            x,
+            y,
+            solid,
+            at: std::time::Instant::now(),
+        });
+    }
+}
+
+/// Per-pixel click-through. The poller owns the ignore-cursor-events flag;
+/// the webview (hit_test.js) is the hit-test oracle:
+/// - cursor outside the window rect: always pass-through;
+/// - inside: the webview's answer at the cursor position decides — visible or
+///   interactive content receives events, blank (transparent) areas pass
+///   clicks to the windows behind (the old rect test blocked those).
+/// Pass-through-first while the answer is missing or stale: a freshly entered
+/// spot may need one more poll tick to become interactive, but blank pixels
+/// never capture clicks. Answers older than HIT_TTL are re-probed so DOM
+/// changes under a stationary cursor (bubble opens/closes) also heal.
 fn spawn_click_through(app: tauri::AppHandle) {
+    const HIT_TTL: std::time::Duration = std::time::Duration::from_millis(500);
     std::thread::spawn(move || {
-        let mut ignoring = false;
+        let mut ignoring = true;
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(120));
+            std::thread::sleep(std::time::Duration::from_millis(30));
             let Some(win) = app.get_webview_window("pet") else { continue };
             let (Ok(pos), Ok(size)) = (win.outer_position(), win.outer_size()) else {
                 continue;
@@ -263,7 +300,34 @@ fn spawn_click_through(app: tauri::AppHandle) {
                 && point.x < pos.x + size.width as i32
                 && point.y >= pos.y
                 && point.y < pos.y + size.height as i32;
-            let want = !inside;
+            let mut want = true;
+            if inside {
+                let Ok(scale) = win.scale_factor() else { continue };
+                let x = (point.x - pos.x) as f64 / scale;
+                let y = (point.y - pos.y) as f64 / scale;
+                let report = app
+                    .state::<CursorHit>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|hit| *hit)
+                    .filter(|hit| {
+                        hit.at.elapsed() < HIT_TTL
+                            && (hit.x - x).abs() <= 2.0
+                            && (hit.y - y).abs() <= 2.0
+                    });
+                match report {
+                    Some(hit) => want = !hit.solid,
+                    // No answer (yet/anymore) for this spot: keep the current
+                    // state and ask the webview to measure again.
+                    None => {
+                        let _ = win.eval(&format!(
+                            "window.__laraPet&&window.__laraPet.hitTestAt({x:.0},{y:.0})"
+                        ));
+                        want = ignoring;
+                    }
+                }
+            }
             if want != ignoring {
                 if win.set_ignore_cursor_events(want).is_ok() {
                     ignoring = want;
@@ -279,6 +343,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
 pub fn run() {
     tauri::Builder::default()
         .manage(Sidecar::new())
+        .manage(CursorHit::default())
         .setup(|app| {
             apply_hotkey_from_config(&read_pet_config());
 
@@ -292,6 +357,13 @@ pub fn run() {
             });
             std::thread::spawn(hook::install);
             spawn_click_through(app.handle().clone());
+            // The poller assumes pass-through as the initial state; make the
+            // window actually match (wry starts cursor-enabled), or the first
+            // blank-area hover would agree with the stale local belief and
+            // never flip the style.
+            if let Some(win) = app.get_webview_window("pet") {
+                let _ = win.set_ignore_cursor_events(true);
+            }
 
             // Tray: left-click toggles visibility; menu covers toggle + quit.
             let toggle = tauri::menu::MenuItem::with_id(app, "toggle", "显示 / 隐藏", true, None::<&str>)?;
@@ -327,7 +399,8 @@ pub fn run() {
             agent_send,
             sidecar_status,
             get_pet_config,
-            set_pet_config
+            set_pet_config,
+            report_hit_test
         ])
         .build(tauri::generate_context!())
         .expect("error while building lara pet")

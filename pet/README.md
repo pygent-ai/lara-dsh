@@ -99,8 +99,10 @@ npm run tauri dev
 ```
 
 - **托盘**：左键显示/隐藏兔兔，右键菜单同款 + 退出。
-- **点击穿透**：Rust 每 120ms 轮询光标与窗口矩形，窗口外自动
-  `ignore_cursor_events`，兔兔不再挡住后面的应用。
+- **点击穿透**：Rust 轮询器每 30ms 探测光标，窗口外直接
+  `ignore_cursor_events`；窗口内由页面逐像素判定（`hit_test.js`：透明底板
+  与兔兔画布的透明像素都穿透，气泡/面板/兔兔本体接收点击），空白区域不再
+  挡住后面的应用。
 - **设置**：右键兔兔打开面板——触发键（Shift/Ctrl/Alt/`/CapsLock）、连击次数、
   时间窗、皮肤切换；持久化在 `<dsh home>/lara/pet-config.json`，热键即时生效。
 - **聊天面板**：气泡上的 💬 切换完整历史 + 输入框。
@@ -130,6 +132,5 @@ npm run tauri dev
 
 ## 已知限制
 
-- 光标在窗口矩形内时透明边角仍会拦截鼠标（逐像素命中测试待做）
 - 流式粒度取决于 provider 的 SSE 分块（glm 常整段一次性到，短句近似直出）
 - turn 内消息串行排队（steering 插队语义待接内核 RuntimeSteeringConfig）

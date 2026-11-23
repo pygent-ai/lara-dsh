@@ -2,6 +2,7 @@ import { loadSkin } from "./skin.js";
 import { Pet } from "./pet.js";
 import { Bubble } from "./bubble.js";
 import { MockAgent, SidecarTransport } from "./agent.js";
+import { installHitTest } from "./hit_test.js";
 
 const { listen } = window.__TAURI__.event;
 const { getCurrentWindow, PhysicalPosition } = window.__TAURI__.window;
@@ -21,6 +22,9 @@ async function main() {
   const petEl = document.getElementById("pet");
   const skin = await loadSkin("./skins/default");
   const pet = new Pet(petEl, skin);
+  // 逐像素点击穿透的页面侧判定；必须在 Pet 之后安装，让画布上下文带上
+  // willReadFrequently（hit_test.js 每次命中要读一个像素）。
+  installHitTest(invoke);
 
   const bar = document.getElementById("input-bar");
   const input = document.getElementById("chat-input");

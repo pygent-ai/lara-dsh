@@ -3,7 +3,9 @@
 export class Pet {
   constructor(canvas, skin) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext("2d");
+    // willReadFrequently：点击穿透的命中判定（hit_test.js）会逐像素读这块
+    // 画布；32x32 的软件画布读起来几乎无成本。
+    this.ctx = canvas.getContext("2d", { willReadFrequently: true });
     this.ctx.imageSmoothingEnabled = false;
     this.skin = skin;
     this.state = "idle";

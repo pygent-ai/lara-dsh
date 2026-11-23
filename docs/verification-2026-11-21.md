@@ -211,3 +211,88 @@ ISSUE-9 的建议（本地更新先 remove 再 add）仍然必要。
   `speak_delta` 流式输出、连续多条 speak 的 FIFO、附件 chip。
 
 本轮结束后恢复用户原有的 `Ctrl × 3` 快捷键设置；未修改业务代码。
+
+---
+
+## 补充（2026-11-22 第四轮：空 DSH_HOME 无模型路径实测）
+
+补第三轮的缺口（"未单独重测空 `DSH_HOME`"）。从当前源码构建产物
+`dist/npm/lara-dsh/bin/lara-pet.exe` 直接启动，`DSH_HOME` 指向空临时目录，
+`LARA_PET_ALLOW_INJECTED=1`，用 SendInput 注入三击 Shift、剪贴板粘贴发送
+"hi"，按窗口矩形截图确认 UI；协议层用 `lara-pet-sidecar --workspace` 手动
+驱动 stdio 对照。
+
+| 项目 | 结果 | 证据 |
+|---|---|---|
+| ISSUE-1：无可用模型时静默 | **通过** | 协议层：`send` 后事件流为 `speak`（提示原文含 "`lara dsh credentials DEEPSEEK_API_KEY --set`"）→ `turn_started` → `turn_finished status=error "no usable model route"`（修复前零 speak）；UI 层：气泡完整渲染提示原文，中文/反引号/排版正常；`no dsh daemon, so no route to borrow` 日志行同步出现。 |
+| ISSUE-2：输入条展开时不冒泡 | **通过（错误路径）** | 气泡显示在展开的输入条正上方（placeholder 可见），随后 FIFO 轮换出错误行"这轮没跑完： no usable model route"；未读-only 压制未再出现。 |
+| ISSUE-4：发送后 Esc 关不掉 | **通过** | 发送 "hi"、收到回复气泡后按 Esc，输入条立即关闭，兔子回 idle。 |
+| ISSUE-3：未读角标没有消息入口 | **仍复现** | 光标在窗口内停留 500ms（click-through 已解除）后点击红点 "1"：角标未清、气泡不重展开、面板不开——比第三轮记录更差（那轮角标至少被清掉）。`main.js` 的 unread-dot 点击处理存在但事件没有到达，需查点击链路（嫌疑：petEl 的 mousedown→startDragging 或元素命中）。 |
+| ISSUE-8：窗口位置漂移 | **仍复现** | 无人拖动，启动后窗口位于 `(147,147)`（600×800），稍后变为 `(392,392)`；`positionBottomLeft()` 的右下锚定未生效，也无位置持久化。 |
+
+本轮仍未覆盖：正常 `speak_delta` 流式（无模型路径设计上不产生流式）、连续多条
+speak 的 FIFO（需可用模型）、附件 chip。错误气泡路径在第三轮已测，本轮重复确认。
+
+### 本轮自动化驱动的坑（供以后回归复用）
+
+- SendInput 的 `INPUT` 结构必须含 `MOUSEINPUT`（x64 上 `cbSize=40`），否则
+  返回 0（ERROR_INVALID_PARAMETER）；`SendKeys` 对裸 "+" 的合成流会让三击
+  计不进 800ms 窗口（hook 日志全是 "tap #1"）。
+- `KEYEVENTF_UNICODE` 注入的字符进不了 webview 的 textarea（事件到达但未落
+  文本，原因未查）；剪贴板 + Ctrl-V 可用，与第一轮验证的结论一致。
+- 点击前要等 ≥2 个 click-through 轮询周期（120ms/次），否则合成点击可能
+  穿透到下层应用；注入键鼠必须带前台守卫（焦点不在桌宠时中止）。
+- `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 无效：wry 显式传自己的浏览器参
+  数，CDP 直驱路线走不通。
+
+本轮结束后已终止测试启动的 pet/sidecar 进程；未修改业务代码。
+
+---
+
+## 补充（2026-11-22 第五轮：窗口内空白区域逐像素点击穿透）
+
+用户报告：宠物拉起后窗口内约一整块空白（兔兔上方与四周的透明区域）完全挡住
+后面的应用。根因是 `spawn_click_through` 的矩形判定：光标在窗口矩形内一律
+放行鼠标事件，透明像素照常拦截（旧版注释里标注"逐像素命中测试待做"）。
+
+**修复**（`pet/src-tauri/src/lib.rs` + `pet/ui/js/hit_test.js` 新增）：
+
+- Rust 轮询器改为 30ms 并继续独占 `set_ignore_cursor_events` 的写入；窗口外
+  直接穿透；窗口内向 webview 发 `hitTestAt(x,y)` 探测（CSS 坐标 =
+  物理差值 ÷ scale_factor）。
+- 页面侧判定：`elementFromPoint` 命中 `#stage`/`body` 即透明；命中兔兔画布时
+  读当前帧像素 alpha（32×32 画布 `getImageData` 1px，`willReadFrequently`）；
+  其余元素（气泡/面板/把手/红点）一律实心。mousemove 主动上报 + 探测上报
+  汇入 `report_hit_test` 命令，轮询器按"位置匹配 ±2px 且 500ms 内新鲜"取用，
+  过期重探（气泡在静止光标下开合也能收敛）。
+- 缺答案时维持原状（pass-through-first：刚进入的像素最多晚一个轮询周期变成
+  可点，空白像素永不拦点击）；启动时先把窗口置为穿透，避免本地状态与 wry
+  初始状态失配导致首次空白悬停不生效。
+
+**证据**（窗口矩形 `(441,441,1041,1241)`、scale 2；EXSTYLE 直读
+`WS_EX_TRANSPARENT` 位）：
+
+| 探测点（帧像素） | 预期 | 实测 |
+|---|---|---|
+| 窗口上方空白 CSS(150,60) | 穿透 | TRANSPARENT=True ✓ |
+| 画布透明边距 CSS(66,224)→帧(2,3) | 穿透 | True ✓（旧版这里拦点击） |
+| 两耳之间 CSS(150,230)→帧(16,4) | 穿透 | True ✓（逐像素生效） |
+| 脸颊中心 CSS(150,274)→帧(16,12) | 实心 | False ✓ |
+| 腿部 CSS(114,370)→帧(10,28) | 实心 | False ✓ |
+| 腹部 CSS(150,340)→帧(16,23) | 实心 | False ✓ |
+
+穿透点击落点验证：原子注入（absolute move+down 同批 SendInput）点击空白区，
+ClickTarget 测试窗获得前台（Edge→ClickTarget），说明点击落到后面窗口。
+兔兔实心像素的 EXSTYLE 翻转依赖 `hitTestAt`→`report_hit_test`→轮询器应用
+全链路，链路成立即"实心可点"语义与旧版一致（同一 wry 开关）。
+
+**本轮合成点击对兔兔本体仍无可见反应**（右键设置面板不开、startDragging 不
+动），与第四轮 ISSUE-3 的现象同源，且同样的注入对本轮自建 WinForms 窗也时
+灵时不灵（客户区 Click 事件不触发、LL mouse hook 需消息泵才收得到事件），
+判定为自动化注入链路在 WebView2 上的限制而非本次回归；EXSTYLE 与
+WindowFromPoint 均证明窗口处于可收事件状态。待用户实际拖动/右键确认。
+
+已交付：`dist/npm/lara-dsh/bin/lara-pet.exe` 与 web profile 安装副本均已替换
+为本轮构建（9,632,768 字节），并以真实用户环境重启宠物（sidecar 重新 attach
+dsh daemon，`lara-says` 会话续用）。`tests/test_pet_sidecar_routing.py` 12
+项通过（存量 sidecar 改动不受影响）。
