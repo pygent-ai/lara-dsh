@@ -235,6 +235,26 @@ body.input-open #bubble {
   gap: 6px;
 }
 
+#new-message-indicator {
+  align-self: center;
+  margin: 0 0 6px;
+  padding: 4px 12px;
+  border: 1px solid rgba(74, 93, 240, 0.22);
+  border-radius: 999px;
+  background: #eef0ff;
+  color: #3e4bc5;
+  box-shadow: 0 2px 8px rgba(30, 30, 50, 0.15);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+#new-message-indicator:hover {
+  background: #e2e5ff;
+}
+
 /* 缩放把手：比系统边框命中区更宽更好抓；仅聊天面板打开时出现，平时不挡
    气泡/输入条。左右两侧在兔兔上方收住，避免盖住左下角的兔兔。 */
 #resize-handles {

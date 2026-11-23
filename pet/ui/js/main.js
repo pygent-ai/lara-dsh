@@ -3,20 +3,11 @@ import { Pet } from "./pet.js";
 import { Bubble } from "./bubble.js";
 import { MockAgent, SidecarTransport } from "./agent.js";
 import { installHitTest } from "./hit_test.js";
+import { installNewMessageIndicator, installUnreadMessageEntry } from "./chat_ui.mjs";
 
 const { listen } = window.__TAURI__.event;
-const { getCurrentWindow, PhysicalPosition } = window.__TAURI__.window;
+const { getCurrentWindow } = window.__TAURI__.window;
 const { invoke } = window.__TAURI__.core;
-
-async function positionBottomLeft() {
-  const win = getCurrentWindow();
-  const monitor = await win.currentMonitor();
-  if (!monitor) return;
-  const size = await win.outerSize();
-  const x = monitor.position.x + monitor.size.width - size.width - 32;
-  const y = monitor.position.y + monitor.size.height - size.height - 72;
-  await win.setPosition(new PhysicalPosition(x, y));
-}
 
 async function main() {
   const petEl = document.getElementById("pet");
@@ -46,6 +37,7 @@ async function main() {
   // 聊天面板：完整历史 + 输入，气泡上的 💬 切换。
   const panel = document.getElementById("chat-panel");
   const history = document.getElementById("chat-history");
+  const newMessageIndicator = document.getElementById("new-message-indicator");
   const panelInput = document.getElementById("panel-input");
   const transcript = [];
   // 用户正读着上面的历史时（离底部超过这个距离）新消息不抢滚动位置。
@@ -55,6 +47,14 @@ async function main() {
   const scrollToBottom = () => {
     history.scrollTop = history.scrollHeight;
   };
+  const panelOpen = () => !panel.classList.contains("hidden");
+  const newMessageNotice = installNewMessageIndicator({
+    history,
+    indicator: newMessageIndicator,
+    isPanelOpen: panelOpen,
+    atBottom,
+    scrollToBottom,
+  });
   const buildMessage = (item) => {
     const div = document.createElement("div");
     div.className = `chat-msg ${item.role}`;
@@ -92,12 +92,13 @@ async function main() {
     return liveRow;
   };
   const showTyping = () => {
+    const stick = atBottom();
     const row = ensureLive();
     if (liveText) return; // already streaming text
     row.classList.add("typing");
     row.textContent = "";
     for (let i = 0; i < 3; i += 1) row.appendChild(document.createElement("i"));
-    if (atBottom()) scrollToBottom();
+    newMessageNotice.afterAppend(stick);
   };
   const appendDelta = (delta) => {
     const stick = atBottom();
@@ -108,7 +109,7 @@ async function main() {
     }
     liveText += delta;
     row.textContent = liveText;
-    if (stick) scrollToBottom();
+    newMessageNotice.afterAppend(stick);
   };
   // 新消息追加到面板：只插入这一条，用户滚到上面在读时保持原位置。
   const appendTranscript = (item) => {
@@ -116,7 +117,7 @@ async function main() {
     transcript.push(item);
     removeLive();
     history.appendChild(buildMessage(item));
-    if (stick) scrollToBottom();
+    newMessageNotice.afterAppend(stick);
   };
   const renderTranscript = () => {
     history.innerHTML = "";
@@ -126,8 +127,8 @@ async function main() {
     liveText = "";
     if (pending) appendDelta(pending);
     scrollToBottom();
+    newMessageNotice.hide();
   };
-  const panelOpen = () => !panel.classList.contains("hidden");
   const togglePanel = (open = panelOpen()) => {
     panel.classList.toggle("hidden", !open);
     document.body.classList.toggle("chat-open", open);
@@ -197,13 +198,8 @@ async function main() {
   };
   bindComposer(panelInput, sendText, () => togglePanel(false));
 
-  // 未读红点：点击重新展开最后一条。
-  document.getElementById("unread-dot").addEventListener("click", () => {
-    bubble.setUnread(0);
-    if (bubble.queue.length > 0) bubble.next();
-    else bubble.show();
-    pet.setState(petIdleState());
-  });
+  // 未读红点是稳定的消息入口：气泡可能已结束展示周期，但历史始终完整。
+  installUnreadMessageEntry(document.getElementById("unread-dot"), togglePanel);
 
   // One event protocol, two transports: the sidecar owns the real lara
   // realtime session; if it fails to come up, fall back to the mock so the
@@ -360,8 +356,6 @@ async function main() {
       }
     })
     .catch(() => {});
-
-  await positionBottomLeft();
 }
 
 main().catch((e) => console.error("lara-pet: main failed:", e));

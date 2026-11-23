@@ -296,3 +296,28 @@ WindowFromPoint 均证明窗口处于可收事件状态。待用户实际拖动/
 为本轮构建（9,632,768 字节），并以真实用户环境重启宠物（sidecar 重新 attach
 dsh daemon，`lara-says` 会话续用）。`tests/test_pet_sidecar_routing.py` 12
 项通过（存量 sidecar 改动不受影响）。
+
+---
+
+## 补充（2026-11-23 第六轮：ISSUE-3 / ISSUE-8 / ISSUE-10 修复）
+
+本轮只修三个仍复现的前端显示问题，并重新构建 npm 插件包；安装仍走 dsh
+官方流程：`plugin --profile web remove lara-dsh` 后再
+`plugin --profile web add file:...`。安装副本与构建包 SHA-256 一致。
+
+| 项目 | 修复 | 验证 |
+|---|---|---|
+| ISSUE-3：未读红点没有消息入口 | 红点不再尝试恢复生命周期已经结束的旧气泡，统一打开持久的完整聊天历史。 | `pet/tests/chat_ui.test.mjs` 验证点击只产生一次 `openPanel(true)`。红点仍由逐像素命中逻辑视为实心元素。 |
+| ISSUE-8：重启后窗口位置漂移 | Tauri 启动时优先恢复 `pet-config.json.window`；首次启动固定按主显示器工作区计算右下角坐标并立即持久化；移动事件静止 250ms 后落盘。 | 官方插件启动坐标/尺寸为 `(2488,1152,300×400)`，完整退出并重启 dsh 后仍为 `(2488,1152,300×400)`；配置已写入相同物理坐标。 |
+| ISSUE-10：滚动后没有新消息提示 | 保持原滚动位置，同时显示“↓ 新消息”；点击入口滚到底并消失，用户自行滚到底也会清除。正在输入占位、流式增量和最终消息共用同一状态机。 | Node 原生 UI 单测覆盖“上方阅读”“已在底部”“点击入口”“自行滚到底”四条状态转换。 |
+
+自动验证结果：`npm test --prefix pet` 3/3 通过；`cargo test --manifest-path
+pet/src-tauri/Cargo.toml` 2/2 通过；`node --check pet/ui/js/main.js` 通过。Rust
+只保留既有的 `HotkeyConfig` dead-code 与 MSVC linker 提示。
+
+当前 dsh endpoint 仍返回 `Invalid token`，持久化 Lara 会话仍可能选择不可用的
+`preferred:deepseek-v4-flash`；因此不能把本轮结果扩大为正常模型
+`speak_delta`、附件或连续 speak 的端到端通过。Computer Use 的纯修饰键不会被
+全局钩子识别，发布版 WebView2 也未开放 CDP，故两个 DOM 交互以可重复的源码级
+UI 单测闭环；窗口恢复则已在官方安装的真实程序上完成重启实测。测试结束后快捷键
+配置恢复为用户原有的 `Ctrl × 3 / 800ms`。

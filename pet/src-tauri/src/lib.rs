@@ -61,7 +61,7 @@ fn sidecar_status(state: tauri::State<Sidecar>) -> serde_json::Value {
     })
 }
 
-// —— pet-config（热键 / 皮肤）持久化于 <dsh home>/lara/pet-config.json ————————
+// —— pet-config（热键 / 皮肤 / 窗口位置）持久化于 <dsh home>/lara/pet-config.json ——
 // Lara 的用户根在 dsh 的 home 里（$DSH_HOME，默认 ~/.dsh），与 lara_shell.user_lara_root 一致。
 
 fn lara_root() -> PathBuf {
@@ -94,6 +94,12 @@ fn read_pet_config() -> serde_json::Value {
         })
 }
 
+fn window_position(value: &serde_json::Value) -> Option<(i32, i32)> {
+    let x = value.get("x")?.as_i64()?;
+    let y = value.get("y")?.as_i64()?;
+    Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?))
+}
+
 fn apply_hotkey_from_config(config: &serde_json::Value) {
     let hotkey = &config["hotkey"];
     let key = hotkey["key"].as_str().unwrap_or("shift");
@@ -116,6 +122,11 @@ fn set_pet_config(patch: serde_json::Value) -> Result<(), String> {
     }
     if let Some(skin) = patch.get("skin").and_then(|s| s.as_str()) {
         config["skin"] = json!(skin);
+    }
+    if let Some(window) = patch.get("window") {
+        let (x, y) = window_position(window)
+            .ok_or_else(|| "window position must contain 32-bit integer x/y".to_string())?;
+        config["window"] = json!({"x": x, "y": y});
     }
     let path = pet_config_path();
     if let Some(parent) = path.parent() {
@@ -259,6 +270,39 @@ struct CursorHitReport {
 #[derive(Default)]
 struct CursorHit(Mutex<Option<CursorHitReport>>);
 
+/// Last observed window move. The event loop persists it only after movement
+/// has been quiet for a moment, so dragging does not write the config per pixel.
+#[derive(Default)]
+struct WindowPlacement(Mutex<Option<(i32, i32, std::time::Instant)>>);
+
+fn persist_window_position(x: i32, y: i32) -> Result<(), String> {
+    let mut config = read_pet_config();
+    config["window"] = json!({"x": x, "y": y});
+    let path = pet_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("config write failed: {e}"))
+}
+
+fn default_window_position(window: &tauri::WebviewWindow) -> Option<(i32, i32)> {
+    let monitor = window.primary_monitor().ok().flatten()?;
+    let work_area = monitor.work_area();
+    let window_size = window.outer_size().ok()?;
+    let width = i32::try_from(window_size.width).ok()?;
+    let height = i32::try_from(window_size.height).ok()?;
+    let work_width = i32::try_from(work_area.size.width).ok()?;
+    let work_height = i32::try_from(work_area.size.height).ok()?;
+    Some((
+        work_area.position.x + work_width - width - 32,
+        work_area.position.y + work_height - height - 32,
+    ))
+}
+
 /// Webview → poller: hit-test result at a window-relative CSS position.
 #[tauri::command]
 fn report_hit_test(state: tauri::State<CursorHit>, x: f64, y: f64, solid: bool) {
@@ -344,8 +388,22 @@ pub fn run() {
     tauri::Builder::default()
         .manage(Sidecar::new())
         .manage(CursorHit::default())
+        .manage(WindowPlacement::default())
         .setup(|app| {
-            apply_hotkey_from_config(&read_pet_config());
+            let config = read_pet_config();
+            apply_hotkey_from_config(&config);
+
+            if let Some(win) = app.get_webview_window("pet") {
+                let saved = config.get("window").and_then(window_position);
+                if let Some((x, y)) = saved.or_else(|| default_window_position(&win)) {
+                    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+                    if saved.is_none() {
+                        if let Err(error) = persist_window_position(x, y) {
+                            eprintln!("lara-pet: failed to persist initial window position: {error}");
+                        }
+                    }
+                }
+            }
 
             let handle = app.handle().clone();
             let (tx, rx) = mpsc::channel::<()>();
@@ -404,10 +462,42 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building lara pet")
-        .run(|app_handle, event| {
-            if let tauri::RunEvent::Exit = event {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::WindowEvent { label, event, .. } if label == "pet" => {
+                if let tauri::WindowEvent::Moved(position) = event {
+                    if let Ok(mut pending) = app_handle.state::<WindowPlacement>().0.lock() {
+                        *pending = Some((position.x, position.y, std::time::Instant::now()));
+                    }
+                }
+            }
+            tauri::RunEvent::MainEventsCleared => {
+                let ready = app_handle
+                    .state::<WindowPlacement>()
+                    .0
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| {
+                        let (_, _, changed_at) = pending.as_ref()?;
+                        if changed_at.elapsed() < std::time::Duration::from_millis(250) {
+                            return None;
+                        }
+                        pending.take()
+                    });
+                if let Some((x, y, _)) = ready {
+                    if let Err(error) = persist_window_position(x, y) {
+                        eprintln!("lara-pet: failed to persist window position: {error}");
+                    }
+                }
+            }
+            tauri::RunEvent::Exit => {
+                if let Ok(mut pending) = app_handle.state::<WindowPlacement>().0.lock() {
+                    if let Some((x, y, _)) = pending.take() {
+                        let _ = persist_window_position(x, y);
+                    }
+                }
                 kill_sidecar(app_handle);
             }
+            _ => {}
         });
 }
 
@@ -418,5 +508,26 @@ fn toggle_pet_window(app: &tauri::AppHandle) {
         } else {
             let _ = win.show();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_position;
+    use serde_json::json;
+
+    #[test]
+    fn window_position_accepts_negative_physical_coordinates() {
+        assert_eq!(
+            window_position(&json!({"x": -1920, "y": 48})),
+            Some((-1920, 48))
+        );
+    }
+
+    #[test]
+    fn window_position_rejects_missing_fractional_or_out_of_range_values() {
+        assert_eq!(window_position(&json!({"x": 1})), None);
+        assert_eq!(window_position(&json!({"x": 1.5, "y": 2})), None);
+        assert_eq!(window_position(&json!({"x": i64::MAX, "y": 2})), None);
     }
 }
