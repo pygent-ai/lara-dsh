@@ -71,6 +71,24 @@ CASE_ID = "pet"
 # Env name under which dsh's DeepSeek key is handed to pygent, transiently.
 LARA_DSH_KEY_ENV = "LARA_DSH_DEEPSEEK_API_KEY"
 
+
+def _allow_deepseek_effort_none() -> None:
+    """Accept ``output_config.effort="none"`` for the borrowed Messages route.
+
+    DeepSeek's Anthropic-compatible endpoint uses effort ``none`` to turn
+    thinking off, which a fork reply needs because the endpoint rejects a
+    forced ``tool_choice`` while thinking is on. pygent 0.6.6 validates effort
+    against Anthropic's official values, which omit ``none``, so the fork
+    profile would fail before its request is sent.
+    """
+
+    from pygent.llm import anthropic_messages
+
+    anthropic_messages._EFFORT_VALUES.add("none")
+
+
+_allow_deepseek_effort_none()
+
 # Harness-originated messages carry their own framing; the runtime leaves this
 # kind out of the <user-context> wrapper and logs it with origin "automation".
 # Used both for steered mid-turn reports and for report turns of their own.

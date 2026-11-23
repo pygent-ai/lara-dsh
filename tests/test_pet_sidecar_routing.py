@@ -250,3 +250,77 @@ def test_pet_falls_back_when_account_route_has_no_grant(tmp_path: Any, capsys: A
     assert "no signed-in grant" in capsys.readouterr().err
 
 
+def test_fork_effort_none_is_valid_for_the_borrowed_messages_route() -> None:
+    """DeepSeek uses effort "none" to turn thinking off for a forced speak call."""
+    from pygent.agent.pygent_v1.runtime.realtime.fork_reasoning import (
+        fork_model_profiles,
+    )
+    from pygent.core import Context, UserMessage
+    from pygent.llm import (
+        AnthropicMessagesAdapter,
+        GenerationConfig,
+        ModelConfig,
+        ModelProviderRequest,
+    )
+
+    config = ModelConfig.from_mapping(
+        {
+            "connections": {
+                "dsh": {
+                    "provider": "dsh",
+                    "credential": {"none": True},
+                    "protocols": {
+                        "anthropic_messages": {
+                            "base_url": "https://api.deepseek.com/anthropic"
+                        }
+                    },
+                }
+            },
+            "models": {
+                "deepseek-chat": {
+                    "connection": "dsh",
+                    "model_id": "deepseek-chat",
+                    "protocol": "anthropic_messages",
+                    "capabilities": {
+                        "modalities": {"input": ["text"], "output": ["text"]},
+                        "streaming": {"output": ["text"]},
+                        "tools": {
+                            "call": True,
+                            "choice": ["none", "auto", "required", "named"],
+                            "parallel": True,
+                        },
+                        "structured_output": {
+                            "json_object": True,
+                            "json_schema": False,
+                        },
+                        "reasoning": {
+                            "supported": True,
+                            "controllable": True,
+                        },
+                        "limits": {
+                            "context_tokens": 128_000,
+                            "max_output_tokens": 32_000,
+                        },
+                    },
+                }
+            },
+            "model_groups": {"dsh": {"models": ["deepseek-chat"]}},
+        }
+    )
+    fork = fork_model_profiles(config, "dsh", "none")["deepseek-chat"]
+    assert fork.decisions[0].applied
+    assert fork.decisions[0].reason == "reasoning_effort_applied"
+
+    spec = fork.models[0].spec
+    adapter = AnthropicMessagesAdapter()
+    adapter.validate_model(spec)
+    body = adapter.build_request(
+        ModelProviderRequest(
+            model_key="deepseek-chat",
+            model=spec,
+            message=UserMessage(content="hi"),
+            context=Context(),
+            generation=GenerationConfig(max_output_tokens=1024),
+        )
+    )
+    assert body.to_dict()["output_config"] == {"effort": "none"}
