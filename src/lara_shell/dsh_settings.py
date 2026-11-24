@@ -128,7 +128,11 @@ _STATIC_CAPABILITIES: dict[str, Any] = {
     "streaming": {"output": ["text"]},
     "tools": {"call": True, "choice": ["none", "auto", "required", "named"], "parallel": True},
     "structured_output": {"json_object": True, "json_schema": False},
-    "reasoning": {"supported": True, "controllable": True},
+    # disable_supported lets the realtime fork express effort "none" as
+    # thinking {"type": "disabled"} on the Messages route (verified against
+    # DeepSeek's endpoint); without it pygent degrades "none" to "low", which
+    # the endpoint rejects under the fork's forced tool_choice.
+    "reasoning": {"supported": True, "controllable": True, "disable_supported": True},
     "limits": {"context_tokens": 128000, "max_output_tokens": 32000},
 }
 
@@ -143,7 +147,9 @@ def _capabilities_for(model: str, protocol: str) -> dict[str, Any]:
     the limits; an undeclared output ceiling keeps the route's known 32k
     budget (Anthropic requires max_output_tokens on every request)."""
     entry = _MODEL_CAPABILITIES.models.get(("deepseek", model, protocol))
-    capabilities = (
+    # pygent >= 0.6.7 types to_mapping() as dict[str, object]; the Any
+    # annotation keeps the nested limits fill below type-clean.
+    capabilities: dict[str, Any] = (
         entry.to_mapping() if entry is not None else copy.deepcopy(_STATIC_CAPABILITIES)
     )
     if capabilities["limits"]["max_output_tokens"] is None:

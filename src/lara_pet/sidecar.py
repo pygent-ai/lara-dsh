@@ -71,24 +71,6 @@ CASE_ID = "pet"
 # Env name under which dsh's DeepSeek key is handed to pygent, transiently.
 LARA_DSH_KEY_ENV = "LARA_DSH_DEEPSEEK_API_KEY"
 
-
-def _allow_deepseek_effort_none() -> None:
-    """Accept ``output_config.effort="none"`` for the borrowed Messages route.
-
-    DeepSeek's Anthropic-compatible endpoint uses effort ``none`` to turn
-    thinking off, which a fork reply needs because the endpoint rejects a
-    forced ``tool_choice`` while thinking is on. pygent 0.6.6 validates effort
-    against Anthropic's official values, which omit ``none``, so the fork
-    profile would fail before its request is sent.
-    """
-
-    from pygent.llm import anthropic_messages
-
-    anthropic_messages._EFFORT_VALUES.add("none")
-
-
-_allow_deepseek_effort_none()
-
 # Harness-originated messages carry their own framing; the runtime leaves this
 # kind out of the <user-context> wrapper and logs it with origin "automation".
 # Used both for steered mid-turn reports and for report turns of their own.
@@ -128,6 +110,90 @@ def resolve_session(manager: SessionManager) -> str:
     return PYGENT_SAYS_SESSION_MODE
 
 
+def seal_interrupted_tool_calls(manager: SessionManager, session_id: str) -> int:
+    """Pair cancelled tool results with calls a hard kill left unanswered.
+
+    pygent records the tool batch an execution-level cancel killed
+    (``_checkpoint_cancelled_batch``), but a killed process skips that path:
+    the transcript keeps assistant ``tool_calls`` with no paired tool
+    message, and every later turn replays that dangling tail — a shape
+    strict providers reject with HTTP 400 ("An assistant message with
+    'tool_calls' must be followed by tool messages"), wedging the session
+    until it is repaired. Runs once at sidecar boot, before any turn can
+    replay the tail; idempotent (nothing dangling, no-op).
+    """
+    session = manager.load(session_id)
+    answered = {
+        result.get("call_id")
+        for message in session.history
+        if message.get("role") == "tool"
+        for result in message.get("results") or []
+    }
+    awaiting: dict[str, str] = {}
+    rebuilt: list[dict] = []
+    sealed = 0
+
+    def _seal_message() -> dict:
+        return {
+            "content": "",
+            "data": {},
+            "kind": None,
+            "metadata": {},
+            "role": "tool",
+            "slot": None,
+            "results": [
+                {
+                    "call_id": call_id,
+                    "name": name,
+                    "status": "cancelled",
+                    "error_kind": "cancelled",
+                    "error_code": "interrupted_by_execution_cancel",
+                    "error": None,
+                    "retryable": False,
+                    # The kill makes "did the tool run?" unknowable; the model
+                    # may re-run the call (bash reruns fine, speak is benign).
+                    "side_effect_committed": None,
+                    "tool_id": None,
+                    "tool_version": None,
+                    "output": "",
+                    "content": [],
+                    "missing_capabilities": [],
+                }
+                for call_id, name in awaiting.items()
+            ],
+        }
+
+    for message in session.history:
+        role = message.get("role")
+        if role == "tool":
+            for result in message.get("results") or []:
+                awaiting.pop(result.get("call_id"), None)
+        else:
+            if awaiting:
+                dangling = {k: v for k, v in awaiting.items() if k not in answered}
+                if dangling:
+                    rebuilt.append(_seal_message())
+                    sealed += 1
+                awaiting = {}
+            rebuilt.append(message)
+            if role == "assistant":
+                for call in message.get("tool_calls") or []:
+                    if call.get("call_id") not in answered:
+                        awaiting[call["call_id"]] = call.get("name") or "?"
+    if awaiting:
+        dangling = {k: v for k, v in awaiting.items() if k not in answered}
+        if dangling:
+            awaiting = dangling
+            rebuilt.append(_seal_message())
+            sealed += 1
+    if not sealed:
+        return 0
+    session.history = rebuilt
+    manager.save(session)
+    log(f"sealed {sealed} interrupted tool batch(es) in session {session_id}")
+    return sealed
+
+
 class PetSpeakChannel:
     """Runtime → pet bubble. ``deliver`` runs on a runtime worker thread."""
 
@@ -153,8 +219,9 @@ class PetSession:
         # The fork reply forces tool_choice="speak"; DeepSeek's Anthropic
         # endpoint rejects that while thinking is on ("Thinking mode does not
         # support this tool_choice"), which used to drop every message sent
-        # during a running turn. effort "none" turns thinking off for the fork
-        # only (pygent >= 0.6.5 passes it as output_config.effort), trading a
+        # during a running turn. effort "none" turns thinking off for the
+        # fork only; pygent >= 0.6.7 sends it as thinking {"type": "disabled"}
+        # for models whose catalog entry declares disable_supported, trading a
         # little reasoning depth in the one-line ack for a delivered message.
         self.config.realtime_interaction = RealtimeInteractionConfig(
             enabled=True, fork_reasoning_effort="none"
@@ -176,6 +243,7 @@ class PetSession:
         self._apply_lara_model(self.config)
         self.manager = SessionManager(self.config)
         self.session_id = resolve_session(self.manager)
+        seal_interrupted_tool_calls(self.manager, self.session_id)
         self.turn_count = 0
         self._turn_tasks: set[asyncio.Task[None]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None

@@ -262,7 +262,7 @@ def test_pet_clamps_context_budget_to_borrowed_model_window(tmp_path: Any) -> No
         session._apply_lara_model(config)
         assert config.context_window == expected, inherited
         mapping_caps = config.model_config_mapping["models"]["deepseek-flash"]["capabilities"]
-        expected_caps = entry.to_mapping()
+        expected_caps: dict[str, Any] = entry.to_mapping()
         expected_caps["limits"]["max_output_tokens"] = 32_000  # ceiling fill for None
         assert mapping_caps == expected_caps
 
@@ -280,20 +280,20 @@ def test_pet_falls_back_when_account_route_has_no_grant(tmp_path: Any, capsys: A
     assert "no signed-in grant" in capsys.readouterr().err
 
 
-def test_fork_effort_none_is_valid_for_the_borrowed_messages_route() -> None:
-    """DeepSeek uses effort "none" to turn thinking off for a forced speak call."""
-    from pygent.agent.pygent_v1.runtime.realtime.fork_reasoning import (
-        fork_model_profiles,
-    )
-    from pygent.core import Context, UserMessage
-    from pygent.llm import (
-        AnthropicMessagesAdapter,
-        GenerationConfig,
-        ModelConfig,
-        ModelProviderRequest,
-    )
+def _messages_fork_config(*, disable_supported: bool) -> Any:
+    """One dsh Messages-route model, reasoning capabilities as declared.
 
-    config = ModelConfig.from_mapping(
+    ``disable_supported`` mirrors what pygent >= 0.6.7's catalog (deepseek-v4*
+    on anthropic_messages) and dsh_settings' static fallback declare; without
+    it pygent degrades effort "none" to "low", which the endpoint rejects.
+    """
+
+    from pygent.llm import ModelConfig
+
+    reasoning: dict[str, Any] = {"supported": True, "controllable": True}
+    if disable_supported:
+        reasoning["disable_supported"] = True
+    return ModelConfig.from_mapping(
         {
             "connections": {
                 "dsh": {
@@ -323,10 +323,7 @@ def test_fork_effort_none_is_valid_for_the_borrowed_messages_route() -> None:
                             "json_object": True,
                             "json_schema": False,
                         },
-                        "reasoning": {
-                            "supported": True,
-                            "controllable": True,
-                        },
+                        "reasoning": reasoning,
                         "limits": {
                             "context_tokens": 128_000,
                             "max_output_tokens": 32_000,
@@ -337,9 +334,27 @@ def test_fork_effort_none_is_valid_for_the_borrowed_messages_route() -> None:
             "model_groups": {"dsh": {"models": ["deepseek-chat"]}},
         }
     )
+
+
+def test_fork_effort_none_is_valid_for_the_borrowed_messages_route() -> None:
+    """DeepSeek turns thinking off for a forced speak call: pygent >= 0.6.7
+    expresses effort "none" as thinking {"type": "disabled"} when the model
+    declares disable_supported — the wire that keeps the fork deliverable."""
+
+    from pygent.agent.pygent_v1.runtime.realtime.fork_reasoning import (
+        fork_model_profiles,
+    )
+    from pygent.core import Context, UserMessage
+    from pygent.llm import (
+        AnthropicMessagesAdapter,
+        GenerationConfig,
+        ModelProviderRequest,
+    )
+
+    config = _messages_fork_config(disable_supported=True)
     fork = fork_model_profiles(config, "dsh", "none")["deepseek-chat"]
     assert fork.decisions[0].applied
-    assert fork.decisions[0].reason == "reasoning_effort_applied"
+    assert fork.decisions[0].reason == "reasoning_effort_none_applied"
 
     spec = fork.models[0].spec
     adapter = AnthropicMessagesAdapter()
@@ -353,4 +368,41 @@ def test_fork_effort_none_is_valid_for_the_borrowed_messages_route() -> None:
             generation=GenerationConfig(max_output_tokens=1024),
         )
     )
-    assert body.to_dict()["output_config"] == {"effort": "none"}
+    wire = body.to_dict()
+    assert wire["thinking"] == {"type": "disabled"}
+    assert "output_config" not in wire
+
+
+def test_fork_effort_none_degrades_without_disable_support() -> None:
+    """Without disable_supported the fork degrades "none" to the low dial
+    instead of sending a field the endpoint rejects — recorded as a degrade
+    so the routing choice stays auditable."""
+
+    from pygent.agent.pygent_v1.runtime.realtime.fork_reasoning import (
+        fork_model_profiles,
+    )
+    from pygent.core import Context, UserMessage
+    from pygent.llm import (
+        AnthropicMessagesAdapter,
+        GenerationConfig,
+        ModelProviderRequest,
+    )
+
+    config = _messages_fork_config(disable_supported=False)
+    fork = fork_model_profiles(config, "dsh", "none")["deepseek-chat"]
+    assert fork.decisions[0].applied
+    assert fork.decisions[0].reason == "reasoning_effort_none_degraded"
+
+    spec = fork.models[0].spec
+    adapter = AnthropicMessagesAdapter()
+    adapter.validate_model(spec)
+    body = adapter.build_request(
+        ModelProviderRequest(
+            model_key="deepseek-chat",
+            model=spec,
+            message=UserMessage(content="hi"),
+            context=Context(),
+            generation=GenerationConfig(max_output_tokens=1024),
+        )
+    )
+    assert body.to_dict()["output_config"] == {"effort": "low"}

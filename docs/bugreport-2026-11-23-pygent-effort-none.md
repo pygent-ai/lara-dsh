@@ -96,3 +96,18 @@ request body contains `{"output_config": {"effort": "none"}}`.
 
 The workaround reaches into a private pygent set and should be removed once the
 upstream fix lands.
+
+## Resolution (2026-11-24)
+
+Fixed upstream in pygent 0.6.7: `fork_reasoning` now expresses effort `"none"`
+on Anthropic Messages as `thinking: {"type": "disabled"}` for models whose
+catalog entry declares the new `reasoning.disable_supported` capability, and
+degrades `"none"` to the `low` dial (recorded as
+`reasoning_effort_none_degraded`) otherwise. The deepseek-v4* catalog entries
+declare `disable_supported: true`, and `_STATIC_CAPABILITIES`
+(`dsh_settings.py`) carries it for unknown ids. The `_EFFORT_VALUES`
+monkeypatch was removed with the upgrade (`pyproject.toml` pins 0.6.8, which
+additionally fixes fork-request tool pairing); regression tests:
+`tests/test_pet_sidecar_routing.py`
+(`test_fork_effort_none_is_valid_for_the_borrowed_messages_route`,
+`test_fork_effort_none_degrades_without_disable_support`).

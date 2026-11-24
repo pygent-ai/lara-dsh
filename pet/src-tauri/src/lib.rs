@@ -247,11 +247,34 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
 }
 
 fn kill_sidecar(app: &tauri::AppHandle) {
-    if let Ok(mut guard) = app.state::<Sidecar>().child.lock() {
-        if let Some(child) = guard.as_mut() {
-            let _ = child.kill();
+    // Graceful first: dropping stdin gives the sidecar EOF, so its run loop
+    // unwinds through LaraExecutionHost::aclose — which cancels a running
+    // turn and lets pygent seal the in-flight tool batch before the process
+    // dies. A hard kill here would strand an unanswered assistant
+    // tool_calls in the session history, and every later turn would replay
+    // that dangling tail into a strict provider (HTTP 400, wedged session).
+    let state = app.state::<Sidecar>();
+    let stdin = state
+        .stdin
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    drop(stdin);
+    let mut guard = match state.child.lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    let Some(child) = guard.as_mut() else {
+        return;
+    };
+    for _ in 0..30 {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_) => break,
         }
     }
+    let _ = child.kill();
 }
 
 /// Latest webview hit-test answer for the click-through poller: cursor
