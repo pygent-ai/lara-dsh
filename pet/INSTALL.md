@@ -7,8 +7,12 @@ Lara Pet is two parts that share one home directory (`~/.dsh`):
 | **lara** (Python) | Lara's brain (pygent runtime), the `lara` CLI, the resident dsh daemon and the pet sidecar (`lara-pet-sidecar`) | a Python wheel (`lara-<version>-py3-none-any.whl`) |
 | **Lara Pet** (desktop) | the transparent always-on-top pet window, global hotkey, speech bubbles | a Windows installer (`Lara Pet_<version>_x64-setup.exe`) |
 
-The desktop app finds the sidecar on `PATH` (or via `LARA_PET_SIDECAR`); it does
-not bundle Python. Install the wheel first.
+The desktop app resolves the sidecar in this order: `LARA_PET_SIDECAR`, the
+`lara-dsh` package's own `bin/lara-pet-sidecar.exe` (a frozen, Python-free
+build), the wheel's console script on `PATH`, the dev checkout's venv. Install
+the wheel for the `lara` CLI in your own shell; the bundled copy is what runs
+inside the pet unless `LARA_PET_SIDECAR` points elsewhere — so refreshing the
+wheel alone does not update an installed pet (see the update flow below).
 
 ## 0. The dsh-plugin way (one command, preferred)
 
@@ -28,6 +32,39 @@ shell.)
 
 Build the package locally with `uv run python scripts/build_npm_package.py`
 (see the script's docstring for the two build steps it expects).
+
+### Updating an installed pet (rebuild + reinstall)
+
+The pet keeps running the **bundled** sidecar, so refreshing the wheel is not
+enough — rebuild the frozen executables and reinstall the package:
+
+```powershell
+# 1. freeze the sidecar from the current tree; VENV_SITE must point at the
+#    project venv so PyInstaller collects pygent + lara from it
+$env:VENV_SITE = "E:\Projects\lara-dsh\.venv\Lib\site-packages"
+uv run --with pyinstaller pyinstaller pet/sidecar-freeze.spec `
+      --noconfirm --distpath .tmp/freeze --workpath .tmp/freeze/_build
+
+# 2. pet UI unchanged? skip cargo. Assemble the npm package from
+#    .tmp/freeze exes + pet/src-tauri/target/release/lara-pet.exe
+uv run python scripts/build_npm_package.py
+
+# 3. close the running pet first — the process locks the bin/ exes — then
+#    reinstall into dsh's web profile
+dsh plugin --profile web add file:E:\Projects\lara-dsh\dist\npm\lara-dsh
+
+# 4. restart the dsh desktop; the plugin respawns the pet on the new sidecar
+```
+
+Gotchas seen in the field:
+
+- `dsh plugin add` shells out to **pnpm**; it must be on the `PATH` of the
+  shell that runs dsh. `npm i -g pnpm` lands wherever `npm prefix -g` points —
+  verify with `pnpm --version` if dsh reports pnpm "not found".
+- The deployed sidecar announces itself in `<lara root>/pet/sidecar.log`; the
+  `context budget <n> tokens (model declares <n>)` line appears only on builds
+  since the catalog-based capability lookup. If the log stays empty, the pet
+  spawned nothing — check the resolution order above.
 
 ## 1. Install the Python side
 
