@@ -285,6 +285,16 @@ class PetSession:
             alias=config.resolved_agent.alias if config.resolved_agent is not None else "default",
             default_model_group="dsh",
         )
+        # pygent 0.6.5 never reads the declared context limit at runtime:
+        # compression and eternal extraction budget off RunConfig.context_window
+        # alone. Clamp the inherited budget to the borrowed model's declared
+        # window so compaction fires before the real API window overflows.
+        limits = config.model_config.models[model].spec.capabilities.limits
+        if limits.context_tokens:
+            config.context_window = min(
+                v for v in (config.context_window, limits.context_tokens) if v
+            )
+            log(f"context budget {config.context_window} tokens (model declares {limits.context_tokens})")
 
     def _credential_environ(self):
         key = None if self._lara_model is None else self._lara_model.get("key")

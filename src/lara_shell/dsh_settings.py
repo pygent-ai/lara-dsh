@@ -23,11 +23,14 @@ shell's exported credential store is kept away from dsh (see
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+from pygent.llm import ModelCapabilityCatalog
 
 from lara_shell import dsh_home
 from lara_shell.config.loader import load_mapping_file
@@ -111,18 +114,41 @@ def build_model_mapping(
                 "connection": "dsh",
                 "model_id": model,
                 "protocol": protocol,
-                "capabilities": {
-                    "modalities": {"input": ["text"], "output": ["text"]},
-                    "streaming": {"output": ["text"]},
-                    "tools": {"call": True, "choice": ["none", "auto", "required", "named"], "parallel": True},
-                    "structured_output": {"json_object": True, "json_schema": False},
-                    "reasoning": {"supported": True, "controllable": True},
-                    "limits": {"context_tokens": 128000, "max_output_tokens": 32000},
-                },
+                "capabilities": _capabilities_for(model, protocol),
             }
         },
         "model_groups": {"dsh": {"models": [model]}},
     }
+
+
+# Fallback for model ids pygent's catalog does not list; bounded so an
+# unknown id still gets a safe compression budget and output ceiling.
+_STATIC_CAPABILITIES: dict[str, Any] = {
+    "modalities": {"input": ["text"], "output": ["text"]},
+    "streaming": {"output": ["text"]},
+    "tools": {"call": True, "choice": ["none", "auto", "required", "named"], "parallel": True},
+    "structured_output": {"json_object": True, "json_schema": False},
+    "reasoning": {"supported": True, "controllable": True},
+    "limits": {"context_tokens": 128000, "max_output_tokens": 32000},
+}
+
+_MODEL_CAPABILITIES = ModelCapabilityCatalog.builtin()
+
+
+def _capabilities_for(model: str, protocol: str) -> dict[str, Any]:
+    """Declared capabilities from pygent's per-model catalog, keyed by
+    provider/model/protocol; bounded statics for ids it does not list. pygent
+    never reads the catalog at runtime (it budgets compression off
+    ``RunConfig.context_window`` alone), so the borrowed mapping must carry
+    the limits; an undeclared output ceiling keeps the route's known 32k
+    budget (Anthropic requires max_output_tokens on every request)."""
+    entry = _MODEL_CAPABILITIES.models.get(("deepseek", model, protocol))
+    capabilities = (
+        entry.to_mapping() if entry is not None else copy.deepcopy(_STATIC_CAPABILITIES)
+    )
+    if capabilities["limits"]["max_output_tokens"] is None:
+        capabilities["limits"]["max_output_tokens"] = 32000
+    return capabilities
 
 
 def migrate_endpoint_to_dsh_env(user_lara_root: str | Path, dsh_home_override: str | Path | None = None) -> bool:

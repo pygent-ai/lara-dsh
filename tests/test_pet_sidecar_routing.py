@@ -12,7 +12,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from lara_shell.dsh_daemon import DshEvent, DshEventBatch
+from lara_shell.dsh_settings import build_model_mapping
 from lara_pet import sidecar
+from pygent.llm import ModelCapabilityCatalog
 from pygent.agent.react_projection_operations import (
     REACT_PROJECTION_OPERATION_KIND,
     StandaloneUserMessage,
@@ -204,7 +206,7 @@ def test_pet_rides_dsh_official_api_key_route(tmp_path: Any) -> None:
     session = _model_session(tmp_path, _model_route())
     config = SimpleNamespace(
         model_config_mapping=None, model_config=None, model_configuration_status=None,
-        model_configuration_error="unset", resolved_agent=None,
+        model_configuration_error="unset", resolved_agent=None, context_window=None,
     )
     session._lara_model = session._borrow_dsh_model()
     session._apply_lara_model(config)
@@ -223,7 +225,7 @@ def test_pet_rides_dsh_account_route_with_grant_token(tmp_path: Any) -> None:
     session = _model_session(tmp_path, _model_route(provider="deepseek-account", model="deepseek-chat", key=None, account_signed_in=True, account_token="grant-token-1"))
     config = SimpleNamespace(
         model_config_mapping=None, model_config=None, model_configuration_status=None,
-        model_configuration_error=None, resolved_agent=None,
+        model_configuration_error=None, resolved_agent=None, context_window=None,
     )
     session._lara_model = session._borrow_dsh_model()
     session._apply_lara_model(config)
@@ -232,9 +234,37 @@ def test_pet_rides_dsh_account_route_with_grant_token(tmp_path: Any) -> None:
     assert conn["protocols"]["anthropic_messages"]["base_url"] == "https://api.deepseek.com/anthropic"
     assert conn["headers"] == {"x-dsh-auth-token": "grant-token-1"}
     assert config.model_config_mapping["models"]["deepseek-chat"]["protocol"] == "anthropic_messages"
+    # deepseek-chat has no catalog entry for this protocol: bounded static fallback
+    assert config.model_config_mapping["models"]["deepseek-chat"]["capabilities"]["limits"] == {
+        "context_tokens": 128_000, "max_output_tokens": 32_000,
+    }
     # the account route carries no API key: the credential resolves to nothing
     environ = session._credential_environ()
     assert not environ.transient
+
+
+def test_pet_clamps_context_budget_to_borrowed_model_window(tmp_path: Any) -> None:
+    """pygent budgets compression and eternal extraction off
+    RunConfig.context_window alone; the borrowed model's catalog-declared
+    window must bound it (deepseek-flash declares 1M), and the mapping must
+    carry the catalog's declaration verbatim."""
+    entry = ModelCapabilityCatalog.builtin().models[
+        ("deepseek", "deepseek-flash", "openai_chat_completions")
+    ]
+    assert entry.limits.context_tokens == 1_000_000
+    for inherited, expected in ((None, 1_000_000), (1_000_000, 1_000_000), (64_000, 64_000)):
+        session = _model_session(tmp_path, _model_route())
+        session._lara_model = session._borrow_dsh_model()
+        config = SimpleNamespace(
+            model_config_mapping=None, model_config=None, model_configuration_status=None,
+            model_configuration_error=None, resolved_agent=None, context_window=inherited,
+        )
+        session._apply_lara_model(config)
+        assert config.context_window == expected, inherited
+        mapping_caps = config.model_config_mapping["models"]["deepseek-flash"]["capabilities"]
+        expected_caps = entry.to_mapping()
+        expected_caps["limits"]["max_output_tokens"] = 32_000  # ceiling fill for None
+        assert mapping_caps == expected_caps
 
 
 def test_pet_falls_back_when_account_route_has_no_grant(tmp_path: Any, capsys: Any) -> None:
