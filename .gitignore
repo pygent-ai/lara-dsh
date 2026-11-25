@@ -8,3 +8,7 @@ build/
 node_modules/
 pet/src-tauri/target/
 pet/src-tauri/gen/
+
+# local runtime artifacts (never publish)
+.lara/
+.tmp/
