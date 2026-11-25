@@ -1,6 +1,7 @@
 [package]
 name = "lara-pet"
-version = "0.1.0"
+version = "0.0.1"
+license = "Apache-2.0"
 description = "Lara desktop pet: pixel bunny frontend for the lara agent"
 edition = "2021"
 
