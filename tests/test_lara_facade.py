@@ -186,6 +186,28 @@ async def test_start_run_history_and_stop(configure) -> None:
         await facade.run("after stop")
 
 
+async def test_reopened_realtime_session_delivers_a_new_message(configure) -> None:
+    facade, invoker = configure(
+        lambda _message, _context: AIMessage(content="reply"), realtime=True
+    )
+
+    await facade.start()
+    try:
+        first = await facade.run("first message")
+    finally:
+        await facade.stop()
+
+    invoker.requests.clear()
+    await facade.start()
+    try:
+        second = await facade.run("second message")
+        assert second.context["session_id"] == first.context["session_id"]
+        assert second.context["execution_id"] != first.context["execution_id"]
+        assert invoker.requests
+    finally:
+        await facade.stop()
+
+
 async def test_realtime_switch_adds_speak_tool(configure) -> None:
     facade, invoker = configure(
         lambda _message, _context: AIMessage(content="plain reply"),

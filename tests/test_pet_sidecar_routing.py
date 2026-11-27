@@ -150,12 +150,8 @@ def test_pet_speak_channel_delivers_native_payload(capsys) -> None:
     """The 0.6.3 native deliver(text, attachments) reaches the pet as one speak event."""
     from pathlib import Path
 
-    async def drive() -> bool:
-        loop = asyncio.get_running_loop()
-        channel = sidecar.PetSpeakChannel(loop)
-        return channel.deliver("做好了，文件给你。", [Path("E:/ws/out/report.pdf")])
-
-    delivered = asyncio.run(drive())
+    channel = sidecar.PetSpeakChannel()
+    delivered = channel.deliver("做好了，文件给你。", [Path("E:/ws/out/report.pdf")])
     assert delivered is True
     line = [l for l in capsys.readouterr().out.splitlines() if l.strip()][0]
     event = json.loads(line)
@@ -164,6 +160,27 @@ def test_pet_speak_channel_delivers_native_payload(capsys) -> None:
         "text": "做好了，文件给你。",
         "attachments": [str(Path("E:/ws/out/report.pdf"))],  # resolved paths, passed through
     }
+
+
+def test_fork_reply_is_rendered_once_via_the_speak_channel(capsys) -> None:
+    session, _ = _session(None)
+    session._lara_model = object()
+    session.config = SimpleNamespace()
+    session.manager = object()
+    session.session_id = "pet"
+    channel = sidecar.PetSpeakChannel()
+
+    async def deliver_user_message(**_kwargs: Any) -> SimpleNamespace:
+        channel.deliver("reply", ())
+        return SimpleNamespace(
+            mode="interrupt", outcome=SimpleNamespace(speak_args=None, text="reply")
+        )
+
+    host = SimpleNamespace(deliver_user_message=deliver_user_message)
+    asyncio.run(session._deliver(host, "hello"))
+    assert [json.loads(line) for line in capsys.readouterr().out.splitlines()] == [
+        {"type": "speak", "text": "reply", "attachments": []}
+    ]
 
 
 def _model_session(tmp: Any, route: dict[str, Any] | None, lara_model: str = ""):

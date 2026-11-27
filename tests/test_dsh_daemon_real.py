@@ -39,7 +39,7 @@ def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) 
     project.mkdir()
     events: list[DshEvent | DshEventBatch] = []
     config = real_gateway_config(tmp_path / "dsh-home", workspace)
-    with DshDaemon(config, state_dir=tmp_path / "root", on_event=events.append):
+    with DshDaemon(config, state_dir=tmp_path / "root", on_event=events.append, batch_window_seconds=0):
         with DshDaemonClient.connect(tmp_path / "root") as client:
             sent = client.send("在当前目录创建 d.txt 内容 DAEMON，完成后只回答：done", cwd=str(project))
             view, timed_out = client.wait(sent["session_id"], timeout=180)

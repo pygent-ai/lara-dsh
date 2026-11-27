@@ -57,7 +57,6 @@ class FakeGateway:
         self.started = False
         self.closed = False
         self.submits: list[tuple[str, str]] = []
-        self.cwd_sets: list[tuple[str, str]] = []
         self.creates: list[tuple[str, str]] = []
         self.resumes: list[str] = []
         self.inventory: list[DshSessionEntry] = []
@@ -79,10 +78,6 @@ class FakeGateway:
             self.create_session(session_id, cwd)
         self.submits.append((session_id, prompt))
         return f"msg-{len(self.submits)}"
-
-    def set_working_directory(self, session_id: str, path: str) -> str:
-        self.cwd_sets.append((session_id, path))
-        return path
 
     def resume(self, session_id: str) -> None:
         self.resumes.append(session_id)
@@ -208,19 +203,20 @@ def test_send_wait_and_events_round_trip_over_loopback(tmp_path: Path, fake_gate
     with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append, batch_window_seconds=0) as daemon:
         gateway = fake_gateway[0]
         with DshDaemonClient.connect(tmp_path / "root") as client:
-            sent = client.send("做点事", cwd="E:/proj")
+            project = str(tmp_path / "project")
+            sent = client.send("做点事", cwd=project)
+            assert sent["cwd"] == project
             assert sent["created"] is True
             session_id = sent["session_id"]
             assert session_id.startswith("dsh-")
             assert gateway.submits == [(session_id, "做点事")]
             # A new session is rooted at cwd (sandbox boundary), not merely cd'd.
-            assert gateway.creates == [(session_id, "E:/proj")]
-            assert gateway.cwd_sets == []
+            assert gateway.creates == [(session_id, project)]
 
             # Queued but no notification yet: the daemon already reports it
             # running, even though the inventory still says the fresh session is idle.
             view = client.status(session_id)
-            assert view is not None and view.status == "running" and view.cwd == "E:/proj"
+            assert view is not None and view.status == "running" and view.cwd == project
             assert view.running_seconds is not None and view.running_seconds >= 0
 
             # wait() with a timeout returns timed_out while the turn is open.
@@ -243,11 +239,9 @@ def test_send_wait_and_events_round_trip_over_loopback(tmp_path: Path, fake_gate
             # Continue the same session: explicit id, no cwd change.
             again = client.send("再来", session_id=session_id)
             assert again["created"] is False
-            assert gateway.cwd_sets == []
-            # An existing session given a cwd only changes its effective directory.
-            client.send("去那边", session_id=session_id, cwd="E:/proj/sub")
-            assert gateway.cwd_sets == [(session_id, "E:/proj/sub")]
-            assert gateway.creates == [(session_id, "E:/proj")]
+            with pytest.raises(RuntimeError, match="only to new sessions"):
+                client.send("去那边", session_id=session_id, cwd=tmp_path / "other")
+            assert gateway.creates == [(session_id, project)]
             gateway.finish_turn(session_id, "ok")
             view, _ = client.wait(session_id, timeout=5)
             assert view is not None and view.finish_reason == "completed" and view.reply == "ok"
@@ -273,7 +267,7 @@ def test_send_wait_and_events_round_trip_over_loopback(tmp_path: Path, fake_gate
     assert single[0].reply == "搞定了"
     envelope = single[0].envelope()
     assert envelope.startswith('<dsh-event kind="turn_finished">')
-    assert f'<session id="{session_id}" title="做点事" finish_reason="completed" />' in envelope
+    assert f'<session id="{session_id}" title="做点事" cwd="{project}" finish_reason="completed" />' in envelope
     assert "<reply>搞定了</reply>" in envelope
     assert "<error>" not in envelope
     assert "<error>boom</error>" in single[2].envelope()
@@ -351,9 +345,9 @@ def test_concurrent_clients_are_served(tmp_path: Path, fake_gateway: list[FakeGa
 
 def test_settings_default_without_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DSH_HOME", str(tmp_path / "dsh"))
-    settings = load_dsh_settings(tmp_path, environ={})
+    settings = load_dsh_settings(environ={})
     assert settings.dsh_home == (tmp_path / "dsh").resolve()  # dsh's own home, shared with its front ends
-    assert settings.workspace == tmp_path / "pet"
+    assert settings.workspace == tmp_path / "dsh" / "lara" / "pet"
     assert settings.provider == "deepseek-official"
     assert settings.model == "deepseek-v4-flash"
     # Unset lara_model must not shadow dsh's own route model: the pet follows
@@ -367,14 +361,15 @@ def test_settings_default_without_files(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_settings_file_and_environment_layers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DSH_HOME", str(tmp_path))
-    (tmp_path / "dsh.yaml").write_text(
+    (tmp_path / "lara").mkdir()
+    (tmp_path / "lara" / "dsh.yaml").write_text(
         "home: dsh-x\nprovider: deepseek-official\nmodel: deepseek-v4-flash\n"
         "base_url: https://az.example/v1\nworkspace: E:/work\nlara_model: deepseek-v4-pro\n",
         encoding="utf-8",
     )
     settings = load_dsh_settings(tmp_path, environ={})
     assert settings.dsh_home == tmp_path.resolve()  # a stale `home` key in the file is ignored
-    assert settings.workspace == Path("E:/work")
+    assert settings.workspace == Path("E:/work").resolve()
     assert settings.base_url == "https://az.example/v1"
     assert settings.lara_model == "deepseek-v4-pro"
     assert settings.gateway_config().base_url == "https://az.example/v1"
@@ -391,7 +386,8 @@ def test_settings_file_and_environment_layers(tmp_path: Path, monkeypatch: pytes
 def test_lara_model_mapping_points_pygent_at_dsh_route(tmp_path: Path) -> None:
     from pygent.llm import ModelConfig
 
-    (tmp_path / "dsh.yaml").write_text("base_url: https://az.example/v1\nmodel: deepseek-v4-flash\n", encoding="utf-8")
+    (tmp_path / "lara").mkdir()
+    (tmp_path / "lara" / "dsh.yaml").write_text("base_url: https://az.example/v1\nmodel: deepseek-v4-flash\n", encoding="utf-8")
     mapping = load_dsh_settings(tmp_path, environ={}).lara_model_mapping("LARA_DSH_DEEPSEEK_API_KEY")
     assert mapping["connections"]["dsh"]["credential"]["env"] == "LARA_DSH_DEEPSEEK_API_KEY"
     assert mapping["connections"]["dsh"]["protocols"]["openai_chat_completions"]["base_url"] == "https://az.example/v1"
@@ -556,7 +552,7 @@ def test_simultaneous_finished_reports_are_batched(tmp_path: Path, fake_gateway:
         assert [e.session_id for e in batch.events] == ["s1", "s2"]
         envelope = batch.envelope()
         assert envelope.startswith('<dsh-events count="2">')
-        assert '<session id="s1" title="任务A" finish_reason="completed" />' in envelope
+        assert f'<session id="s1" title="任务A" cwd="{tmp_path / "ws"}" finish_reason="completed" />' in envelope
         assert "<reply>B 做完了</reply>" in envelope
         assert batch.context_text().count("dsh event: turn_finished") == 2
 

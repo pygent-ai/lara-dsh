@@ -24,12 +24,13 @@ import json
 import os
 import queue
 import socket
+import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -37,7 +38,7 @@ from deepseek_harness import DeepSeekHarness, DeepSeekHarnessConfig, RunResult
 from deepseek_harness.client import NotificationSubscription, UserQuestionHandler
 from deepseek_harness.models import IncomingRequest, Notification, UserQuestionRequest
 
-from lara_shell import user_lara_root
+from lara_shell import default_pet_workspace, dsh_home
 
 DEFAULT_DSH_PROVIDER = "deepseek-official"
 DEFAULT_DSH_MODEL = "deepseek-v4-flash"
@@ -60,6 +61,21 @@ class DshGatewayConfig:
     base_url: str | None = None
     runtime_cwd: Path | None = None
     profile: str = "sdk"
+    plugin_endpoint: PluginEndpoint | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dsh_home", dsh_home(self.dsh_home))
+        object.__setattr__(self, "cwd", self.cwd.expanduser().resolve())
+        if self.runtime_cwd is not None:
+            object.__setattr__(self, "runtime_cwd", self.runtime_cwd.expanduser().resolve())
+
+    def prepare_workspace(self, cwd: str | Path | None = None) -> Path:
+        workspace = self.cwd if cwd is None else Path(cwd)
+        if not workspace.is_absolute():
+            raise ValueError("workspace must be an absolute path")
+        if workspace == default_pet_workspace(self.dsh_home):
+            workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
 
     @classmethod
     def from_env(cls, dsh_home: str | Path, cwd: str | Path) -> "DshGatewayConfig":
@@ -195,7 +211,10 @@ class SessionControlChannel:
         sock.close()
         self._fail_pending("session control channel closed")
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def call(
+        self, method: str, params: dict[str, Any] | None = None, *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
         message: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             message["params"] = params
@@ -211,10 +230,11 @@ class SessionControlChannel:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
             raise
-        if not pending.done.wait(self._timeout):
+        timeout = self._timeout if timeout is None else timeout
+        if not pending.done.wait(timeout):
             with self._pending_lock:
                 self._pending.pop(request_id, None)
-            raise SessionControlError(f"{method}: no response from lara-session-control within {self._timeout}s")
+            raise SessionControlError(f"{method}: no response from lara-session-control within {timeout}s")
         if pending.error is not None:
             raise SessionControlError(f"{method}: {pending.error}")
         result = pending.result
@@ -391,10 +411,6 @@ class DshRuntimeGateway:
         """Restore a persisted session into the runtime without prompting it."""
         raise NotImplementedError
 
-    def set_working_directory(self, session_id: str, path: str | Path) -> str:
-        """Point a session at ``path``; return the effective cwd."""
-        raise NotImplementedError
-
     # -- events and runtime→host requests ----------------------------------------
 
     def notifications(self) -> "EventSubscription":
@@ -524,20 +540,21 @@ class DshGateway(DshRuntimeGateway):
     def start(self) -> None:
         if self._harness is not None:
             return
+        workspace = self._config.prepare_workspace()
         # The compiled dsh runtime extracts its embedded node_modules to
         # "<runtime subprocess cwd drive>:\snapshot\node\..." and loads native
         # modules from there. Keep that extraction on a stable, always-
         # writable drive instead of the agent workspace's drive: with an
         # E:-drive workspace the extraction lands on E:\snapshot and every
         # turn fails with a koffi.node load error.
-        runtime_cwd = self._config.runtime_cwd or (user_lara_root() / "dsh-runtime-cwd")
+        runtime_cwd = self._config.runtime_cwd or Path(tempfile.gettempdir()) / "lara" / "dsh-runtime"
         runtime_cwd.mkdir(parents=True, exist_ok=True)
         self._config.dsh_home.mkdir(parents=True, exist_ok=True)
         control_port = _free_loopback_port()
         config = DeepSeekHarnessConfig(
             provider=self._config.provider,
             model=self._config.model,
-            cwd=str(self._config.cwd),
+            cwd=str(workspace),
             runtime_cwd=str(runtime_cwd),
             dsh_home=str(self._config.dsh_home),
             profile=self._config.profile,
@@ -606,7 +623,7 @@ class DshGateway(DshRuntimeGateway):
         self.start()
         self.control.call(
             "lara/session/create",
-            {"sessionId": session_id, "cwd": str(Path(cwd).resolve())},
+            {"sessionId": session_id, "cwd": str(self._config.prepare_workspace(cwd))},
         )
         self.resume(session_id)
         entry = self.stat_session(session_id)
@@ -619,10 +636,6 @@ class DshGateway(DshRuntimeGateway):
     def respond(self, request_id: str | int, result: dict[str, Any]) -> None:
         assert self._harness is not None
         self._harness.client.respond(request_id, result)
-
-    def set_working_directory(self, session_id: str, path: str | Path) -> str:
-        """Point a session (creating it when unknown) at ``path``; return the effective cwd."""
-        return self._client().set_working_directory(session_id, str(path))
 
     def notifications(self) -> EventSubscription:
         return _SdkEventSubscription(self._client().subscribe_notifications())
@@ -673,6 +686,16 @@ class PluginEndpoint:
     version: str | None
     attach: bool = False
 
+    def matches(self, identity: dict[str, Any], home: Path) -> bool:
+        reported_home = identity.get("home")
+        return (
+            identity.get("name") == "lara-session-control"
+            and self.pid is not None
+            and identity.get("pid") == self.pid
+            and isinstance(reported_home, str)
+            and Path(reported_home) == home
+        )
+
     @classmethod
     def from_file(cls, dsh_home: Path) -> "PluginEndpoint | None":
         path = Path(dsh_home) / "lara" / PLUGIN_ENDPOINT_FILENAME
@@ -689,9 +712,9 @@ class PluginEndpoint:
         )
 
 
-def probe_plugin_endpoint(dsh_home: Path, *, deadline_seconds: float = 0.5) -> PluginEndpoint | None:
+def probe_plugin_endpoint(home: Path, *, deadline_seconds: float = 0.5) -> PluginEndpoint | None:
     """The published plugin endpoint if a dsh is answering on it, else None."""
-    endpoint = PluginEndpoint.from_file(dsh_home)
+    endpoint = PluginEndpoint.from_file(home)
     if endpoint is None:
         return None
     probe = SessionControlChannel(endpoint.port, timeout=2.0)
@@ -702,7 +725,7 @@ def probe_plugin_endpoint(dsh_home: Path, *, deadline_seconds: float = 0.5) -> P
         return None
     finally:
         probe.close()
-    if pong.get("name") != "lara-session-control":
+    if not endpoint.matches(pong, home):
         return None
     return PluginEndpoint(
         port=endpoint.port,
@@ -744,20 +767,24 @@ class AttachedDshGateway(DshRuntimeGateway):
     def start(self) -> None:
         if self._control is not None:
             return
-        endpoint = probe_plugin_endpoint(self._config.dsh_home)
+        endpoint = self._config.plugin_endpoint or probe_plugin_endpoint(self._config.dsh_home)
         if endpoint is None:
             raise SessionControlError(
                 f"no running dsh publishes the Lara plugin under {self._config.dsh_home / 'lara' / PLUGIN_ENDPOINT_FILENAME}"
             )
-        if not endpoint.attach:
-            raise SessionControlError(
-                "the running dsh has the Lara plugin but no sessionController (sdk profile); "
-                "install the plugin into the web profile to attach"
-            )
         control = SessionControlChannel(endpoint.port, on_message=self._on_message)
         control.connect(deadline_seconds=2.0)
+        try:
+            identity = control.call("lara/ping")
+            if not endpoint.matches(identity, self._config.dsh_home):
+                raise SessionControlError("the dsh endpoint does not match the selected runtime")
+            if not identity.get("attach"):
+                raise SessionControlError("the selected dsh profile has no sessionController")
+        except BaseException:
+            control.close()
+            raise
         self._control = control
-        self.endpoint = endpoint
+        self.endpoint = replace(endpoint, version=str(identity.get("version") or ""), attach=True)
         if self._approval_requests or self._on_user_question is not None:
             self._subscribe()
 
@@ -782,7 +809,7 @@ class AttachedDshGateway(DshRuntimeGateway):
         # lara/session/select-model is the explicit session-local override.
         params: dict[str, Any] = {"text": prompt, "sessionId": session_id}
         if cwd is not None:
-            params["cwd"] = str(Path(cwd).resolve())
+            params["cwd"] = str(self._config.prepare_workspace(cwd))
         return str(self.control.call("lara/session/prompt", params)["messageId"])
 
     def select_model(self, session_id: str, provider: str, model: str) -> None:
@@ -801,25 +828,14 @@ class AttachedDshGateway(DshRuntimeGateway):
         self.start()
         self.control.call("lara/session/resume", {"sessionId": session_id})
 
-    def set_working_directory(self, session_id: str, path: str | Path) -> str:
-        """A session's directory is fixed at creation; only confirm it matches."""
-        entry = self.stat_session(session_id)
-        if entry is None:
-            raise SessionControlError(f"session {session_id} does not exist in the attached dsh")
-        requested = str(Path(path).resolve())
-        if entry.cwd is not None and Path(entry.cwd).resolve() != Path(requested):
-            raise SessionControlError(
-                f"session {session_id} is rooted at {entry.cwd}; the attached dsh keeps a session's directory fixed"
-            )
-        return entry.cwd or requested
-
     def run(self, prompt: str, *, session_id: str | None = None) -> tuple[str, str]:
         self.start()
         self._subscribe()
         target = session_id or f"dsh-{uuid.uuid4().hex[:12]}"
         events = self.notifications()
         try:
-            self.submit(target, prompt, cwd=None if session_id else self._config.cwd)
+            entry = self.stat_session(target) if session_id else None
+            self.submit(target, prompt, cwd=self._config.cwd if entry is None else None)
             return self._await_turn(events, target), target
         finally:
             events.close()
@@ -950,7 +966,15 @@ def open_gateway(
     published plugin runs in a profile with ``sessionController`` (web or
     desktop), where prompts can be delivered.
     """
-    endpoint = probe_plugin_endpoint(config.dsh_home)
-    if endpoint is not None and endpoint.attach:
-        return AttachedDshGateway(config, approval_requests=approval_requests, on_user_question=on_user_question)
+    endpoint = config.plugin_endpoint
+    if endpoint is None:
+        published = probe_plugin_endpoint(config.dsh_home)
+        if published is not None and published.attach:
+            endpoint = published
+    if endpoint is not None:
+        return AttachedDshGateway(
+            replace(config, plugin_endpoint=endpoint),
+            approval_requests=approval_requests,
+            on_user_question=on_user_question,
+        )
     return DshGateway(config, approval_requests=approval_requests, on_user_question=on_user_question)

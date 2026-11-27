@@ -65,17 +65,21 @@ fn sidecar_status(state: tauri::State<Sidecar>) -> serde_json::Value {
 // Lara 的用户根在 dsh 的 home 里（$DSH_HOME，默认 ~/.dsh），与 lara_shell.user_lara_root 一致。
 
 fn lara_root() -> PathBuf {
-    let dsh_home = std::env::var("DSH_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var("USERPROFILE")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(".dsh")
-        });
-    dsh_home.join("lara")
+    dsh_home().join("lara")
+}
+
+fn dsh_home() -> PathBuf {
+    let user = std::env::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let configured = std::env::var("DSH_HOME").unwrap_or_default();
+    let home = match configured.trim() {
+        "" => user.join(".dsh"),
+        "~" => user,
+        value => match value.strip_prefix("~/").or_else(|| value.strip_prefix("~\\")) {
+            Some(relative) => user.join(relative),
+            None => PathBuf::from(value),
+        },
+    };
+    std::path::absolute(&home).unwrap_or(home)
 }
 
 fn pet_config_path() -> PathBuf {
@@ -189,19 +193,10 @@ fn spawn_sidecar(app: &tauri::AppHandle) {
     };
     eprintln!("lara-pet: sidecar {}", sidecar.display());
 
-    let mut command = Command::new(sidecar);
+    let mut command = Command::new(&sidecar);
+    command.env("DSH_HOME", dsh_home());
     if let Ok(workspace) = std::env::var("LARA_PET_WORKSPACE") {
         command.arg("--workspace").arg(workspace);
-    }
-    // The pet's agent drives dsh through `lara dsh ...` bash calls; when the
-    // bundled CLI (npm package bin/) is next to this pet, put it on the
-    // sidecar's PATH so those calls resolve without a Python wheel.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let dir = dir.to_string_lossy().to_string();
-            let path = std::env::var("PATH").map(|existing| format!("{dir};{existing}")).unwrap_or(dir);
-            command.env("PATH", path);
-        }
     }
     // The sidecar is a console script; without this flag Windows opens a
     // console window for it next to the pet. Its stderr (the sidecar's own

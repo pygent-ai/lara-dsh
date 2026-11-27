@@ -32,7 +32,7 @@ from typing import Any, Mapping
 
 from pygent.llm import ModelCapabilityCatalog
 
-from lara_shell import dsh_home
+from lara_shell import default_pet_workspace, dsh_home, user_lara_root
 from lara_shell.config.loader import load_mapping_file
 from lara_shell.config.yaml_subset import dump_yaml_subset
 from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DEFAULT_DSH_PROVIDER, OFFICIAL_BASE_URL, DshGatewayConfig
@@ -157,36 +157,6 @@ def _capabilities_for(model: str, protocol: str) -> dict[str, Any]:
     return capabilities
 
 
-def migrate_endpoint_to_dsh_env(user_lara_root: str | Path, dsh_home_override: str | Path | None = None) -> bool:
-    """Move dsh.yaml's legacy ``base_url`` into dsh's native trusted layer.
-
-    The official way to point dsh at a custom OpenAI-compatible endpoint is
-    ``DEEPSEEK_BASE_URL`` in the Harness-home ``.env`` (dsh materializes it
-    into its environment at boot); dsh.yaml's ``base_url`` was Lara's
-    duplicate. Copies the value once when the ``.env`` does not name it yet;
-    returns whether the file changed.
-    """
-    settings = read_dsh_settings_file(user_lara_root)
-    base_url = _non_empty(settings.get("base_url"))
-    if base_url is None:
-        return False
-    home = Path(dsh_home_override).expanduser() if dsh_home_override else dsh_home()
-    env_path = home / ".env"
-    existing = ""
-    if env_path.is_file():
-        existing = env_path.read_text(encoding="utf-8")
-    for line in existing.splitlines():
-        if line.strip().startswith("DEEPSEEK_BASE_URL"):
-            return False
-    entry = f"DEEPSEEK_BASE_URL={base_url}"
-    env_path.parent.mkdir(parents=True, exist_ok=True)
-    with env_path.open("a", encoding="utf-8") as fh:
-        if existing and not existing.endswith("\n"):
-            fh.write("\n")
-        fh.write(entry + "\n")
-    return True
-
-
 def default_dsh_workspace(home: str | Path | None = None) -> Path | None:
     """The workspace dsh desktop has selected, from its own ``workspace.json``.
 
@@ -195,7 +165,7 @@ def default_dsh_workspace(home: str | Path | None = None) -> Path | None:
     directory is invisible there. Preferring this path keeps Lara's dsh
     sessions in the workspace the user is looking at.
     """
-    base = Path(home).expanduser() if home is not None else dsh_home()
+    base = dsh_home(home)
     store = base / "storages" / "workspace.json"
     try:
         # dsh stores this one as JSON; load_mapping_file only parses the YAML
@@ -219,31 +189,28 @@ def default_dsh_workspace(home: str | Path | None = None) -> Path | None:
     path = entry.get("path")
     if not isinstance(path, str) or not path.strip():
         return None
-    return Path(path).expanduser()
-
-
-def _dsh_session_cwd(root: Path) -> Path:
-    """Explicit ``workspace:`` wins; otherwise follow dsh's own default workspace."""
-    registered = default_dsh_workspace()
-    if registered is not None:
-        return registered
-    return root / "pet"
+    return _resolve(base, path.strip())
 
 
 def load_dsh_settings(
-    user_lara_root: str | Path,
+    home: str | Path | None = None,
     *,
     environ: Mapping[str, str] | None = None,
 ) -> DshSettings:
-    root = Path(user_lara_root).expanduser().resolve()
+    home = dsh_home(home)
+    root = user_lara_root(home)
     env = os.environ if environ is None else environ
     settings = read_dsh_settings_file(root)
-
     workspace_value = _non_empty(settings.get("workspace"))
+    workspace = (
+        _resolve(root, workspace_value)
+        if workspace_value
+        else default_dsh_workspace(home) or default_pet_workspace(home)
+    )
     model = _non_empty(env.get("DSH_MODEL")) or _non_empty(settings.get("model")) or DEFAULT_DSH_MODEL
     return DshSettings(
-        dsh_home=dsh_home(),
-        workspace=_resolve(root, workspace_value) if workspace_value else _dsh_session_cwd(root),
+        dsh_home=home,
+        workspace=workspace,
         provider=_non_empty(settings.get("provider")) or DEFAULT_DSH_PROVIDER,
         model=model,
         base_url=_non_empty(env.get("DEEPSEEK_BASE_URL")) or _non_empty(settings.get("base_url")),
@@ -281,7 +248,7 @@ def write_dsh_settings_file(user_lara_root: str | Path, updates: Mapping[str, st
 
 def _resolve(root: Path, value: str) -> Path:
     path = Path(value).expanduser()
-    return path if path.is_absolute() else root / path
+    return (root / path).resolve()
 
 
 def _non_empty(value: Any) -> str | None:
@@ -301,7 +268,6 @@ __all__ = [
     "DshSettings",
     "build_model_mapping",
     "load_dsh_settings",
-    "migrate_endpoint_to_dsh_env",
     "read_dsh_settings_file",
     "write_dsh_settings_file",
 ]

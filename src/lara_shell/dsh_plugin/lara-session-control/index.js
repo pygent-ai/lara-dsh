@@ -11,7 +11,7 @@
  * shadows the user's own dsh.
  *
  * Client → plugin requests (all results are JSON objects):
- *   lara/ping                                    -> { ok, name, version, pid, attach }   (attach: prompts deliverable here)
+ *   lara/ping                                    -> { ok, name, version, pid, home, attach }
  *   lara/session/list                            -> { sessions: SessionEntry[] }
  *   lara/session/stat     { sessionId }          -> { session: SessionEntry | null }
  *   lara/session/create   { sessionId, cwd }     -> { sessionId, cwd, createdAt }
@@ -82,7 +82,8 @@ export function apply(ctx, config) {
     return
   }
 
-  const lara = new LaraWire(ctx)
+  const home = resolveHome()
+  const lara = new LaraWire(ctx, home)
   const server = net.createServer((socket) => lara.accept(socket))
 
   ctx.effect(() => {
@@ -92,12 +93,12 @@ export function apply(ctx, config) {
     let endpoint = null
     server.listen(port, '127.0.0.1', () => {
       if (configuredPort !== undefined) return
-      endpoint = publishEndpoint(server.address().port)
+      endpoint = publishEndpoint(home, server.address().port)
       // The user's dsh owns Lara's lifecycle: bring the pet up with it (the
       // managed child dies with this dsh, so a restart brings a fresh pet).
       // Lara spawned this runtime itself (spawn mode) only when the port came
       // from the environment, and then it already manages the pet.
-      if (config.autoLaunch) void autoLaunchPet(ctx, config)
+      if (config.autoLaunch) void autoLaunchPet(ctx, config, home, server.address().port)
     })
     return () => new Promise((resolve) => {
       lara.closeAll()
@@ -132,15 +133,16 @@ export function apply(ctx, config) {
  * dsh restart never spawns a second one. The spawn is managed: the child
  * dies with this dsh, so a restart brings a fresh pet.
  */
-async function autoLaunchPet(ctx, config) {
+async function autoLaunchPet(ctx, config, home, port) {
   const explicit = (process.env.LARA_PET_EXE || '').trim()
-  const petPath = explicit || (config.petPath || '').trim() || bundledPetPath()
+  const candidate = explicit || (config.petPath || '').trim() || bundledPetPath()
+  const petPath = candidate && path.resolve(candidate)
   if (!petPath || !fs.existsSync(petPath)) {
     process.stderr.write(`[${name}] no pet executable at ${petPath || '<unset>'}; install it with 'dsh plugin add' or set LARA_PET_EXE\n`)
     return
   }
-  const state = readDaemonState()
-  if (state !== null && (await liveListener(state.port))) {
+  const state = readDaemonState(home)
+  if (state !== null && (await liveDaemon(state, home))) {
     return // the pet from a previous dsh run is still up
   }
   try {
@@ -151,7 +153,11 @@ async function autoLaunchPet(ctx, config) {
       graceMs: 2000,
       // The scrub drops every DSH_* entry; the pet and its sidecar must
       // target the same home this dsh serves, so forward it deliberately.
-      env: { DSH_HOME: process.env.DSH_HOME || path.join(os.homedir(), '.dsh') },
+      env: {
+        DSH_HOME: home,
+        LARA_DSH_PLUGIN_PID: String(process.pid),
+        LARA_DSH_PLUGIN_PORT: String(port),
+      },
     })
     process.stderr.write(`[${name}] launched the pet (pid ${handle.pid})\n`)
   } catch (error) {
@@ -165,9 +171,8 @@ function bundledPetPath() {
   return fs.existsSync(candidate) ? candidate : null
 }
 
-function readDaemonState() {
+function readDaemonState(home) {
   try {
-    const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
     const record = JSON.parse(fs.readFileSync(path.join(home, 'lara', DAEMON_STATE_FILENAME), 'utf8'))
     const port = Number(record.port)
     return Number.isInteger(port) && port > 0 && record.pid !== process.pid ? { port, pid: record.pid } : null
@@ -176,25 +181,42 @@ function readDaemonState() {
   }
 }
 
-/** A daemon that accepts a TCP connection on its port is alive (the JSON-RPC layer needs no probe). */
-function liveListener(port) {
+function liveDaemon(state, home) {
   return new Promise((resolve) => {
-    const probe = net.createConnection({ host: '127.0.0.1', port })
+    const probe = net.createConnection({ host: '127.0.0.1', port: state.port })
     const settle = (alive) => { probe.destroy(); resolve(alive) }
-    probe.once('connect', () => settle(true))
+    probe.setEncoding('utf8')
+    probe.setTimeout(400, () => settle(false))
+    probe.once('connect', () => probe.write('{"jsonrpc":"2.0","id":1,"method":"dsh/ping"}\n'))
+    let buffer = ''
+    probe.on('data', (data) => {
+      buffer += data
+      const end = buffer.indexOf('\n')
+      if (end === -1) return
+      try {
+        const { result } = JSON.parse(buffer.slice(0, end))
+        settle(result?.pid === state.pid && result.home === home)
+      } catch {
+        settle(false)
+      }
+    })
     probe.once('error', () => settle(false))
-    setTimeout(() => settle(false), 400).unref()
+    probe.once('end', () => settle(false))
   })
 }
 
-/** Where Lara looks for a running dsh: `<DSH_HOME>/lara/dsh-plugin.json`. */
-function endpointPath() {
-  const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
-  return path.join(home, 'lara', ENDPOINT_FILENAME)
+function resolveHome() {
+  const user = os.homedir()
+  const configured = process.env.DSH_HOME?.trim()
+  const home = !configured ? path.join(user, '.dsh')
+    : configured === '~' ? user
+    : /^~[\\/]/.test(configured) ? path.join(user, configured.slice(2))
+    : path.resolve(configured)
+  return fs.existsSync(home) ? fs.realpathSync(home) : home
 }
 
-function publishEndpoint(port) {
-  const file = endpointPath()
+function publishEndpoint(home, port) {
+  const file = path.join(home, 'lara', ENDPOINT_FILENAME)
   // Only where to find us: whether prompts can be delivered (`attach`) is
   // answered by lara/ping, since services settle after this listener opens.
   const record = { port, pid: process.pid, version: VERSION, startedAt: Date.now() }
@@ -313,8 +335,9 @@ class MethodNotFound extends Error {}
 
 /** The plugin's state: connected peers, the Lara subscriber, Lara-owned sessions. */
 class LaraWire {
-  constructor(ctx) {
+  constructor(ctx, home) {
     this.ctx = ctx
+    this.home = home
     this.peers = new Set()
     this.subscriber = null
     this.owned = new Set()
@@ -379,7 +402,7 @@ class LaraWire {
     const ctx = this.ctx
     switch (method) {
       case 'lara/ping':
-        return { ok: true, name, version: VERSION, pid: process.pid, attach: ctx.get('sessionController') !== undefined }
+        return { ok: true, name, version: VERSION, pid: process.pid, home: this.home, attach: ctx.get('sessionController') !== undefined }
       case 'lara/events/subscribe':
         this.subscriber = peer
         return { ok: true }

@@ -54,7 +54,7 @@ def test_loader_reads_scheduler_section(
         "  poll_seconds: 5\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(loader, "user_lara_root", lambda: user_root)
+    monkeypatch.setattr(loader, "user_lara_root", lambda _home: user_root)
     config = load_run_config(workspace_root=tmp_path / "workspace")
     assert config.scheduler.agent_create_enabled is True
     assert config.scheduler.session == "ops"

@@ -70,8 +70,8 @@ JSON. The `lara` command is already on PATH: call it directly as `lara dsh ...`;
 never probe for its location first.
 
 Dispatching and following work
-- `lara dsh send "<task>" --cwd <project dir>` opens a new session rooted at
-  that directory and returns its session_id immediately. `--session-id <id>`
+- `lara dsh send "<task>" --cwd "<absolute project dir>"` opens a new session rooted at
+  that directory and returns its session_id and cwd immediately. `--session-id <id>`
   continues an existing session instead. Tell the user it is dispatched, then
   move on — do not wait for it.
 - `lara dsh sessions` lists every session (live, status, step, last_tool,
@@ -89,7 +89,11 @@ with a speak(text=...) tool call — text written in your reply never reaches
 the user, so a relay that was only written down has not been relayed. React
 to each kind:
 - kind="turn_finished": a session finished a turn. <reply> is its answer,
-  finish_reason tells how it ended. Relay the outcome to the user in your own
+  finish_reason tells how it ended. Resolve paths in the worker's reply against
+  the session's cwd. When the user requests a file as an attachment, stage
+  it with `lara --workspace-root "<your workspace>" dsh artifact <session_id> "<file>"`
+  and pass the returned path to speak as an attachment.
+  Relay the outcome to the user in your own
   words; if finish_reason is not "completed" or an <error> is present, say
   what went wrong. Several reports that finish together arrive as one
   `<dsh-events count="N">` message — summarize them in one speak.

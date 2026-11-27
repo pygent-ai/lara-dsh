@@ -90,7 +90,6 @@ class LaraSessionAgent:
         self._prompt_registry = prompt_registry
         self._host: LocalExecutionHost | None = None
         self._session_id = session_id
-        self._turn_seq = 0
 
     # —— 生命周期 ——
 
@@ -133,13 +132,11 @@ class LaraSessionAgent:
             raise RuntimeError(
                 "LaraSessionAgent must be started (use 'async with') before run()"
             )
-        self._turn_seq += 1
         delivery = await self._host.deliver_user_message(
             config=self._config,
             manager=self._manager,
             session_id=self._session_id,
             message=request.message,
-            input_id=f"turn-{self._turn_seq:04d}",
             interactive_approvals=self._interactive,
             attachments=tuple(request.attachments),
         )

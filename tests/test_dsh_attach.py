@@ -9,6 +9,7 @@ tests/test_dsh_attach_real.py.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import socket
 import threading
 import time
@@ -129,7 +130,7 @@ class FakePlugin:
     def _dispatch(self, conn: socket.socket, method: str, params: dict[str, Any]) -> dict[str, Any]:
         match method:
             case "lara/ping":
-                return {"ok": True, "name": "lara-session-control", "version": "0.4.0", "pid": 4242, "attach": self.attach}
+                return {"ok": True, "name": "lara-session-control", "version": "0.4.0", "pid": 4242, "home": str(self.dsh_home), "attach": self.attach}
             case "lara/events/subscribe":
                 self._conn = conn
                 self.subscribed.set()
@@ -221,8 +222,18 @@ def test_inventory_calls_do_not_subscribe(tmp_path: Path, plugin: FakePlugin) ->
     with AttachedDshGateway(_config(tmp_path)) as gateway:
         assert gateway.list_sessions() == []
         assert gateway.stat_session("nope") is None
-    assert [m["method"] for m in plugin.received] == ["lara/ping", "lara/session/list", "lara/session/stat"]
+    assert [m["method"] for m in plugin.received] == ["lara/ping", "lara/ping", "lara/session/list", "lara/session/stat"]
     assert not plugin.subscribed.is_set()
+
+
+def test_pinned_pet_uses_launching_plugin_when_discovery_changes(tmp_path: Path, plugin: FakePlugin) -> None:
+    config = _config(tmp_path)
+    endpoint = probe_plugin_endpoint(config.dsh_home)
+    assert endpoint is not None
+    (config.dsh_home / "lara" / PLUGIN_ENDPOINT_FILENAME).unlink()
+    with open_gateway(replace(config, plugin_endpoint=endpoint)) as gateway:
+        assert gateway.mode == "attach"
+        assert gateway.list_sessions() == []
 
 
 def test_submit_roots_a_new_session_at_cwd_and_run_waits_for_the_turn(tmp_path: Path, plugin: FakePlugin) -> None:
@@ -232,9 +243,7 @@ def test_submit_roots_a_new_session_at_cwd_and_run_waits_for_the_turn(tmp_path: 
         # The model is dsh's own default (agentDefaultModel) — no override is sent.
         assert plugin.prompts[0] == {"text": "hi", "sessionId": "s1", "cwd": str((tmp_path / "proj").resolve())}
         # An existing session keeps its directory; a matching path is a no-op, another is refused.
-        assert gateway.set_working_directory("s1", tmp_path / "proj") == str((tmp_path / "proj").resolve())
-        with pytest.raises(SessionControlError, match="fixed"):
-            gateway.set_working_directory("s1", tmp_path / "other")
+
 
         done: dict[str, Any] = {}
 

@@ -48,8 +48,8 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed。
 - **Lara 住在 dsh 的 home 里**：dsh home 是 `$DSH_HOME`（默认 `~/.dsh`，与 dsh 自己的
   前端共享），Lara 的全部用户态数据在 `<dsh home>/lara/`（config.yaml、projects、pet
-  配置、dsh.yaml……，`lara_shell.user_lara_root()` 唯一出处；首次运行会把旧的
-  `~/.lara-dsh` 复制过来，旧目录不删）。**注意 dsh 的卸载清理脚本会整个删除
+  配置、dsh.yaml 等）。`lara dsh ... --home <目录>` 同时选择配置、daemon 和会话。
+  **注意 dsh 的卸载清理脚本会整个删除
   `~/.dsh`，Lara 的数据随之一起删除。** API key 存在 dsh 的凭据库
   `<dsh home>/.credentials.yaml`（`lara dsh credentials DEEPSEEK_API_KEY --set` 写入），
   `<dsh home>/lara/dsh.yaml` 只放路由（provider/model/base_url/workspace/lara_model，
@@ -59,12 +59,16 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   `lara dsh open` 在共享 home 上拉起 `dsh web`（带令牌 URL 缓存于
   `<dsh home>/lara/dsh-web.json`）让用户直接浏览所有会话。dsh 起不来时桌宠照常运行，
   只是没有 worker。
+- **dsh 任务路径**：`--cwd` 只用于创建新会话，相对路径以 CLI 调用目录为准。
+  省略时使用 `dsh.yaml` 中的 `workspace`，再查 dsh 登记的默认工作区，最后使用
+  `<dsh home>/lara/pet`。完成回报携带会话的 `cwd`。发送项目文件时，先运行
+  `lara --workspace-root <桌宠工作区> dsh artifact <会话 ID> <文件>`，
+  再把命令返回的工作区相对路径交给 speak。
 - **speak 出口**：最终的 `speak` 气泡来自注册在运行时上的 `PetSpeakChannel`
-  （`lara_sdk.execution_host.LaraExecutionHost(speak_channels=…)`），pygent 每执行
-  一次 speak 工具就回调一次 `deliver(text)`，不分 turn——主 turn、pygent 给纯文本
-  结尾补的 finalizer 轮、dsh-event 轮都能到。turn 事件流只用于 `speak_delta` 预览，
-  其终态 speak 事件不再重复输出。channel 只给文本，附件以相对路径逐行附在文本尾，
-  sidecar 用 `split_speak_delivery` 还原。
+  （`lara_sdk.execution_host.LaraExecutionHost(speak_channels=…)`）。从 pygent 0.6.10
+  起，主轮、finalizer、dsh-event 轮和插话回复都通过 `deliver(text, attachments)` 投递。
+  附件以工作区解析后的路径传入。sidecar 写出气泡事件后确认投递，turn 事件流负责
+  `speak_delta` 预览。
 - **真流式**：`lara_pet.speak_stream.SpeakStreamBridge` 把
   `model.tool_call.delta` 里的 speak 参数增量解码成文本后缀；桥放在 sidecar
   消费端（pygent 对模型层 emit 的 kind 有白名单），以 `speak_delta` 事件送

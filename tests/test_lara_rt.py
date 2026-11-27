@@ -20,7 +20,7 @@ def isolated_root(tmp_path, monkeypatch):
     user_root.mkdir()
     import lara_shell.config.loader as loader
 
-    monkeypatch.setattr(loader, "user_lara_root", lambda: user_root)
+    monkeypatch.setattr(loader, "user_lara_root", lambda _home: user_root)
     return tmp_path
 
 

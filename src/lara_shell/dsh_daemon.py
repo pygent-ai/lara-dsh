@@ -48,7 +48,6 @@ from lara_shell.dsh_gateway import (
     assistant_text,
     open_gateway,
 )
-from lara_shell.dsh_settings import migrate_endpoint_to_dsh_env
 
 DAEMON_STATE_FILENAME = "dsh-daemon.json"
 REPLY_EXCERPT_CHARS = 2000
@@ -104,12 +103,17 @@ class DshEvent:
     tool_name: str | None = None
     reason: str | None = None
     questions: tuple[DshQuestion, ...] = ()
+    cwd: str | None = None
 
     def envelope(self) -> str:
         """Render the ``<dsh-event>`` message that opens a turn of its own."""
-        lines = [f"  {Prompt.self_closing('session', id=self.session_id, title=self.title or '')}"]
+        session = {"id": self.session_id, "title": self.title or ""}
+        if self.cwd is not None:
+            session["cwd"] = self.cwd
         if self.kind == "turn_finished":
-            lines[0] = f"  {Prompt.self_closing('session', id=self.session_id, title=self.title or '', finish_reason=self.finish_reason)}"
+            session["finish_reason"] = self.finish_reason
+        lines = [f"  {Prompt.self_closing('session', **session)}"]
+        if self.kind == "turn_finished":
             lines.append(f"  <reply>{Prompt(self.reply).escape()}</reply>")
             if self.error:
                 lines.append(f"  <error>{Prompt(self.error).escape()}</error>")
@@ -228,6 +232,7 @@ class _TrackedSession:
     finish_reason: str | None = None
     error: str | None = None
     title: str | None = None
+    cwd: str | None = None
     turns: int = 0
     step: int = 0
     last_tool: str | None = None
@@ -270,7 +275,7 @@ class SessionView:
         return cls(
             session_id=session_id,
             title=(entry.title if entry else None) or tracked.title,
-            cwd=entry.cwd if entry else None,
+            cwd=entry.cwd if entry else tracked.cwd if tracked else None,
             created_at=entry.created_at if entry else None,
             origin=entry.origin if entry else "root",
             parent_session_id=entry.parent_session_id if entry else None,
@@ -345,7 +350,6 @@ class DshDaemon:
         if self._server is not None:
             return
         self._refuse_if_another_daemon_is_live()
-        migrate_endpoint_to_dsh_env(self._state_dir, self._config.dsh_home)
         self._gateway_slot = open_gateway(
             self._config, approval_requests=True, on_user_question=self._answer_user_question
         )
@@ -368,21 +372,12 @@ class DshDaemon:
     def _refuse_if_another_daemon_is_live(self) -> None:
         """Two daemons would fight over the state file; a stale one is replaced."""
         try:
-            state = json.loads(self.state_path.read_text(encoding="utf-8"))
-            port = int(state["port"])
-        except (OSError, ValueError, KeyError, TypeError):
+            client = DshDaemonClient.connect(self._state_dir, home=self._config.dsh_home)
+        except DaemonUnavailable:
             return
-        probe = SessionControlChannel(port, timeout=2.0)
-        try:
-            probe.connect(deadline_seconds=0.5)
-            probe.call("dsh/ping")
-        except SessionControlError:
-            return  # stale state file: nobody is answering
-        finally:
-            probe.close()
+        client.close()
         raise RuntimeError(
-            f"another dsh daemon (pid {state.get('pid')}) is already serving on port {port}; "
-            f"stop it or remove {self.state_path}"
+            f"another dsh daemon is already serving {self._config.dsh_home}"
         )
 
     def close(self) -> None:
@@ -413,7 +408,8 @@ class DshDaemon:
 
     def _owns_state_file(self) -> bool:
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8")).get("pid") == os.getpid()
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return state.get("pid") == os.getpid() and state.get("port") == self.port
         except (OSError, ValueError):
             return False
 
@@ -423,25 +419,29 @@ class DshDaemon:
         prompt = prompt.strip()
         if not prompt:
             raise ValueError("prompt must not be empty")
-        created = session_id is None
+        if cwd and session_id:
+            raise ValueError("cwd applies only to new sessions")
+        if cwd and not Path(cwd).is_absolute():
+            raise ValueError("cwd must be an absolute path")
+        entry = self.gateway.stat_session(session_id) if session_id else None
+        created = entry is None
         target = session_id or f"dsh-{uuid.uuid4().hex[:12]}"
         # A session's directory is fixed at creation and becomes its write
         # sandbox, and dsh desktop only lists sessions of workspaces it has
         # registered. Root new sessions at the configured workspace (Lara
         # resolves it from dsh's own default workspace) instead of letting the
         # runtime stamp its process cwd.
-        created_cwd = cwd or (str(self._config.cwd) if created else None)
-        if cwd and not created:
-            self.gateway.set_working_directory(target, cwd)
+        session_cwd = (cwd or str(self._config.cwd)) if entry is None else entry.cwd
         with self._lock:
             tracked = self._tracked.setdefault(target, _TrackedSession())
             tracked.owned = True
+            tracked.cwd = session_cwd
             tracked.finish_reason = None
             tracked.error = None
             tracked.status = "running"
             tracked.turn_started_at = time.time()
-        message_id = self.gateway.submit(target, prompt, cwd=created_cwd if created else None)
-        return {"session_id": target, "message_id": message_id, "created": created}
+        message_id = self.gateway.submit(target, prompt, cwd=session_cwd if created else None)
+        return {"session_id": target, "message_id": message_id, "created": created, "cwd": session_cwd}
 
     def sessions(self) -> list[SessionView]:
         entries = self.gateway.list_sessions()
@@ -709,6 +709,7 @@ class DshDaemon:
                     finish_reason=tracked.finish_reason,
                     reply=tracked.reply[-REPLY_EXCERPT_CHARS:],
                     error=tracked.error,
+                    cwd=tracked.cwd,
                 )
         if finished is not None and self._on_event is not None:
             self._queue_finished(finished)
@@ -876,17 +877,28 @@ class DshDaemonClient:
         self._channel = channel
 
     @classmethod
-    def connect(cls, state_dir: Path) -> "DshDaemonClient":
+    def connect(cls, state_dir: Path, *, home: Path | None = None) -> "DshDaemonClient":
         path = Path(state_dir) / DAEMON_STATE_FILENAME
         try:
             state = json.loads(path.read_text(encoding="utf-8"))
             port = int(state["port"])
+            published_home = Path(state["home"])
+            if not 0 < port <= 65535:
+                raise ValueError("invalid daemon port")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise DaemonUnavailable(f"no dsh daemon is published at {path}") from exc
         channel = SessionControlChannel(port, timeout=None)
         try:
             channel.connect(deadline_seconds=1.0)
-            channel.call("dsh/ping")
+            identity = channel.call("dsh/ping", timeout=1.0)
+            reported_home = identity.get("home")
+            if (
+                identity.get("pid") != state.get("pid")
+                or not isinstance(reported_home, str)
+                or Path(reported_home) != published_home
+                or (home is not None and Path(reported_home) != home)
+            ):
+                raise SessionControlError("daemon identity does not match the requested home")
         except SessionControlError as exc:
             channel.close()
             raise DaemonUnavailable(f"dsh daemon at port {port} is not answering: {exc}") from exc
@@ -901,12 +913,12 @@ class DshDaemonClient:
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
-    def send(self, prompt: str, *, session_id: str | None = None, cwd: str | None = None) -> dict[str, Any]:
+    def send(self, prompt: str, *, session_id: str | None = None, cwd: str | Path | None = None) -> dict[str, Any]:
         params: dict[str, Any] = {"prompt": prompt}
         if session_id:
             params["session_id"] = session_id
         if cwd:
-            params["cwd"] = cwd
+            params["cwd"] = str(Path(cwd).expanduser().resolve())
         return self._channel.call("dsh/send", params)
 
     def sessions(self) -> list[SessionView]:

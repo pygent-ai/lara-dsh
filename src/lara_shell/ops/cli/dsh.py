@@ -13,15 +13,18 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import signal
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from lara_shell import user_lara_root
+from lara_shell import dsh_home, user_lara_root
+from lara_shell.config.loader import resolve_workspace
 from lara_shell.dsh_daemon import DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, DshEventBatch, SessionView
 from lara_shell.dsh_gateway import DshGatewayConfig, DshSessionEntry, open_gateway
 from lara_shell.dsh_settings import (
@@ -29,7 +32,6 @@ from lara_shell.dsh_settings import (
     DSH_SETTINGS_FILENAME,
     SETTABLE_KEYS,
     load_dsh_settings,
-    migrate_endpoint_to_dsh_env,
     read_dsh_settings_file,
     write_dsh_settings_file,
 )
@@ -46,7 +48,7 @@ def register_dsh_parser(subparsers: Any) -> None:
     )
     send.add_argument("prompt", help="Prompt for the dsh agent")
     send.add_argument("--session-id", default=None, help="Continue this session instead of creating one")
-    send.add_argument("--cwd", default=None, metavar="DIR", help="Working directory for a new session")
+    _add_cwd_arg(send)
     send.set_defaults(handler=_dsh_send)
 
     wait = commands.add_parser(
@@ -65,7 +67,7 @@ def register_dsh_parser(subparsers: Any) -> None:
         default=None,
         help="Run inside this durable session id instead of a fresh one",
     )
-    _add_dsh_target(run)
+    _add_cwd_arg(run)
     run.set_defaults(handler=_dsh_run)
 
     resume = commands.add_parser(
@@ -73,7 +75,6 @@ def register_dsh_parser(subparsers: Any) -> None:
     )
     resume.add_argument("session_id", help="Persisted session id to resume")
     resume.add_argument("prompt", help="Prompt for the resumed session")
-    _add_dsh_target(resume)
     resume.set_defaults(handler=_dsh_resume)
 
     sessions = commands.add_parser(
@@ -83,15 +84,18 @@ def register_dsh_parser(subparsers: Any) -> None:
         "--all", action="store_true",
         help="Include blank sessions (never prompted, e.g. the one dsh web opens on start); hidden by default",
     )
-    _add_dsh_target(sessions)
     sessions.set_defaults(handler=_dsh_sessions)
 
     status = commands.add_parser(
         "status", help="Show one dsh session's inventory entry and live status"
     )
     status.add_argument("session_id", help="Session id to inspect")
-    _add_dsh_target(status)
     status.set_defaults(handler=_dsh_status)
+
+    artifact = commands.add_parser("artifact", help="Stage a file from a dsh session in the Lara workspace")
+    artifact.add_argument("session_id", help="Session that produced the file")
+    artifact.add_argument("path", help="File path within the session workspace")
+    artifact.set_defaults(handler=_dsh_artifact)
 
     cancel = commands.add_parser(
         "cancel", help="Stop a running dsh session's current work (needs the daemon)"
@@ -175,7 +179,6 @@ def register_dsh_parser(subparsers: Any) -> None:
     daemon = commands.add_parser(
         "daemon", help="Run a standalone dsh daemon in the foreground (Ctrl+C to stop)"
     )
-    _add_dsh_target(daemon)
     daemon.set_defaults(handler=_dsh_daemon)
 
     plugin = commands.add_parser(
@@ -188,39 +191,45 @@ def register_dsh_parser(subparsers: Any) -> None:
     plugin.add_argument("--profile", default="web", help="dsh profile to install into (default: web, the desktop/web UI)")
     plugin.set_defaults(handler=_dsh_plugin)
 
+    for command in commands.choices.values():
+        command.add_argument(
+            "--home",
+            default=None,
+            metavar="DIR",
+            help="dsh home directory holding durable sessions (default: $DSH_HOME or ~/.dsh)",
+        )
 
-def _add_dsh_target(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--home",
-        default=None,
-        metavar="DIR",
-        help="dsh home directory holding durable sessions (default: $DSH_HOME or ~/.dsh)",
-    )
+
+def _add_cwd_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cwd",
         default=None,
         metavar="DIR",
-        help="Working directory the dsh agent operates in (default: current directory)",
+        help="Working directory for a new session (default: configured dsh workspace)",
     )
 
 
+def _cwd_arg(args: argparse.Namespace) -> Path | None:
+    cwd = getattr(args, "cwd", None)
+    if cwd and getattr(args, "session_id", None):
+        raise ValueError("--cwd applies only to new sessions")
+    return Path(cwd).expanduser().resolve() if cwd else None
+
+
 def _dsh_config(args: argparse.Namespace) -> DshGatewayConfig:
-    settings = load_dsh_settings(user_lara_root())
-    config = settings.gateway_config(Path(args.cwd) if args.cwd else Path.cwd())
-    if args.home:
-        config = DshGatewayConfig(**{**asdict(config), "dsh_home": Path(args.home)})
-    return config
+    return load_dsh_settings(args.home).gateway_config(_cwd_arg(args))
 
 
-def _daemon_client() -> DshDaemonClient | None:
+def _daemon_client(home: str | Path | None) -> DshDaemonClient | None:
+    home = dsh_home(home)
     try:
-        return DshDaemonClient.connect(user_lara_root())
+        return DshDaemonClient.connect(user_lara_root(home), home=home)
     except DaemonUnavailable:
         return None
 
 
-def _require_daemon() -> DshDaemonClient:
-    client = _daemon_client()
+def _require_daemon(home: str | Path | None) -> DshDaemonClient:
+    client = _daemon_client(home)
     if client is None:
         raise RuntimeError(
             "no dsh daemon is running; start the pet or `lara dsh daemon` first"
@@ -229,33 +238,37 @@ def _require_daemon() -> DshDaemonClient:
 
 
 def _dsh_send(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
-        return client.send(args.prompt, session_id=args.session_id, cwd=args.cwd)
+    config = _dsh_config(args)
+    with _require_daemon(config.dsh_home) as client:
+        return client.send(
+            args.prompt, session_id=args.session_id,
+            cwd=None if args.session_id else config.cwd,
+        )
 
 
 def _dsh_wait(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         view, timed_out = client.wait(args.session_id, timeout=args.timeout)
     return {"session": None if view is None else _view_payload(view), "timed_out": timed_out}
 
 
 def _dsh_cancel(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         return {"session_id": args.session_id, "cancelled": client.cancel(args.session_id)}
 
 
 def _dsh_requests(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         return {"requests": client.requests()}
 
 
 def _dsh_approve(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         return {"outcome": "allowed-once", "request": client.approve(args.request_id, "allowed-once")}
 
 
 def _dsh_reject(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         return {"outcome": "rejected", "request": client.approve(args.request_id, "rejected")}
 
 
@@ -271,42 +284,47 @@ def _dsh_answer(args: argparse.Namespace) -> dict[str, Any]:
                 raise ValueError(f"expected 'question_id=answer', got {item!r}")
             pairs[key.strip()] = value
         answers = pairs
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         return {"request": client.answer(args.request_id, answers)}
 
 
 def _dsh_decline(args: argparse.Namespace) -> dict[str, Any]:
-    with _require_daemon() as client:
+    with _require_daemon(args.home) as client:
         return {"request": client.decline(args.request_id)}
 
 
 def _dsh_run(args: argparse.Namespace) -> dict[str, Any]:
-    client = _daemon_client()
+    config = _dsh_config(args)
+    client = _daemon_client(config.dsh_home)
     if client is not None:
         with client:
-            sent = client.send(args.prompt, session_id=args.session_id, cwd=args.cwd)
+            sent = client.send(
+                args.prompt, session_id=args.session_id,
+                cwd=None if args.session_id else config.cwd,
+            )
             view, _ = client.wait(sent["session_id"])
         assert view is not None
-        return {"session_id": view.session_id, "response": view.reply, "finish_reason": view.finish_reason, "error": view.error, "via": "daemon"}
-    config = _dsh_config(args)
+        return _daemon_result(view, config.dsh_home)
     with open_gateway(config) as gateway:
         response, session_id = gateway.run(args.prompt, session_id=args.session_id)
-    return _dsh_result(session_id, response, config, gateway.mode)
+        entry = gateway.stat_session(session_id)
+    return _dsh_result(session_id, response, config.dsh_home, entry, gateway.mode)
 
 
 def _dsh_resume(args: argparse.Namespace) -> dict[str, Any]:
-    client = _daemon_client()
+    client = _daemon_client(args.home)
     if client is not None:
         with client:
             client.resume(args.session_id)
             client.send(args.prompt, session_id=args.session_id)
             view, _ = client.wait(args.session_id)
         assert view is not None
-        return {"session_id": view.session_id, "response": view.reply, "finish_reason": view.finish_reason, "error": view.error, "via": "daemon"}
+        return _daemon_result(view, dsh_home(args.home))
     config = _dsh_config(args)
     with open_gateway(config) as gateway:
         response, session_id = gateway.resume_run(args.session_id, args.prompt)
-    return _dsh_result(session_id, response, config, gateway.mode)
+        entry = gateway.stat_session(session_id)
+    return _dsh_result(session_id, response, config.dsh_home, entry, gateway.mode)
 
 
 # A root session whose log holds only its opening records (policy, model
@@ -330,7 +348,7 @@ def _is_blank_session(payload: dict[str, Any]) -> bool:
 
 def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
     show_all = bool(getattr(args, "all", False))
-    client = _daemon_client()
+    client = _daemon_client(args.home)
     if client is not None:
         with client:
             views = client.sessions()
@@ -338,7 +356,7 @@ def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
         hidden = sum(_is_blank_session(p) for p in payloads)
         if not show_all:
             payloads = [p for p in payloads if not _is_blank_session(p)]
-        return {"via": "daemon", "sessions": payloads, "hidden_blank": 0 if show_all else hidden}
+        return {"via": "daemon", "home": str(dsh_home(args.home)), "sessions": payloads, "hidden_blank": 0 if show_all else hidden}
     config = _dsh_config(args)
     with open_gateway(config) as gateway:
         entries = gateway.list_sessions()
@@ -355,11 +373,11 @@ def _dsh_sessions(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _dsh_status(args: argparse.Namespace) -> dict[str, Any]:
-    client = _daemon_client()
+    client = _daemon_client(args.home)
     if client is not None:
         with client:
             view = client.status(args.session_id)
-        return {"via": "daemon", "session": None if view is None else _view_payload(view)}
+        return {"via": "daemon", "home": str(dsh_home(args.home)), "session": None if view is None else _view_payload(view)}
     config = _dsh_config(args)
     with open_gateway(config) as gateway:
         entry = gateway.stat_session(args.session_id)
@@ -370,19 +388,50 @@ def _dsh_status(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _with_runtime(call_daemon, call_gateway):
+def _dsh_artifact(args: argparse.Namespace) -> dict[str, str]:
+    session = _dsh_status(args)["session"]
+    if session is None or not session.get("cwd"):
+        raise ValueError(f"session {args.session_id!r} has no recorded workspace")
+    session_root = Path(session["cwd"])
+    if not session_root.is_absolute():
+        raise ValueError("the session workspace must be an absolute path")
+    session_root = session_root.resolve(strict=True)
+    source = (session_root / args.path).resolve(strict=True)
+    if not source.is_relative_to(session_root) or not source.is_file():
+        raise ValueError("artifact must be a file inside the dsh session workspace")
+
+    workspace = resolve_workspace(args.workspace_root)
+    if source.is_relative_to(workspace):
+        return {"path": source.relative_to(workspace).as_posix()}
+
+    staging = (workspace / "dsh-artifacts").resolve()
+    if not staging.is_relative_to(workspace):
+        raise ValueError("the artifact staging directory must be inside the Lara workspace")
+    staging.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(dir=staging))
+    destination = directory / source.name
+    try:
+        shutil.copyfile(source, destination)
+    except OSError:
+        destination.unlink(missing_ok=True)
+        directory.rmdir()
+        raise
+    return {"path": destination.relative_to(workspace).as_posix()}
+
+
+def _with_runtime(home, call_daemon, call_gateway):
     """Run against the daemon when one is up, else attach to the user's dsh or spawn a temporary runtime."""
-    client = _daemon_client()
+    client = _daemon_client(home)
     if client is not None:
         with client:
             return call_daemon(client)
-    with open_gateway(load_dsh_settings(user_lara_root()).gateway_config(Path.cwd())) as gateway:
+    with open_gateway(load_dsh_settings(home).gateway_config()) as gateway:
         return call_gateway(gateway)
 
 
 def _dsh_models(args: argparse.Namespace) -> dict[str, Any]:
-    providers = _with_runtime(lambda c: c.models(), lambda g: g.list_models())
-    settings = load_dsh_settings(user_lara_root())
+    providers = _with_runtime(args.home, lambda c: c.models(), lambda g: g.list_models())
+    settings = load_dsh_settings(args.home)
     return {
         "selected": {"provider": settings.provider, "model": settings.model, "lara_model": settings.lara_model},
         "providers": providers,
@@ -402,10 +451,11 @@ def _dsh_credentials(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("no value given")
     if args.set_value or args.unset:
         _with_runtime(
+            args.home,
             lambda c: c.set_credential(args.ref, value),
             lambda g: g.set_credential(args.ref, value),
         )
-    info = _with_runtime(lambda c: c.describe_credential(args.ref), lambda g: g.describe_credential(args.ref))
+    info = _with_runtime(args.home, lambda c: c.describe_credential(args.ref), lambda g: g.describe_credential(args.ref))
     return {"ref": args.ref, **info, "changed": bool(args.set_value or args.unset)}
 
 
@@ -422,9 +472,8 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
 
     from deepseek_harness_runtime import resolve_bundled_launch_args
 
-    settings = load_dsh_settings(user_lara_root())
-    migrate_endpoint_to_dsh_env(user_lara_root(), settings.dsh_home)
-    state_path = user_lara_root() / WEB_STATE_FILENAME
+    settings = load_dsh_settings(args.home)
+    state_path = user_lara_root(settings.dsh_home) / WEB_STATE_FILENAME
     url: str | None = None
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -437,6 +486,7 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
         url = None
     started = False
     if url is None:
+        workspace = settings.gateway_config().prepare_workspace()
         # The web UI is token-gated: only the URL dsh prints opens it, so run
         # it detached with --no-open, read that line, and remember it. The
         # web profile carries the Lara plugin once `lara dsh plugin install`
@@ -450,7 +500,7 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
         process = subprocess.Popen(
             [*resolve_bundled_launch_args(), "--profile", "web", "--no-open", "--port", "0"],
             env=env,
-            cwd=str(settings.workspace) if settings.workspace.is_dir() else None,
+            cwd=str(workspace),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -486,7 +536,7 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _dsh_config_cmd(args: argparse.Namespace) -> dict[str, Any]:
-    root = user_lara_root()
+    root = user_lara_root(args.home)
     changed: dict[str, str | None] = {}
     for item in args.assignments:
         key, sep, value = item.partition("=")
@@ -495,8 +545,8 @@ def _dsh_config_cmd(args: argparse.Namespace) -> dict[str, Any]:
         changed[key.strip()] = value.strip() or None
     if changed:
         write_dsh_settings_file(root, changed)
-    settings = load_dsh_settings(root)
-    daemon_running = _daemon_client()
+    settings = load_dsh_settings(args.home)
+    daemon_running = _daemon_client(args.home)
     if daemon_running is not None:
         daemon_running.close()
     return {
@@ -523,7 +573,7 @@ def _dsh_daemon(args: argparse.Namespace) -> None:
     def announce(event: DshEvent | DshEventBatch) -> None:
         print(event.envelope(), flush=True)
 
-    with DshDaemon(config, state_dir=user_lara_root(), on_event=announce) as daemon:
+    with DshDaemon(config, state_dir=user_lara_root(config.dsh_home), on_event=announce) as daemon:
         print(f"lara dsh daemon: port {daemon.port}, home {config.dsh_home}, mode {daemon.mode}", flush=True)
         signal.signal(signal.SIGINT, lambda *_: stop.set())
         signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -545,7 +595,7 @@ def _dsh_plugin(args: argparse.Namespace) -> dict[str, Any]:
 
     from lara_shell.dsh_gateway import SESSION_CONTROL_PLUGIN_DIR, probe_plugin_endpoint
 
-    settings = load_dsh_settings(user_lara_root())
+    settings = load_dsh_settings(args.home)
     # Prefer the assembled npm package (plugin + bundled pet/sidecar/CLI under
     # `bin/`); the bare source plugin dir is the fallback for a checkout that
     # has not run scripts/build_npm_package.py yet.
@@ -618,14 +668,26 @@ def _session_payload(entry: DshSessionEntry) -> dict[str, Any]:
 
 
 def _dsh_result(
-    session_id: str, response: str, config: DshGatewayConfig, via: str
+    session_id: str, response: str, home: Path, entry: DshSessionEntry | None, via: str
 ) -> dict[str, Any]:
     return {
         "session_id": session_id,
         "response": response,
         "via": via,
-        "home": str(config.dsh_home),
-        "cwd": str(config.cwd),
+        "home": str(home),
+        "cwd": None if entry is None else entry.cwd,
+    }
+
+
+def _daemon_result(view: SessionView, home: Path) -> dict[str, Any]:
+    return {
+        "session_id": view.session_id,
+        "response": view.reply,
+        "finish_reason": view.finish_reason,
+        "error": view.error,
+        "via": "daemon",
+        "home": str(home),
+        "cwd": view.cwd,
     }
 
 

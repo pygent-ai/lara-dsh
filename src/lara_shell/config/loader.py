@@ -33,6 +33,10 @@ from .yaml_subset import parse_yaml_subset
 USER_CONFIG_FILENAME = "config.yaml"
 
 
+def resolve_workspace(workspace_root: str | Path | None = None) -> Path:
+    return Path(workspace_root or os.environ.get("LARA_WORKSPACE_ROOT") or Path.cwd()).expanduser().resolve()
+
+
 def load_run_config(
     *,
     workspace_root: str | Path | None = None,
@@ -41,13 +45,10 @@ def load_run_config(
     agent_alias: str | None = None,
     max_steps: int | None = None,
     context_window: int | None = None,
+    dsh_home: str | Path | None = None,
 ) -> RunConfig:
-    root = (
-        Path(workspace_root or os.environ.get("LARA_WORKSPACE_ROOT") or Path.cwd())
-        .expanduser()
-        .resolve()
-    )
-    user_root = user_lara_root()
+    root = resolve_workspace(workspace_root)
+    user_root = user_lara_root(dsh_home)
     load_credentials(user_lara_root=user_root)
     config_path = user_root / USER_CONFIG_FILENAME
     file_config = _read_config(config_path if config_path.exists() else None)

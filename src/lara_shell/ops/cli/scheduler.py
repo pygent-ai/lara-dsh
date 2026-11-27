@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from functools import partial
 from typing import Any
 from xml.sax.saxutils import escape
 
@@ -35,6 +36,7 @@ def register_scheduler_parser(subparsers: Any) -> None:
     commands = scheduler.add_subparsers(dest="scheduler_command", required=True)
 
     run = commands.add_parser("run", help="Run the scheduler daemon")
+    run.add_argument("--home", default=None, help="dsh home containing Lara's state")
     run.add_argument(
         "--once",
         action="store_true",
@@ -84,7 +86,9 @@ def register_scheduler_parser(subparsers: Any) -> None:
 
 
 def _config(args: argparse.Namespace) -> RunConfig:
-    return config_from_args(args, loader=load_run_config)
+    return config_from_args(
+        args, loader=partial(load_run_config, dsh_home=getattr(args, "home", None))
+    )
 
 
 def _store(config: RunConfig) -> SchedulerStore:
@@ -181,8 +185,13 @@ def _lara_executable() -> Path:
     raise RuntimeError("cannot locate the lara executable for autostart")
 
 
-def _autostart_xml(executable: Path) -> str:
+def _autostart_xml(executable: Path, config: RunConfig) -> str:
     command = escape(str(executable))
+    workspace = escape(config.workspace_root)
+    arguments = escape(subprocess.list2cmdline([
+        "--workspace-root", config.workspace_root,
+        "scheduler", "run", "--home", str(Path(config.user_pygent_root).parent),
+    ]))
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <Triggers>
@@ -207,7 +216,8 @@ def _autostart_xml(executable: Path) -> str:
   <Actions Context="Author">
     <Exec>
       <Command>{command}</Command>
-      <Arguments>scheduler run</Arguments>
+      <Arguments>{arguments}</Arguments>
+      <WorkingDirectory>{workspace}</WorkingDirectory>
     </Exec>
   </Actions>
 </Task>
@@ -215,14 +225,14 @@ def _autostart_xml(executable: Path) -> str:
 
 
 def _scheduler_install_autostart(args: argparse.Namespace) -> dict[str, Any]:
-    del args
     if os.name != "nt":
         raise RuntimeError("scheduler autostart is only supported on Windows")
     executable = _lara_executable()
+    config = _config(args)
     with tempfile.NamedTemporaryFile(
         "w", suffix=".xml", encoding="utf-16", delete=False
     ) as handle:
-        handle.write(_autostart_xml(executable))
+        handle.write(_autostart_xml(executable, config))
         xml_path = Path(handle.name)
     try:
         subprocess.run(

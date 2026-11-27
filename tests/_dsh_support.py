@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from lara_shell import user_lara_root
 from lara_shell.dsh_gateway import DshGateway, DshGatewayConfig
 from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, load_dsh_settings
 
@@ -24,7 +23,7 @@ from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, load_dsh_settings
 @lru_cache(maxsize=1)
 def deepseek_route() -> tuple[str, str | None] | None:
     """``(api_key, base_url)`` for the real-runtime tests, or None when unavailable."""
-    settings = load_dsh_settings(user_lara_root())
+    settings = load_dsh_settings()
     key = os.environ.get("DEEPSEEK_API_KEY") or None
     if key is None and (settings.dsh_home / ".credentials.yaml").is_file():
         with tempfile.TemporaryDirectory() as scratch:
@@ -42,7 +41,7 @@ def real_gateway_config(dsh_home: Path, cwd: Path) -> DshGatewayConfig:
     if route is None:
         pytest.skip("real dsh runtime needs DEEPSEEK_API_KEY or a key in dsh's credential store")
     api_key, base_url = route
-    settings = load_dsh_settings(user_lara_root())
+    settings = load_dsh_settings()
     return DshGatewayConfig(
         dsh_home=dsh_home, cwd=cwd, provider=settings.provider, model=settings.model,
         api_key=api_key, base_url=base_url,

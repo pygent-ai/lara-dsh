@@ -99,7 +99,6 @@ async def _run_session_turn(args: argparse.Namespace) -> dict[str, Any]:
                 manager=manager,
                 session_id=args.session_id,
                 message=args.message,
-                input_id="turn-0001",
                 interactive_approvals=False,
                 attachments=tuple(args.attachment or ()),
             )
@@ -124,7 +123,6 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
     async with _execution_host(config) as host:
         print(f"lara session chat: {session_id}")
         print("Type /exit or /quit to end.")
-        turn_index = 1
         while True:
             try:
                 user_input = await asyncio.to_thread(input, "> ")
@@ -140,7 +138,6 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
                     manager=manager,
                     session_id=session_id,
                     message=user_input,
-                    input_id=f"turn-{turn_index:04d}",
                     interactive_approvals=True,
                     attachments=tuple(args.attachment or ()),
                 )
@@ -156,7 +153,6 @@ async def _interactive_session_chat(args: argparse.Namespace) -> None:
             if result.get("error"):
                 print(f"agent error: {result['error']}", file=sys.stderr)
                 break
-            turn_index += 1
 
 
 def _require_turn(delivery: UserDelivery) -> ManagedSessionTurn:

@@ -62,7 +62,6 @@ def _reset_fake_instances() -> None:
 def _use_fake_gateway(monkeypatch: pytest.MonkeyPatch, user_root: Path) -> None:
     """Fake gateway, an empty user root (so no dsh.yaml and no daemon), no DEEPSEEK env."""
     monkeypatch.setattr(dsh_cli, "open_gateway", FakeGateway)
-    monkeypatch.setattr(dsh_cli, "user_lara_root", lambda: user_root)
     for name in ("DSH_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("DSH_HOME", str(user_root.parent))  # Lara root sits inside the dsh home
@@ -94,13 +93,11 @@ def test_resume_parses_positional_session_and_prompt() -> None:
     assert args.session_id == "s1"
     assert args.prompt == "continue the work"
     assert args.home is None
-    assert args.cwd is None
 
 
-def test_sessions_parses_home_and_cwd() -> None:
-    args = _parse(["dsh", "sessions", "--home", "H", "--cwd", "C"])
+def test_sessions_parses_home() -> None:
+    args = _parse(["dsh", "sessions", "--home", "H"])
     assert args.home == "H"
-    assert args.cwd == "C"
 
 
 def _entry(session_id: str, **overrides: object) -> DshSessionEntry:
@@ -207,8 +204,6 @@ def test_run_forwards_prompt_and_env_config_to_gateway(
             "dsh",
             "run",
             "你好",
-            "--session-id",
-            "s1",
             "--home",
             str(tmp_path / "home"),
             "--cwd",
@@ -225,9 +220,9 @@ def test_run_forwards_prompt_and_env_config_to_gateway(
     # dsh resolves its own key from its credential store; the CLI never injects one.
     assert config.api_key is None
     assert config.base_url == "http://test-endpoint/v1"
-    assert gateway.run_calls == [("你好", "s1")]
+    assert gateway.run_calls == [("你好", None)]
     payload = json.loads(capsys.readouterr().out)
-    assert payload["session_id"] == "s1"
+    assert payload["session_id"] == "generated-session"
     assert payload["response"] == "echo:你好"
 
 
@@ -256,7 +251,50 @@ def test_run_defaults_home_and_cwd(
     assert exit_code == 0
     config = FakeGateway.instances[0].config
     assert config.dsh_home == (tmp_path / "root").parent.resolve()  # dsh's own home, shared with its UIs
-    assert config.cwd == tmp_path
+    assert config.cwd == tmp_path / "lara" / "pet"
+
+
+def test_explicit_home_selects_its_daemon_settings_and_workspace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _use_fake_gateway(monkeypatch, tmp_path / "ambient" / "lara")
+    monkeypatch.chdir(tmp_path)
+    selected = tmp_path / "selected"
+    (selected / "lara").mkdir(parents=True)
+    (selected / "lara" / "dsh.yaml").write_text(
+        "model: selected-model\nworkspace: ../project\n", encoding="utf-8"
+    )
+    probed = []
+
+    def offline(state_dir, *, home):
+        probed.append((state_dir, home))
+        raise dsh_cli.DaemonUnavailable("offline")
+
+    monkeypatch.setattr(dsh_cli.DshDaemonClient, "connect", offline)
+    assert main(["dsh", "run", "hi", "--home", "selected"]) == 0
+    assert probed == [(selected / "lara", selected)]
+    (gateway,) = FakeGateway.instances
+    assert gateway.config.model == "selected-model"
+    assert gateway.config.cwd == selected / "project"
+
+
+def test_artifact_stages_session_file_and_rejects_paths_outside_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    _use_fake_gateway(monkeypatch, tmp_path / "home" / "lara")
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    (worker / "report.txt").write_text("report", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("outside", encoding="utf-8")
+    FakeGateway.inventory = [_entry("s1", cwd=str(worker))]
+    workspace = tmp_path / "pet"
+    command = ["--workspace-root", str(workspace), "dsh", "artifact", "s1"]
+
+    assert main([*command, "report.txt"]) == 0
+    path = workspace / json.loads(capsys.readouterr().out)["path"]
+    assert path.read_text(encoding="utf-8") == "report"
+    assert main([*command, "../outside.txt"]) == 2
+    assert "inside the dsh session workspace" in capsys.readouterr().err
 
 
 def test_resume_forwards_session_and_prompt(
@@ -271,8 +309,6 @@ def test_resume_forwards_session_and_prompt(
             "s1",
             "继续",
             "--home",
-            str(tmp_path),
-            "--cwd",
             str(tmp_path),
         ]
     )
@@ -305,7 +341,7 @@ def test_config_shows_and_changes_settings(
     assert payload["changed"] == ["model", "workspace"]
     assert payload["settings"] == {"model": "deepseek-v4-pro", "workspace": "E:/work"}
     assert payload["effective"]["model"] == "deepseek-v4-pro"
-    assert (tmp_path / "root" / "dsh.yaml").is_file()
+    assert (tmp_path / "lara" / "dsh.yaml").is_file()
 
     assert main(["dsh", "config", "model="]) == 0
     assert json.loads(capsys.readouterr().out)["settings"] == {"workspace": "E:/work"}

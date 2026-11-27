@@ -33,19 +33,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
-import time
+import sysconfig
 import uuid
 from collections.abc import Sequence
-from typing import Any
+from dataclasses import replace
 from pathlib import Path
+from threading import Lock
+from typing import Any
 
 from lara_sdk.execution_host import LaraExecutionHost
 from lara_sdk.lara_profile import lara_prompt_modules
-from lara_shell import user_lara_root
+from lara_shell import default_pet_workspace, user_lara_root
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
 from lara_shell.dsh_daemon import DshDaemon, DshEvent, DshEventBatch
+from lara_shell.dsh_gateway import PluginEndpoint
 from lara_shell.dsh_settings import DEEPSEEK_MESSAGES_BASE_URL, DEEPSEEK_OFFICIAL_BASE_URL, DshSettings, build_model_mapping, load_dsh_settings
 from pygent.agent.pygent_v1.schema import ResolvedAgentConfig
 from pygent.llm import ModelConfig
@@ -93,8 +97,12 @@ SPEAK_CHANNEL_RULES = """Output channel
 """
 
 
+_stdout_lock = Lock()
+
+
 def out(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    with _stdout_lock:
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 def log(msg: str) -> None:
@@ -197,13 +205,9 @@ def seal_interrupted_tool_calls(manager: SessionManager, session_id: str) -> int
 class PetSpeakChannel:
     """Runtime → pet bubble. ``deliver`` runs on a runtime worker thread."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
-        self._loop = loop
-
     def deliver(self, text: str, attachments: Sequence[Path]) -> bool:
-        self._loop.call_soon_threadsafe(
-            out, {"type": "speak", "text": text, "attachments": [str(p) for p in attachments]}
-        )
+        # pygent records the delivery receipt when this returns True.
+        out({"type": "speak", "text": text, "attachments": [str(p) for p in attachments]})
         return True
 
 
@@ -211,9 +215,9 @@ class PetSession:
     """One runtime host + one lara-says session, turns serialized."""
 
     def __init__(self, workspace: Path) -> None:
-        self.workspace = workspace
-        workspace.mkdir(parents=True, exist_ok=True)
-        self.config = load_run_config(workspace_root=str(workspace))
+        self.workspace = workspace.expanduser().resolve()
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        self.config = load_run_config(workspace_root=self.workspace)
         # The pet runs unattended: realtime speak interaction on, approval
         # prompts off (nobody is watching a dialog box).
         # The fork reply forces tool_choice="speak"; DeepSeek's Anthropic
@@ -233,18 +237,16 @@ class PetSession:
         # the executing module copy, so the canonical desktop-pet persona is
         # rendered here into the static base prompt instead.
         self.config.system_prompt = self.config.system_prompt or self._persona()
-        self.user_root = Path(self.config.user_pygent_root)
         # dsh owns provider configuration; when its credential store has the
         # DeepSeek key, the pet runs on that same key and endpoint instead of
         # a second model setup in config.yaml.
-        self._dsh_settings = load_dsh_settings(self.user_root)
+        self._dsh_settings = load_dsh_settings()
         self._dsh = self._start_dsh(self._dsh_settings)
         self._lara_model = self._borrow_dsh_model()
         self._apply_lara_model(self.config)
         self.manager = SessionManager(self.config)
         self.session_id = resolve_session(self.manager)
         seal_interrupted_tool_calls(self.manager, self.session_id)
-        self.turn_count = 0
         self._turn_tasks: set[asyncio.Task[None]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._host: LaraExecutionHost | None = None
@@ -378,9 +380,17 @@ class PetSession:
         runtime download) degrades to a pet without a worker, not a dead pet.
         """
         try:
+            config = settings.gateway_config()
+            if "LARA_DSH_PLUGIN_PID" in os.environ:
+                endpoint = PluginEndpoint(
+                    port=int(os.environ["LARA_DSH_PLUGIN_PORT"]),
+                    pid=int(os.environ["LARA_DSH_PLUGIN_PID"]),
+                    version=None,
+                )
+                config = replace(config, plugin_endpoint=endpoint)
             daemon = DshDaemon(
-                settings.gateway_config(),
-                state_dir=self.user_root,
+                config,
+                state_dir=user_lara_root(settings.dsh_home),
                 on_event=self._on_dsh_event,
             )
             daemon.start()
@@ -474,7 +484,7 @@ class PetSession:
         async with LaraExecutionHost(
             credential_environ=self._credential_environ(),
             run_config_loader=self._config_loader,
-            speak_channels=[PetSpeakChannel(loop)],
+            speak_channels=[PetSpeakChannel()],
         ) as host:
             self._loop = loop
             self._host = host
@@ -536,8 +546,7 @@ class PetSession:
         return hint
 
     async def _deliver(self, host: LaraExecutionHost, text: str) -> None:
-        self.turn_count += 1
-        input_id = f"turn-{time.time() * 1000:.0f}-{self.turn_count}"
+        input_id = f"turn-{uuid.uuid4().hex}"
         notice = self._model_unavailable_notice()
         if notice is not None:
             # Without a model the agent still runs and answers in plain text,
@@ -561,26 +570,10 @@ class PetSession:
             out({"type": "error", "msg": f"delivery failed: {exc!r}", "fatal": False})
             return
         if delivery.mode == "interrupt":
-            self._emit_fork_reply(delivery.outcome)
+            # pygent publishes the fork reply through PetSpeakChannel.
             return
         assert delivery.turn is not None
         await self._watch_turn(delivery.turn, input_id)
-
-    def _emit_fork_reply(self, outcome) -> None:
-        """Render the fork ack; ``None`` means a newer interrupt superseded it."""
-
-        if outcome is None:
-            return
-        speak_args = outcome.speak_args
-        if speak_args is not None and speak_args.say_nothing:
-            return
-        reply = (speak_args.text if speak_args is not None else outcome.text) or ""
-        if reply:
-            out({
-                "type": "speak",
-                "text": reply,
-                "attachments": list(speak_args.attachments) if speak_args is not None else [],
-            })
 
     async def _watch_turn(self, turn: ManagedSessionTurn, turn_id: str) -> None:
         out({"type": "turn_started", "turn_id": turn_id})
@@ -634,10 +627,17 @@ def main() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
             reconfigure(encoding="utf-8", errors="replace")
+    # Agent shell calls must use the CLI shipped with this sidecar.
+    cli_dir = (
+        Path(sys.executable).parent
+        if getattr(sys, "frozen", False)
+        else Path(sysconfig.get_path("scripts"))
+    )
+    os.environ["PATH"] = str(cli_dir) + os.pathsep + os.environ.get("PATH", "")
     workspace = (
         Path(sys.argv[sys.argv.index("--workspace") + 1])
         if "--workspace" in sys.argv
-        else user_lara_root() / "pet"
+        else default_pet_workspace()
     )
     try:
         session = PetSession(workspace)

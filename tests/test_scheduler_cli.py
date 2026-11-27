@@ -120,10 +120,13 @@ def test_install_and_uninstall_autostart(monkeypatch, tmp_path: Path) -> None:
 
     monkeypatch.setattr(scheduler_cli, "_lara_executable", lambda: tmp_path / "lara.exe")
     monkeypatch.setattr(scheduler_cli.subprocess, "run", fake_run)
-    installed = scheduler_cli._scheduler_install_autostart(argparse.Namespace())
+    monkeypatch.setattr(scheduler_cli, "load_run_config", lambda **_: _config(tmp_path))
+    installed = scheduler_cli._scheduler_install_autostart(_args(tmp_path))
     removed = scheduler_cli._scheduler_uninstall_autostart(argparse.Namespace())
     assert installed["task"] == scheduler_cli.AUTOSTART_TASK_NAME
     assert removed["status"] == "removed"
     assert calls[0][:4] == ["schtasks", "/Create", "/TN", scheduler_cli.AUTOSTART_TASK_NAME]
     assert "RestartOnFailure" in xml_seen[0]
+    assert "--workspace-root" in xml_seen[0]
+    assert f"<WorkingDirectory>{tmp_path / 'workspace'}</WorkingDirectory>" in xml_seen[0]
     assert calls[1][:3] == ["schtasks", "/Delete", "/TN"]
