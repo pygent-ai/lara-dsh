@@ -23,7 +23,7 @@ const UNSEEN_MS_PER_CHAR = 60;
 const basename = (path) => String(path).split(/[\\/]/).pop() || String(path);
 
 export class Bubble {
-  constructor(rootEl, textEl, attachEl, closeBtn, panelBtn, dotEl, { onTyping, onUnread }) {
+  constructor(rootEl, textEl, attachEl, closeBtn, panelBtn, dotEl, { onReveal, onUnread }) {
     this.root = rootEl;
     this.textEl = textEl;
     this.attachEl = attachEl;
@@ -36,7 +36,7 @@ export class Bubble {
     this.unread = 0;
     this.holdTimer = null;
     this.unseenTimer = null;
-    this.onTyping = onTyping;
+    this.onReveal = onReveal;
     this.onUnread = onUnread;
     closeBtn.addEventListener("click", () => this.skip());
     panelBtn.addEventListener("click", () => this.onPanel?.());
@@ -120,10 +120,15 @@ export class Bubble {
       this.streaming = false;
       this.textEl.textContent = text;
       this.renderAttachments(attachments);
+      this.onReveal?.();
       this.afterDone();
       return;
     }
     this.say(text, attachments);
+  }
+
+  abortStream() {
+    if (this.streaming) this.hide();
   }
 
   skip() {
@@ -206,7 +211,7 @@ export class Bubble {
   reveal(text) {
     this.typing = false;
     this.textEl.textContent = text;
-    this.onTyping(false);
+    this.onReveal?.();
     this.afterDone();
   }
 

@@ -10,26 +10,35 @@ export class Pet {
     this.skin = skin;
     this.state = "idle";
     this.frameIx = 0;
-    this.lastTick = 0;
+    this.lastTick = performance.now();
+    this.draw(this.animation.frames[0]);
     requestAnimationFrame((t) => this.tick(t));
   }
 
   setState(name) {
-    if (!this.skin.manifest.states[name] || this.state === name) return;
+    if (this.state === name) return;
     this.state = name;
-    this.frameIx = 0;
+    this.restart();
   }
 
   setSkin(skin) {
     this.skin = skin;
-    // 皮肤文件是外部输入：缺当前状态就回 idle，别让动画循环崩掉
-    if (!this.skin.manifest.states[this.state]) this.state = "idle";
+    this.restart();
+  }
+
+  get animation() {
+    const { states } = this.skin.manifest;
+    return states[this.state] ?? (this.state === "working" ? states.thinking : undefined) ?? states.idle;
+  }
+
+  restart() {
     this.frameIx = 0;
-    this.draw(this.skin.manifest.states[this.state].frames[0]);
+    this.lastTick = performance.now();
+    this.draw(this.animation.frames[0]);
   }
 
   tick(t) {
-    const state = this.skin.manifest.states[this.state];
+    const state = this.animation;
     if (t - this.lastTick >= 1000 / state.fps) {
       this.lastTick = t;
       this.frameIx = (this.frameIx + 1) % state.frames.length;

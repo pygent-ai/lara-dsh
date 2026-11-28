@@ -1,5 +1,6 @@
 import { loadSkin } from "./skin.js";
 import { Pet } from "./pet.js";
+import { createPetActivity } from "./pet_activity.mjs";
 import { Bubble } from "./bubble.js";
 import { MockAgent, SidecarTransport } from "./agent.js";
 import { installHitTest } from "./hit_test.js";
@@ -13,6 +14,7 @@ async function main() {
   const petEl = document.getElementById("pet");
   const skin = await loadSkin("./skins/default");
   const pet = new Pet(petEl, skin);
+  const activity = createPetActivity((state) => pet.setState(state));
   // 逐像素点击穿透的页面侧判定；必须在 Pet 之后安装，让画布上下文带上
   // willReadFrequently（hit_test.js 每次命中要读一个像素）。
   installHitTest(invoke);
@@ -20,7 +22,6 @@ async function main() {
   const bar = document.getElementById("input-bar");
   const input = document.getElementById("chat-input");
   const inputOpen = () => !bar.classList.contains("hidden");
-  const petIdleState = () => (inputOpen() ? "listening" : "idle");
 
   const bubble = new Bubble(
     document.getElementById("bubble"),
@@ -30,7 +31,7 @@ async function main() {
     document.getElementById("bubble-panel"),
     document.getElementById("unread-dot"),
     {
-      onTyping: (on) => pet.setState(on ? "speaking" : petIdleState()),
+      onReveal: activity.showReply,
     },
   );
 
@@ -143,8 +144,6 @@ async function main() {
       renderTranscript();
       panelInput.focus();
       bubble.engage();
-    } else if (!inputOpen()) {
-      pet.setState("idle");
     }
   };
   bubble.onPanel = () => togglePanel(true);
@@ -208,13 +207,17 @@ async function main() {
   const handleAgentEvent = (event) => {
     switch (event.type) {
       case "sidecar_ready":
-        break; // real session attached; bubbles now carry real speak events
+      case "dsh_activity":
+        activity.setDshWorking(event.working);
+        break;
       case "turn_started":
-        pet.setState("thinking");
+        activity.startTurn(event.turnId);
         showTyping();
         break;
       case "speak":
         bubble.finalize(event.text, event.attachments);
+        if (panelOpen()) activity.showReply();
+        activity.endStream();
         appendTranscript({
           role: "assistant",
           text: event.text,
@@ -222,26 +225,31 @@ async function main() {
         });
         break;
       case "speak_delta":
+        if (!event.text) break;
         bubble.stream(event.text);
         appendDelta(event.text);
-        pet.setState("speaking");
+        activity.streamReply(event.turnId);
         break;
-      case "turn_finished":
-        pet.setState(petIdleState());
-        removeLive();
+      case "turn_finished": {
+        const wasStreaming = activity.streaming;
+        activity.finishTurn(event.turnId);
+        if (!activity.streaming && (liveText || !activity.hasTurns)) removeLive();
         if (event.error) {
+          if (wasStreaming && !activity.streaming) bubble.abortStream();
           const text = `这轮没跑完：${event.error}`;
           bubble.finalize(text);
           // 面板开着时气泡被抑制，错误要在面板里内联可见。
           appendTranscript({ role: "assistant error", text });
         }
         break;
+      }
       case "sidecar_error":
         if (fellBack) return;
         if (event.fatal) {
           // 会话没了（bootstrap 失败 / 进程退出）：唯一进入演示模式的路径。
           fellBack = true;
           transport = mock;
+          activity.reset();
           const notice = `sidecar 不可用（${event.msg}），暂时进入演示模式。`;
           bubble.say(notice);
           appendTranscript({ role: "assistant error", text: notice });
@@ -276,11 +284,9 @@ async function main() {
       // 打进那个应用而不是输入条。
       getCurrentWindow().setFocus().catch(() => {});
       input.focus();
-      pet.setState("listening");
       bubble.engage();
     } else {
       input.blur();
-      pet.setState("idle");
     }
   };
   // 面板 → 输入条：收起面板（气泡接力续放队列里的消息）再唤出输入条。

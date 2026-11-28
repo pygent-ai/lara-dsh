@@ -310,11 +310,14 @@ class DshDaemon:
         *,
         state_dir: Path,
         on_event: Callable[[DshEvent | DshEventBatch], None] | None = None,
+        on_activity: Callable[[bool], None] | None = None,
         batch_window_seconds: float = FINISHED_BATCH_WINDOW_SECONDS,
     ) -> None:
         self._config = config
         self._state_dir = Path(state_dir)
         self._on_event = on_event
+        self._on_activity = on_activity
+        self._working = False
         self._gateway_slot: DshRuntimeGateway | None = None
         self._tracked: dict[str, _TrackedSession] = {}
         self._requests: dict[str, PendingRequest] = {}
@@ -333,6 +336,22 @@ class DshDaemon:
     @property
     def state_path(self) -> Path:
         return self._state_dir / DAEMON_STATE_FILENAME
+
+    @property
+    def working(self) -> bool:
+        with self._lock:
+            return self._working
+
+    def _update_activity_locked(self) -> None:
+        working = any(s.owned and s.status == "running" for s in self._tracked.values())
+        if working != self._working:
+            self._working = working
+            if self._on_activity is not None:
+                # Publish in state-change order. Observers must not call back into the daemon.
+                try:
+                    self._on_activity(working)
+                except Exception as exc:
+                    print(f"dsh daemon: activity observer failed: {exc!r}", file=sys.stderr)
 
     @property
     def gateway(self) -> DshRuntimeGateway:
@@ -432,15 +451,26 @@ class DshDaemon:
         # resolves it from dsh's own default workspace) instead of letting the
         # runtime stamp its process cwd.
         session_cwd = (cwd or str(self._config.cwd)) if entry is None else entry.cwd
+        submitted_at = time.time()
         with self._lock:
             tracked = self._tracked.setdefault(target, _TrackedSession())
+            previous_status, previous_start = tracked.status, tracked.turn_started_at
             tracked.owned = True
             tracked.cwd = session_cwd
             tracked.finish_reason = None
             tracked.error = None
             tracked.status = "running"
-            tracked.turn_started_at = time.time()
-        message_id = self.gateway.submit(target, prompt, cwd=session_cwd if created else None)
+            tracked.turn_started_at = submitted_at
+            self._update_activity_locked()
+        try:
+            message_id = self.gateway.submit(target, prompt, cwd=session_cwd if created else None)
+        except Exception:
+            with self._idle:
+                if tracked.status == "running" and tracked.turn_started_at == submitted_at:
+                    tracked.status, tracked.turn_started_at = previous_status, previous_start
+                    self._update_activity_locked()
+                    self._idle.notify_all()
+            raise
         return {"session_id": target, "message_id": message_id, "created": created, "cwd": session_cwd}
 
     def sessions(self) -> list[SessionView]:
@@ -551,6 +581,7 @@ class DshDaemon:
             tracked = self._tracked.setdefault(session_id, _TrackedSession())
             tracked.owned = True
             tracked.status = "idle"
+            self._update_activity_locked()
         view = self.status(session_id)
         assert view is not None
         return view
@@ -651,7 +682,13 @@ class DshDaemon:
             try:
                 notification = subscription.next()
             except Exception:
-                return  # runtime closed
+                with self._idle:
+                    for tracked in self._tracked.values():
+                        if tracked.status == "running":
+                            tracked.status = "disconnected"
+                    self._update_activity_locked()
+                    self._idle.notify_all()
+                return
             if notification.method == "session.status":
                 self._on_status(str(notification.payload["sessionId"]), str(notification.payload["status"]))
             elif notification.method == "session.event":
@@ -666,6 +703,7 @@ class DshDaemon:
         with self._idle:
             tracked = self._tracked.setdefault(session_id, _TrackedSession())
             tracked.status = status
+            self._update_activity_locked()
             if status == "idle":
                 self._idle.notify_all()
 

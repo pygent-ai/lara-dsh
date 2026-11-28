@@ -244,6 +244,8 @@ class PetSession:
         # the executing module copy, so the canonical desktop-pet persona is
         # rendered here into the static base prompt instead.
         self.config.system_prompt = self.config.system_prompt or self._persona()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._host: LaraExecutionHost | None = None
         self._dsh = self._start_dsh(dsh_target())
         self._lara_model = self._borrow_dsh_model()
         self._apply_lara_model(self.config)
@@ -252,8 +254,6 @@ class PetSession:
         self.session_id = resolve_session(self.manager, account_model)
         seal_interrupted_tool_calls(self.manager, self.session_id)
         self._turn_tasks: set[asyncio.Task[None]] = set()
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._host: LaraExecutionHost | None = None
         self._active_turn: ManagedSessionTurn | None = None
 
     def _persona(self) -> str:
@@ -351,6 +351,7 @@ class PetSession:
                 config,
                 state_dir=user_lara_root(config.dsh_home),
                 on_event=self._on_dsh_event,
+                on_activity=self._on_dsh_activity,
             )
             daemon.start()
         except Exception as exc:
@@ -358,6 +359,10 @@ class PetSession:
             return None
         log(f"dsh daemon on port {daemon.port}, home {config.dsh_home}, mode {daemon.mode}")
         return daemon
+
+    def _on_dsh_activity(self, working: bool) -> None:
+        if self._loop is not None and self._host is not None:
+            self._loop.call_soon_threadsafe(out, {"type": "dsh_activity", "working": working})
 
     def _on_dsh_event(self, event: DshEvent | DshEventBatch) -> None:
         """Called on the daemon's notification thread; hop onto the loop."""
@@ -460,6 +465,7 @@ class PetSession:
             "session_id": self.session_id,
             "workspace": str(self.workspace),
             "dsh_port": None if dsh is None else dsh.port,
+            "dsh_working": dsh is not None and dsh.working,
         })
         loop = asyncio.get_running_loop()
         while True:
@@ -528,7 +534,7 @@ class PetSession:
     async def _watch_turn(self, turn: ManagedSessionTurn, turn_id: str) -> None:
         out({"type": "turn_started", "turn_id": turn_id})
         try:
-            await self._stream_turn(turn)
+            await self._stream_turn(turn, turn_id)
             output, _ = await turn.result()
         except Exception as exc:
             # A turn that failed before or while running (pygent raises its
@@ -551,7 +557,7 @@ class PetSession:
             "error": str(result.get("error") or "") or None,
         })
 
-    async def _stream_turn(self, turn: ManagedSessionTurn) -> None:
+    async def _stream_turn(self, turn: ManagedSessionTurn, turn_id: str) -> None:
         await turn.wait_ready()
         if turn.execution_handle is None:
             return  # failed at startup; result() reports why
@@ -568,7 +574,7 @@ class PetSession:
                     # also covers turns this watcher never sees.
                     continue
                 for suffix in speak_bridge.feed(event.kind, plain_object(event.data)):
-                    out({"type": "speak_delta", "text": suffix})
+                    out({"type": "speak_delta", "text": suffix, "turn_id": turn_id})
 
 
 def main() -> None:

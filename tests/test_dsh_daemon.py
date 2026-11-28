@@ -473,6 +473,29 @@ def test_second_daemon_refuses_to_start_beside_a_live_one(tmp_path: Path, fake_g
         assert daemon.port is not None and daemon.port != 1
 
 
+def test_activity_tracks_all_owned_workers_until_the_last_one_finishes(
+    tmp_path: Path, fake_gateway: list[FakeGateway], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    activity: list[bool] = []
+    with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_activity=activity.append) as daemon:
+        daemon._on_status("external", "running")
+        assert activity == []
+        daemon.send("first", session_id="first")
+        daemon.send("second", session_id="second")
+        daemon._on_status("first", "idle")
+        assert activity == [True] and daemon.working
+        daemon._on_status("second", "idle")
+        assert activity == [True, False] and not daemon.working
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("dispatch failed")
+
+        monkeypatch.setattr(fake_gateway[0], "submit", fail)
+        with pytest.raises(RuntimeError, match="dispatch failed"):
+            daemon.send("failed", session_id="third")
+        assert activity == [True, False, True, False] and not daemon.working
+
+
 def test_simultaneous_finished_reports_are_batched(tmp_path: Path, fake_gateway: list[FakeGateway]) -> None:
     events: list[Any] = []
     with DshDaemon(_config(tmp_path), state_dir=tmp_path / "root", on_event=events.append, batch_window_seconds=0.3) as daemon:

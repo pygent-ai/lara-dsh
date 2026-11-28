@@ -1,8 +1,9 @@
 // Agent transport. Two implementations speak ONE event protocol:
-//   { type: "turn_started" }
+//   { type: "turn_started", turnId }
+//   { type: "dsh_activity", working }
 //   { type: "speak", text, attachments }   (final, complete speak delivery)
-//   { type: "speak_delta", text }          (streaming preview, M3 bridge)
-//   { type: "turn_finished" }
+//   { type: "speak_delta", text, turnId }
+//   { type: "turn_finished", turnId }
 // plus transport-lifecycle events: sidecar_ready / sidecar_error.
 export class SidecarTransport {
   constructor(onEvent) {
@@ -12,10 +13,13 @@ export class SidecarTransport {
   handle(event) {
     switch (event?.type) {
       case "ready":
-        this.onEvent({ type: "sidecar_ready", session: event.session_id });
+        this.onEvent({ type: "sidecar_ready", session: event.session_id, working: event.dsh_working === true });
+        break;
+      case "dsh_activity":
+        this.onEvent({ type: "dsh_activity", working: event.working === true });
         break;
       case "turn_started":
-        this.onEvent({ type: "turn_started" });
+        this.onEvent({ type: "turn_started", turnId: event.turn_id });
         break;
       case "speak":
         this.onEvent({
@@ -27,10 +31,10 @@ export class SidecarTransport {
       case "speak_delta":
         // Streaming preview of the speak text being generated; the final
         // speak event confirms (and replaces) what streamed.
-        this.onEvent({ type: "speak_delta", text: String(event.text || "") });
+        this.onEvent({ type: "speak_delta", text: String(event.text || ""), turnId: event.turn_id });
         break;
       case "turn_finished":
-        this.onEvent({ type: "turn_finished", error: event.error || null });
+        this.onEvent({ type: "turn_finished", turnId: event.turn_id, error: event.error || null });
         break;
       case "error":
         // fatal marks a dead session (bootstrap failure); everything else is
@@ -60,6 +64,7 @@ export class SidecarTransport {
 export class MockAgent {
   constructor(emit) {
     this.emit = emit;
+    this.nextTurn = 0;
   }
 
   // Events keep flowing through the shared listener after a fallback; the
@@ -67,7 +72,8 @@ export class MockAgent {
   handle() {}
 
   send(text) {
-    this.emit({ type: "turn_started" });
+    const turnId = ++this.nextTurn;
+    this.emit({ type: "turn_started", turnId });
     setTimeout(
       () => this.emit({ type: "speak", text: `收到：「${text}」`, attachments: [] }),
       700,
@@ -83,6 +89,6 @@ export class MockAgent {
         }),
       2600,
     );
-    setTimeout(() => this.emit({ type: "turn_finished" }), 2700);
+    setTimeout(() => this.emit({ type: "turn_finished", turnId }), 2700);
   }
 }
