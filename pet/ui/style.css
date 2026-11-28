@@ -61,18 +61,28 @@ body.chat-open #input-bar {
   display: none !important;
 }
 
-#bubble {
+#conversation-stack {
   position: absolute;
   left: 50%;
   bottom: 206px;
   transform: translateX(-50%);
-  width: max-content;
-  min-width: 0;
-  max-width: 272px;
-  /* 长回复不能把气泡顶出窗口：高度封顶，正文内部滚动，按钮始终在角上 */
-  max-height: calc(100vh - 230px);
+  width: min(280px, calc(100% - 16px));
+  max-height: calc(100% - 214px);
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#bubble {
+  position: relative;
+  width: max-content;
+  min-height: 0;
+  max-width: min(100%, 272px);
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
   padding: 8px 46px 8px 12px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid rgba(59, 59, 79, 0.25);
@@ -172,18 +182,32 @@ body.chat-open #input-bar {
 }
 
 #input-bar {
-  position: absolute;
-  left: 50%;
-  bottom: 206px;
-  transform: translateX(-50%);
-  width: 280px;
+  width: 100%;
   display: flex;
   gap: 6px;
+  flex: 0 0 auto;
+  pointer-events: auto;
 }
 
-/* 输入条打开时气泡整体上移让位 */
-body.input-open #bubble {
-  bottom: 252px;
+#pending-message {
+  margin-right: 2px;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+#pending-message-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+body:not(.input-open) #pending-message,
+body.input-open #conversation-stack:has(#pending-message:not(.hidden)) #bubble {
+  display: none;
 }
 
 #chat-input {

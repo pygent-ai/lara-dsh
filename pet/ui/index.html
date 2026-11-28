@@ -8,15 +8,27 @@
   </head>
   <body>
     <div id="stage">
-      <div id="input-bar" class="hidden">
-        <textarea
-          id="chat-input"
-          rows="1"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="跟兔兔说点什么…（Enter 发送 · Shift+Enter 换行 · Esc 关闭）"
-        ></textarea>
-        <button id="input-to-panel" title="切换到聊天面板">💬</button>
+      <div id="conversation-stack">
+        <div id="bubble" class="hidden">
+          <div id="bubble-text"></div>
+          <div id="bubble-attachments" class="hidden"></div>
+          <button id="bubble-panel" title="聊天面板">💬</button>
+          <button id="bubble-close" title="关掉这条">×</button>
+        </div>
+        <div id="pending-message" class="chat-msg user hidden" aria-live="polite">
+          <span id="pending-message-text"></span>
+        </div>
+        <div id="input-bar" class="hidden">
+          <textarea
+            id="chat-input"
+            rows="1"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="跟兔兔说话"
+            placeholder="Shift+Enter 换行"
+          ></textarea>
+          <button id="input-to-panel" title="切换到聊天面板">💬</button>
+        </div>
       </div>
 
       <div id="chat-panel" class="hidden">
@@ -49,13 +61,6 @@
         </select></label>
         <label>皮肤 <select id="set-skin"></select></label>
         <button id="settings-close">完成</button>
-      </div>
-
-      <div id="bubble" class="hidden">
-        <div id="bubble-text"></div>
-        <div id="bubble-attachments" class="hidden"></div>
-        <button id="bubble-panel" title="聊天面板">💬</button>
-        <button id="bubble-close" title="关掉这条">×</button>
       </div>
 
       <div id="unread-dot" class="hidden" title="有未读消息">1</div>

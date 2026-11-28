@@ -21,7 +21,13 @@ async function main() {
 
   const bar = document.getElementById("input-bar");
   const input = document.getElementById("chat-input");
+  const pendingMessage = document.getElementById("pending-message");
+  const pendingMessageText = document.getElementById("pending-message-text");
   const inputOpen = () => !bar.classList.contains("hidden");
+  const clearPendingMessage = () => {
+    pendingMessage.classList.add("hidden");
+    pendingMessageText.textContent = "";
+  };
 
   const bubble = new Bubble(
     document.getElementById("bubble"),
@@ -160,6 +166,11 @@ async function main() {
   }
   const sendText = (text) => {
     if (!text) return;
+    if (inputOpen()) {
+      if (!activity.streaming && bubble.visible) bubble.skip();
+      pendingMessageText.textContent = text;
+      pendingMessage.classList.remove("hidden");
+    }
     appendTranscript({ role: "user", text });
     bubble.engage();
     transport.send(text);
@@ -170,8 +181,10 @@ async function main() {
     let composing = false;
     // 多行时随内容长高，封顶由 CSS max-height 管；发送后缩回一行。
     const autosize = () => {
-      box.style.height = "auto";
-      box.style.height = `${box.scrollHeight}px`;
+      box.style.height = "";
+      if (!box.value) return;
+      const borderHeight = box.offsetHeight - box.clientHeight;
+      box.style.height = `${box.scrollHeight + borderHeight}px`;
     };
     box.addEventListener("input", autosize);
     box.addEventListener("compositionstart", () => {
@@ -215,6 +228,7 @@ async function main() {
         showTyping();
         break;
       case "speak":
+        clearPendingMessage();
         bubble.finalize(event.text, event.attachments);
         if (panelOpen()) activity.showReply();
         activity.endStream();
@@ -226,6 +240,7 @@ async function main() {
         break;
       case "speak_delta":
         if (!event.text) break;
+        clearPendingMessage();
         bubble.stream(event.text);
         appendDelta(event.text);
         activity.streamReply(event.turnId);
@@ -235,6 +250,7 @@ async function main() {
         activity.finishTurn(event.turnId);
         if (!activity.streaming && (liveText || !activity.hasTurns)) removeLive();
         if (event.error) {
+          clearPendingMessage();
           if (wasStreaming && !activity.streaming) bubble.abortStream();
           const text = `这轮没跑完：${event.error}`;
           bubble.finalize(text);
@@ -245,6 +261,7 @@ async function main() {
       }
       case "sidecar_error":
         if (fellBack) return;
+        clearPendingMessage();
         if (event.fatal) {
           // 会话没了（bootstrap 失败 / 进程退出）：唯一进入演示模式的路径。
           fellBack = true;
