@@ -1,121 +1,39 @@
-"""How Lara's dsh runtime connects, and how Lara borrows dsh's model setup.
-
-dsh (DeepSeek Harness) owns provider configuration: API keys live in its
-credential store (``$DSH_HOME/.credentials.yaml``, managed through dsh's own
-UI or ``lara dsh credentials``), and its llm service lists the providers and
-models that are actually available. Lara keeps no second copy of any key.
-
-``<dsh home>/lara/dsh.yaml`` holds only routing (no secrets)::
-
-    provider: deepseek-official # dsh provider route for worker sessions
-    model: deepseek-v4-flash    # model id the route resolves
-    base_url: https://…/v1      # optional OpenAI-compatible endpoint override
-    workspace: E:/work          # default cwd for new dsh sessions
-    lara_model: deepseek-flash  # optional; the pet's own model (default: dsh's route model)
-
-The dsh home itself is ``$DSH_HOME`` or ``~/.dsh`` (see
-``lara_shell.dsh_home``); Lara's root lives inside it. ``DSH_MODEL`` and
-``DEEPSEEK_BASE_URL`` in the process environment override the file. ``DEEPSEEK_API_KEY`` in the environment is
-honoured only when set explicitly for this process by the caller — the
-shell's exported credential store is kept away from dsh (see
-``lara_shell.dsh_gateway``).
-"""
+"""Resolve dsh workspaces and adapt the official account model to pygent."""
 
 from __future__ import annotations
 
 import copy
 import json
-import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from pygent.llm import ModelCapabilityCatalog
 
-from lara_shell import default_pet_workspace, dsh_home, user_lara_root
-from lara_shell.config.loader import load_mapping_file
-from lara_shell.config.yaml_subset import dump_yaml_subset
-from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DEFAULT_DSH_PROVIDER, OFFICIAL_BASE_URL, DshGatewayConfig
+from lara_shell import default_pet_workspace, dsh_home
+from lara_shell.dsh_gateway import DshGatewayConfig
 
-DSH_SETTINGS_FILENAME = "dsh.yaml"
-DEEPSEEK_OFFICIAL_BASE_URL = OFFICIAL_BASE_URL
-DEEPSEEK_MESSAGES_BASE_URL = "https://api.deepseek.com/anthropic"
 DEEPSEEK_API_KEY_REF = "DEEPSEEK_API_KEY"
-SETTABLE_KEYS = ("provider", "model", "base_url", "workspace", "lara_model")
+_ACCOUNT_PROTOCOL = "anthropic_messages"
 
 
-@dataclass(frozen=True)
-class DshSettings:
-    dsh_home: Path
-    workspace: Path
-    provider: str
-    model: str
-    base_url: str | None
-    # Explicit pet-side model override; ``None`` follows dsh's route model.
-    # Defaulting this to ``model`` used to shadow the model id dsh actually
-    # serves (``deepseek-flash``) with the local placeholder, so the pet asked
-    # the account endpoint for a model that does not exist.
-    lara_model: str | None = None
-
-    def lara_model_mapping(self, api_key_env: str) -> dict[str, Any]:
-        """Pygent ``connections/models/model_groups`` for the pet's own model."""
-        return build_model_mapping(
-            self.lara_model or self.model,
-            self.base_url or DEEPSEEK_OFFICIAL_BASE_URL,
-            api_key_env,
-        )
-
-    def gateway_config(self, cwd: Path | None = None) -> DshGatewayConfig:
-        return DshGatewayConfig(
-            dsh_home=self.dsh_home,
-            cwd=cwd or self.workspace,
-            provider=self.provider,
-            model=self.model,
-            base_url=self.base_url,
-        )
-
-
-def build_model_mapping(
-    model: str,
-    base_url: str,
-    api_key_env: str | None = None,
-    *,
-    protocol: str = "openai_chat_completions",
-    headers: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """Pygent ``connections/models/model_groups`` for one DeepSeek route.
-
-    ``api_key_env`` names the environment variable the host supplies
-    transiently (the key itself travels from dsh's credential store); pass
-    ``None`` for routes whose credential travels in ``headers`` instead
-    (e.g. the account token's ``x-dsh-auth-token``). The endpoint follows
-    dsh's own resolution per route.
-    """
-    connection: dict[str, Any] = {
-        "provider": "dsh",
-        # Header-authenticated routes (the signed-in account's grant token)
-        # carry no key at all: pygent's ``{"none": true}`` is the ref that
-        # resolves to None. An unset env ref would make pygent raise
-        # LookupError, which the agent swallows into llm=None — the pet then
-        # answers "API key is not configured" and the message vanishes.
-        "credential": (
-            {"none": True} if api_key_env is None else {"env": api_key_env}
-        ),
-        # 0.6.4 shape: each protocol endpoint is an object with base_url.
-        "protocols": {protocol: {"base_url": base_url or DEEPSEEK_OFFICIAL_BASE_URL}},
-        "verify_ssl": True,
-    }
-    if headers:
-        connection["headers"] = dict(headers)
+def build_model_mapping(model: str, base_url: str, token: str) -> dict[str, Any]:
     return {
-        "connections": {"dsh": connection},
+        "connections": {
+            "dsh": {
+                "provider": "dsh",
+                "credential": {"none": True},
+                "protocols": {_ACCOUNT_PROTOCOL: {"base_url": base_url}},
+                "headers": {"x-dsh-auth-token": token},
+                "verify_ssl": True,
+            },
+        },
         "models": {
             model: {
                 "connection": "dsh",
                 "model_id": model,
-                "protocol": protocol,
-                "capabilities": _capabilities_for(model, protocol),
-            }
+                "protocol": _ACCOUNT_PROTOCOL,
+                "capabilities": _capabilities_for(model, _ACCOUNT_PROTOCOL),
+            },
         },
         "model_groups": {"dsh": {"models": [model]}},
     }
@@ -189,85 +107,12 @@ def default_dsh_workspace(home: str | Path | None = None) -> Path | None:
     path = entry.get("path")
     if not isinstance(path, str) or not path.strip():
         return None
-    return _resolve(base, path.strip())
+    return (base / Path(path.strip()).expanduser()).resolve()
 
 
-def load_dsh_settings(
-    home: str | Path | None = None,
-    *,
-    environ: Mapping[str, str] | None = None,
-) -> DshSettings:
+def dsh_target(home: str | Path | None = None, cwd: Path | None = None) -> DshGatewayConfig:
     home = dsh_home(home)
-    root = user_lara_root(home)
-    env = os.environ if environ is None else environ
-    settings = read_dsh_settings_file(root)
-    workspace_value = _non_empty(settings.get("workspace"))
-    workspace = (
-        _resolve(root, workspace_value)
-        if workspace_value
-        else default_dsh_workspace(home) or default_pet_workspace(home)
-    )
-    model = _non_empty(env.get("DSH_MODEL")) or _non_empty(settings.get("model")) or DEFAULT_DSH_MODEL
-    return DshSettings(
+    return DshGatewayConfig(
         dsh_home=home,
-        workspace=workspace,
-        provider=_non_empty(settings.get("provider")) or DEFAULT_DSH_PROVIDER,
-        model=model,
-        base_url=_non_empty(env.get("DEEPSEEK_BASE_URL")) or _non_empty(settings.get("base_url")),
-        lara_model=_non_empty(settings.get("lara_model")),
+        cwd=cwd or default_dsh_workspace(home) or default_pet_workspace(home),
     )
-
-
-def read_dsh_settings_file(user_lara_root: str | Path) -> dict[str, Any]:
-    """The raw ``dsh.yaml`` mapping (empty when absent)."""
-    path = Path(user_lara_root).expanduser().resolve() / DSH_SETTINGS_FILENAME
-    if not path.is_file():
-        return {}
-    data = load_mapping_file(path)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a mapping")
-    return data
-
-
-def write_dsh_settings_file(user_lara_root: str | Path, updates: Mapping[str, str | None]) -> Path:
-    """Merge ``updates`` into ``dsh.yaml`` (``None`` removes a key)."""
-    root = Path(user_lara_root).expanduser().resolve()
-    data = read_dsh_settings_file(root)
-    for key, value in updates.items():
-        if key not in SETTABLE_KEYS:
-            raise ValueError(f"unknown dsh setting {key!r}; expected one of {', '.join(SETTABLE_KEYS)}")
-        if value is None or not str(value).strip():
-            data.pop(key, None)
-        else:
-            data[key] = str(value).strip()
-    path = root / DSH_SETTINGS_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(dump_yaml_subset(data) if data else "", encoding="utf-8")
-    return path
-
-
-def _resolve(root: Path, value: str) -> Path:
-    path = Path(value).expanduser()
-    return (root / path).resolve()
-
-
-def _non_empty(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-__all__ = [
-    "default_dsh_workspace",
-    "DEEPSEEK_API_KEY_REF",
-    "DEEPSEEK_MESSAGES_BASE_URL",
-    "DEEPSEEK_OFFICIAL_BASE_URL",
-    "DSH_SETTINGS_FILENAME",
-    "SETTABLE_KEYS",
-    "DshSettings",
-    "build_model_mapping",
-    "load_dsh_settings",
-    "read_dsh_settings_file",
-    "write_dsh_settings_file",
-]

@@ -85,27 +85,11 @@ lara-pet-sidecar --help   # or just: where lara-pet-sidecar
 The first `lara …` command downloads the DeepSeek Harness runtime resources
 (~80 MB, once) into `%USERPROFILE%\.cache\deepseek-harness`.
 
-## 2. Give dsh an API key
+## 2. Sign in to dsh
 
-Lara runs on DeepSeek Harness (dsh); dsh owns the provider configuration and
-Lara borrows it. Store the key in dsh's credential store (it is read from
-stdin / an interactive prompt, never passed on the command line):
-
-```powershell
-lara dsh credentials DEEPSEEK_API_KEY --set
-```
-
-Using an OpenAI-compatible endpoint other than the official DeepSeek API?
-Point dsh at it:
-
-```powershell
-lara dsh config base_url=https://your-endpoint/v1 model=deepseek-v4-flash
-```
-
-`lara dsh config` shows the effective routing; `lara dsh models` lists what
-the runtime can see. Everything lives under `~/.dsh`: the key in
-`~/.dsh/.credentials.yaml`, routing in `~/.dsh/lara/dsh.yaml`, Lara's own
-sessions and settings under `~/.dsh/lara/`.
+Open dsh, sign in to your DeepSeek account, and select an account model in
+dsh's model picker. The pet uses the model selected by the running dsh.
+`lara dsh models` lists the models the running instance exposes.
 
 Sanity check (talks to the model):
 
@@ -132,7 +116,7 @@ installing the wheel if needed), or set the environment variable
 | | |
 |---|---|
 | dsh home (shared with any dsh front end) | `~/.dsh` (`DSH_HOME` overrides) |
-| Lara's data | `~/.dsh/lara/` — `config.yaml`, `dsh.yaml`, `pet-config.json`, `projects/` |
+| Lara's data | `~/.dsh/lara/` — `config.yaml`, `pet-config.json`, `projects/` |
 | pet workspace (where Lara works by default) | `~/.dsh/lara/pet` (`LARA_PET_WORKSPACE` overrides) |
 | runtime resources cache | `~/.cache/deepseek-harness` |
 

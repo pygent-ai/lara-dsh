@@ -15,7 +15,7 @@ sessions of that UI.
 sdk``) through the official Python SDK, with the plugin layered on via
 ``--patch``; the SDK wire carries prompts, events, approvals and questions and
 the plugin adds the session inventory. :func:`open_gateway` picks attach when
-a live plugin is published and spawn otherwise.
+a live plugin is published. The SDK gateway is launched explicitly.
 """
 
 from __future__ import annotations
@@ -40,13 +40,9 @@ from deepseek_harness.models import IncomingRequest, Notification, UserQuestionR
 
 from lara_shell import default_pet_workspace, dsh_home
 
-DEFAULT_DSH_PROVIDER = "deepseek-official"
-DEFAULT_DSH_MODEL = "deepseek-v4-flash"
-
 SESSION_CONTROL_PLUGIN_DIR = Path(__file__).resolve().parent / "dsh_plugin" / "lara-session-control"
 SESSION_CONTROL_PATCH = SESSION_CONTROL_PLUGIN_DIR / "cordis.patch.yml"
 CONTROL_PORT_ENV = "LARA_DSH_CONTROL_PORT"
-OFFICIAL_BASE_URL = "https://api.deepseek.com/v1"
 # Written by the plugin when it runs inside a dsh Lara did not spawn.
 PLUGIN_ENDPOINT_FILENAME = "dsh-plugin.json"
 
@@ -55,8 +51,8 @@ PLUGIN_ENDPOINT_FILENAME = "dsh-plugin.json"
 class DshGatewayConfig:
     dsh_home: Path
     cwd: Path
-    provider: str = DEFAULT_DSH_PROVIDER
-    model: str = DEFAULT_DSH_MODEL
+    provider: str | None = None
+    model: str | None = None
     api_key: str | None = None
     base_url: str | None = None
     runtime_cwd: Path | None = None
@@ -76,24 +72,6 @@ class DshGatewayConfig:
         if workspace == default_pet_workspace(self.dsh_home):
             workspace.mkdir(parents=True, exist_ok=True)
         return workspace
-
-    @classmethod
-    def from_env(cls, dsh_home: str | Path, cwd: str | Path) -> "DshGatewayConfig":
-        """Read provider credentials from the process environment.
-
-        ``DEEPSEEK_BASE_URL`` / ``DEEPSEEK_API_KEY`` select any
-        OpenAI-compatible endpoint (the dsh runtime speaks the DeepSeek
-        wire protocol against it); ``DSH_MODEL`` overrides the model id.
-        """
-        runtime_cwd = os.environ.get("DSH_RUNTIME_CWD")
-        return cls(
-            dsh_home=Path(dsh_home),
-            cwd=Path(cwd),
-            model=os.environ.get("DSH_MODEL") or DEFAULT_DSH_MODEL,
-            api_key=os.environ.get("DEEPSEEK_API_KEY") or None,
-            base_url=os.environ.get("DEEPSEEK_BASE_URL") or None,
-            runtime_cwd=Path(runtime_cwd) if runtime_cwd else None,
-        )
 
 
 @dataclass(frozen=True)
@@ -551,9 +529,12 @@ class DshGateway(DshRuntimeGateway):
         runtime_cwd.mkdir(parents=True, exist_ok=True)
         self._config.dsh_home.mkdir(parents=True, exist_ok=True)
         control_port = _free_loopback_port()
+        selection = {
+            key: value
+            for key, value in (("provider", self._config.provider), ("model", self._config.model))
+            if value is not None
+        }
         config = DeepSeekHarnessConfig(
-            provider=self._config.provider,
-            model=self._config.model,
             cwd=str(workspace),
             runtime_cwd=str(runtime_cwd),
             dsh_home=str(self._config.dsh_home),
@@ -564,6 +545,7 @@ class DshGateway(DshRuntimeGateway):
             api_key=self._config.api_key,
             approval_requests=self._approval_requests,
             on_user_question=self._on_user_question,
+            **selection,
         )
         harness = DeepSeekHarness(config)
         with _without_inherited_deepseek_env(self._config):
@@ -639,23 +621,6 @@ class DshGateway(DshRuntimeGateway):
 
     def notifications(self) -> EventSubscription:
         return _SdkEventSubscription(self._client().subscribe_notifications())
-
-    def model_route(self) -> dict[str, Any]:
-        """The route the spawned runtime rides: its own initialize parameters.
-
-        The SDK server keeps no account sign-in and no separate default-model
-        service, so the route is exactly what this gateway was configured
-        with (dsh.yaml), resolved the way the plugin resolves credentials.
-        """
-        self.start()
-        key = self.resolve_credential("DEEPSEEK_API_KEY")
-        return {
-            "default": {"provider": self._config.provider, "model": self._config.model},
-            "providers": self.list_models(),
-            "apiKey": {"configured": key is not None, "value": key},
-            "account": {"signedIn": False},
-            "baseURL": self._config.base_url or OFFICIAL_BASE_URL,
-        }
 
     @staticmethod
     def _is_bootstrap_race(result: RunResult) -> bool:
@@ -960,12 +925,7 @@ def open_gateway(
     approval_requests: bool = False,
     on_user_question: UserQuestionHandler | None = None,
 ) -> DshRuntimeGateway:
-    """Attach to the running dsh when its Lara plugin answers; else spawn one.
-
-    The returned gateway is not started. Attach is chosen only when the
-    published plugin runs in a profile with ``sessionController`` (web or
-    desktop), where prompts can be delivered.
-    """
+    """Connect to the runtime that owns dsh's live settings and account."""
     endpoint = config.plugin_endpoint
     if endpoint is None:
         published = probe_plugin_endpoint(config.dsh_home)
@@ -977,4 +937,4 @@ def open_gateway(
             approval_requests=approval_requests,
             on_user_question=on_user_question,
         )
-    return DshGateway(config, approval_requests=approval_requests, on_user_question=on_user_question)
+    raise SessionControlError(f"no running dsh with a Lara plugin for {config.dsh_home}")

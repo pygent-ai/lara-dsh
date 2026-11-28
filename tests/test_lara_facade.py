@@ -419,6 +419,6 @@ def test_prompt_profile_is_modular() -> None:
     # The CLI grammar the prompt teaches must exist.
     from lara_shell.ops.cli.main import build_parser
     dsh_parser = next(a for a in build_parser()._subparsers._group_actions[0].choices["dsh"]._subparsers._group_actions)  # type: ignore[union-attr]
-    for command in ("send", "sessions", "status", "wait", "resume", "cancel", "requests", "approve", "reject", "answer", "decline", "config"):
+    for command in ("send", "sessions", "status", "wait", "resume", "cancel", "requests", "approve", "reject", "answer", "decline", "models"):
         assert f"lara dsh {command}" in dsh, command
         assert command in dsh_parser.choices, command

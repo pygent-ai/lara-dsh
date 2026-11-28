@@ -3,7 +3,7 @@
 The real-runtime tests run in throwaway dsh homes but need a working
 DeepSeek route. The key comes from ``DEEPSEEK_API_KEY`` when the caller
 exports it, otherwise from the user's own dsh credential store (the same
-place the pet reads it from); the endpoint comes from ``dsh.yaml``. Tests
+store); the endpoint comes from the test environment. Tests
 are skipped when neither source has a key.
 """
 
@@ -17,22 +17,22 @@ from pathlib import Path
 import pytest
 
 from lara_shell.dsh_gateway import DshGateway, DshGatewayConfig
-from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, load_dsh_settings
+from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, dsh_target
 
 
 @lru_cache(maxsize=1)
 def deepseek_route() -> tuple[str, str | None] | None:
     """``(api_key, base_url)`` for the real-runtime tests, or None when unavailable."""
-    settings = load_dsh_settings()
+    settings = dsh_target()
     key = os.environ.get("DEEPSEEK_API_KEY") or None
     if key is None and (settings.dsh_home / ".credentials.yaml").is_file():
         with tempfile.TemporaryDirectory() as scratch:
             try:
-                with DshGateway(settings.gateway_config(Path(scratch))) as gateway:
+                with DshGateway(dsh_target(settings.dsh_home, Path(scratch))) as gateway:
                     key = gateway.resolve_credential(DEEPSEEK_API_KEY_REF)
             except Exception:
                 key = None
-    return None if key is None else (key, settings.base_url)
+    return None if key is None else (key, os.getenv("DEEPSEEK_BASE_URL"))
 
 
 def real_gateway_config(dsh_home: Path, cwd: Path) -> DshGatewayConfig:
@@ -41,8 +41,7 @@ def real_gateway_config(dsh_home: Path, cwd: Path) -> DshGatewayConfig:
     if route is None:
         pytest.skip("real dsh runtime needs DEEPSEEK_API_KEY or a key in dsh's credential store")
     api_key, base_url = route
-    settings = load_dsh_settings()
     return DshGatewayConfig(
-        dsh_home=dsh_home, cwd=cwd, provider=settings.provider, model=settings.model,
+        dsh_home=dsh_home, cwd=cwd,
         api_key=api_key, base_url=base_url,
     )

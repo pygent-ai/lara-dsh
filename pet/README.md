@@ -46,21 +46,11 @@ lara agent 的桌宠形态前端：Tauri 2 壳 + 像素兔皮肤 + 全局三击 
   host 请求、`user-question/ask` 回调，dsh ≥ 0.2.2rc2），由 daemon 接住，以
   `<dsh-event kind="approval_request"/"question">` 投给 Lara，Lara 用 speak 转问用户后
   `lara dsh approve/reject/answer/decline` 回复，15 分钟无人回答则 fail-closed。
-- **Lara 住在 dsh 的 home 里**：dsh home 是 `$DSH_HOME`（默认 `~/.dsh`，与 dsh 自己的
-  前端共享），Lara 的全部用户态数据在 `<dsh home>/lara/`（config.yaml、projects、pet
-  配置、dsh.yaml 等）。`lara dsh ... --home <目录>` 同时选择配置、daemon 和会话。
-  **注意 dsh 的卸载清理脚本会整个删除
-  `~/.dsh`，Lara 的数据随之一起删除。** API key 存在 dsh 的凭据库
-  `<dsh home>/.credentials.yaml`（`lara dsh credentials DEEPSEEK_API_KEY --set` 写入），
-  `<dsh home>/lara/dsh.yaml` 只放路由（provider/model/base_url/workspace/lara_model，
-  `lara dsh config` 查改，`lara dsh models` 列可选模型）。**桌宠自己的模型
-  也从 dsh 借**：sidecar 启动时先起 dsh daemon，从其凭据库取 DeepSeek key，拼成
-  pygent 的 connection（model group `dsh`）；dsh 没有 key 时才回退到 `config.yaml`。
-  `lara dsh open` 在共享 home 上拉起 `dsh web`（带令牌 URL 缓存于
-  `<dsh home>/lara/dsh-web.json`）让用户直接浏览所有会话。dsh 起不来时桌宠照常运行，
-  只是没有 worker。
+- **dsh 官方账号**：在 dsh 中登录并选中账号模型后，从该 dsh 启动桌宠。
+  桌宠读取运行中的 dsh 当前选中的账号模型。Lara 的项目和桌宠设置在
+  `<dsh home>/lara/`，`lara dsh ... --home <目录>` 选择要连接的 dsh。
 - **dsh 任务路径**：`--cwd` 只用于创建新会话，相对路径以 CLI 调用目录为准。
-  省略时使用 `dsh.yaml` 中的 `workspace`，再查 dsh 登记的默认工作区，最后使用
+  省略时使用 dsh 登记的默认工作区，其次使用
   `<dsh home>/lara/pet`。完成回报携带会话的 `cwd`。发送项目文件时，先运行
   `lara --workspace-root <桌宠工作区> dsh artifact <会话 ID> <文件>`，
   再把命令返回的工作区相对路径交给 speak。

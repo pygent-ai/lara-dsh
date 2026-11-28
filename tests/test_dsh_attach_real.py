@@ -18,7 +18,7 @@ import pytest
 from lara_shell import dsh_home
 from lara_shell.dsh_daemon import DshDaemon, DshDaemonClient, DshEvent, DshEventBatch
 from lara_shell.dsh_gateway import AttachedDshGateway, DshGatewayConfig, probe_plugin_endpoint
-from lara_shell.dsh_settings import load_dsh_settings
+from lara_shell.dsh_settings import dsh_target
 
 REPO_TMP = Path(__file__).resolve().parent.parent / ".tmp"
 
@@ -31,8 +31,7 @@ def _live_endpoint():
 
 
 def _config(cwd: Path) -> DshGatewayConfig:
-    settings = load_dsh_settings()
-    return DshGatewayConfig(dsh_home=dsh_home(), cwd=cwd, provider=settings.provider, model=settings.model)
+    return dsh_target(cwd=cwd)
 
 
 @pytest.mark.e2e

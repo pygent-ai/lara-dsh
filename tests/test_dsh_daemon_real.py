@@ -20,7 +20,8 @@ import pytest
 
 from lara_shell import dsh_home
 from lara_shell.dsh_daemon import DshDaemon, DshDaemonClient, DshEvent, DshEventBatch
-from lara_shell.dsh_gateway import ensure_primary_runtime
+from lara_shell.dsh_gateway import AttachedDshGateway, DshGateway, ensure_primary_runtime, probe_plugin_endpoint
+from lara_shell.dsh_settings import dsh_target
 
 from _dsh_support import real_gateway_config
 
@@ -31,8 +32,9 @@ REQUIRES_API_KEY = pytest.mark.skipif(
 
 
 @REQUIRES_API_KEY
-def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) -> None:
+def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ensure_primary_runtime()
+    monkeypatch.setattr("lara_shell.dsh_daemon.open_gateway", DshGateway)
     workspace = tmp_path / "ws"
     workspace.mkdir()
     project = tmp_path / "project"
@@ -65,9 +67,15 @@ def test_daemon_dispatches_and_reports_against_the_real_runtime(tmp_path: Path) 
 
 
 @pytest.mark.e2e
-@REQUIRES_API_KEY
 def test_pet_sidecar_relays_a_dsh_task_and_its_report(tmp_path: Path) -> None:
     """User → Lara → `lara dsh send` → dsh writes the file → Lara speaks the report."""
+    endpoint = probe_plugin_endpoint(dsh_home())
+    if endpoint is None or not endpoint.attach:
+        pytest.skip("the pet requires a running dsh with an account route")
+    with AttachedDshGateway(dsh_target()) as gateway:
+        route = gateway.model_route()
+    if (route.get("default") or {}).get("provider") != "deepseek-account" or not (route.get("account") or {}).get("token"):
+        pytest.skip("the pet requires a signed-in dsh account model")
     workspace = tmp_path / "pet-ws"
     workspace.mkdir()
     process = subprocess.Popen(

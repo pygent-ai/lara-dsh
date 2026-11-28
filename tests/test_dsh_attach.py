@@ -187,11 +187,13 @@ def test_probe_finds_the_published_plugin_and_ignores_a_stale_file(tmp_path: Pat
 
 def test_open_gateway_attaches_only_to_a_live_plugin_with_prompt_support(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    assert isinstance(open_gateway(config), DshGateway)  # nothing published: spawn
+    with pytest.raises(SessionControlError, match="no running dsh"):
+        open_gateway(config)
     sdk_only = FakePlugin(tmp_path / "home", attach=False)
     sdk_only.publish()
     try:
-        assert isinstance(open_gateway(config), DshGateway)  # sdk profile: cannot prompt
+        with pytest.raises(SessionControlError, match="no running dsh"):
+            open_gateway(config)
     finally:
         sdk_only.close()
     web = FakePlugin(tmp_path / "home")

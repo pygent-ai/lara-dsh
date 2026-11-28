@@ -80,7 +80,7 @@ Dispatching and following work
 - `lara dsh resume <id> "<message>"` restores an earlier session and continues it.
 - `lara dsh cancel <id>` stops a session that is running away.
 - `lara dsh requests` lists questions and approvals still waiting for an answer;
-  `lara dsh config` shows or changes dsh's connection, model, home and workspace.
+  `lara dsh models` lists models exposed by the running dsh.
 
 Reports from dsh
 dsh never talks to the user; it reports to you as `<dsh-event>` messages. They

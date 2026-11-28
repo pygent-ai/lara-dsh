@@ -49,8 +49,8 @@ from lara_shell import default_pet_workspace, user_lara_root
 from lara_shell.config.loader import load_run_config
 from lara_shell.credentials import build_credential_environment
 from lara_shell.dsh_daemon import DshDaemon, DshEvent, DshEventBatch
-from lara_shell.dsh_gateway import PluginEndpoint
-from lara_shell.dsh_settings import DEEPSEEK_MESSAGES_BASE_URL, DEEPSEEK_OFFICIAL_BASE_URL, DshSettings, build_model_mapping, load_dsh_settings
+from lara_shell.dsh_gateway import DshGatewayConfig, PluginEndpoint
+from lara_shell.dsh_settings import build_model_mapping, dsh_target
 from pygent.agent.pygent_v1.schema import ResolvedAgentConfig
 from pygent.llm import ModelConfig
 from pygent.agent.pygent_v1.core.io import plain_object
@@ -73,7 +73,6 @@ from lara_pet.speak_stream import SpeakStreamBridge
 CASE_ID = "pet"
 
 # Env name under which dsh's DeepSeek key is handed to pygent, transiently.
-LARA_DSH_KEY_ENV = "LARA_DSH_DEEPSEEK_API_KEY"
 
 # Harness-originated messages carry their own framing; the runtime leaves this
 # kind out of the <user-context> wrapper and logs it with origin "automation".
@@ -109,12 +108,19 @@ def log(msg: str) -> None:
     print(f"pet-sidecar: {msg}", file=sys.stderr, flush=True)
 
 
-def resolve_session(manager: SessionManager) -> str:
+def resolve_session(manager: SessionManager, account_model: str | None = None) -> str:
     """The kernel keeps exactly one lara-says session; resume or create it."""
     try:
-        manager.load(PYGENT_SAYS_SESSION_MODE)
+        session = manager.load(PYGENT_SAYS_SESSION_MODE)
     except FileNotFoundError:
         manager.create(CASE_ID, mode=PYGENT_SAYS_SESSION_MODE)
+    else:
+        if account_model is not None and (
+            session.model_group_name != "dsh" or session.selected_model_key != account_model
+        ):
+            session.model_group_name = "dsh"
+            session.selected_model_key = account_model
+            manager.save(session)
     return PYGENT_SAYS_SESSION_MODE
 
 
@@ -176,6 +182,7 @@ def seal_interrupted_tool_calls(manager: SessionManager, session_id: str) -> int
         if role == "tool":
             for result in message.get("results") or []:
                 awaiting.pop(result.get("call_id"), None)
+            rebuilt.append(message)
         else:
             if awaiting:
                 dangling = {k: v for k, v in awaiting.items() if k not in answered}
@@ -217,7 +224,7 @@ class PetSession:
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace.expanduser().resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
-        self.config = load_run_config(workspace_root=self.workspace)
+        self.config = load_run_config(workspace_root=self.workspace, load_local_model=False)
         # The pet runs unattended: realtime speak interaction on, approval
         # prompts off (nobody is watching a dialog box).
         # The fork reply forces tool_choice="speak"; DeepSeek's Anthropic
@@ -237,15 +244,12 @@ class PetSession:
         # the executing module copy, so the canonical desktop-pet persona is
         # rendered here into the static base prompt instead.
         self.config.system_prompt = self.config.system_prompt or self._persona()
-        # dsh owns provider configuration; when its credential store has the
-        # DeepSeek key, the pet runs on that same key and endpoint instead of
-        # a second model setup in config.yaml.
-        self._dsh_settings = load_dsh_settings()
-        self._dsh = self._start_dsh(self._dsh_settings)
+        self._dsh = self._start_dsh(dsh_target())
         self._lara_model = self._borrow_dsh_model()
         self._apply_lara_model(self.config)
         self.manager = SessionManager(self.config)
-        self.session_id = resolve_session(self.manager)
+        account_model = None if self._lara_model is None else next(iter(self._lara_model["models"]))
+        self.session_id = resolve_session(self.manager, account_model)
         seal_interrupted_tool_calls(self.manager, self.session_id)
         self._turn_tasks: set[asyncio.Task[None]] = set()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -277,76 +281,42 @@ class PetSession:
 
     def _config_loader(self, **kwargs):
         kwargs.setdefault("workspace_root", str(self.workspace))
-        config = load_run_config(**kwargs)
+        config = load_run_config(**kwargs, load_local_model=False)
         self._apply_lara_model(config)
         return config
 
     def _borrow_dsh_model(self) -> dict[str, Any] | None:
-        """The pet's own model route taken from dsh's official configuration.
-
-        Returns ``{"model", "base_url", "protocol", "headers", "key_env",
-        "key"}`` for either dsh route: the api-key route (official or relay
-        endpoint, key from dsh's credential store) or the account route (the
-        signed-in grant token as ``x-dsh-auth-token`` on the official
-        Messages protocol, pygent 0.6.4+ connection ``headers``). ``None``
-        when no route is rideable; the pet keeps its config.yaml model.
-        """
+        """Use the signed-in model selected by the running dsh."""
         if self._dsh is None:
-            log("no dsh daemon, so no route to borrow; the pet keeps its own config.yaml model")
             return None
         try:
             route = self._dsh.gateway.model_route()
         except Exception as exc:
-            log(f"could not read dsh's model route: {exc!r}")
+            log(f"could not read dsh's model route: {type(exc).__name__}")
             return None
-        default = route.get("default") or {}
-        provider = str(default.get("provider") or "deepseek-official")
-        model = str(default.get("model") or "") or str(self._dsh_settings.lara_model)
-        if provider == "deepseek-account":
-            account = route.get("account") or {}
-            token = account.get("token")
-            if not token:
-                log("dsh's default provider is deepseek-account but no signed-in grant; the pet keeps its config.yaml model")
-                return None
-            return {
-                "model": model,
-                "base_url": str(account.get("baseURL") or DEEPSEEK_MESSAGES_BASE_URL),
-                "protocol": "anthropic_messages",
-                "headers": {"x-dsh-auth-token": str(token)},
-                "key_env": None,
-                "key": None,
-            }
-        if provider != "deepseek-official":
-            log(f"dsh's default provider is {provider!r}; the pet keeps its config.yaml model")
+        selection = route.get("default") or {}
+        account = route.get("account") or {}
+        model = selection.get("model")
+        token = account.get("token")
+        base_url = account.get("baseURL")
+        if (
+            selection.get("provider") != "deepseek-account"
+            or not account.get("signedIn")
+            or not all(isinstance(value, str) and value for value in (model, token, base_url))
+        ):
+            log("dsh has no selected model on a signed-in DeepSeek account")
             return None
-        key = (route.get("apiKey") or {}).get("value")
-        if not key:
-            log("dsh has no DEEPSEEK_API_KEY credential; the pet keeps its config.yaml model")
-            return None
-        return {
-            "model": model,
-            "base_url": str(route.get("baseURL") or DEEPSEEK_OFFICIAL_BASE_URL),
-            "protocol": "openai_chat_completions",
-            "headers": None,
-            "key_env": LARA_DSH_KEY_ENV,
-            "key": str(key),
-        }
+        return build_model_mapping(model, base_url, token)
 
     def _apply_lara_model(self, config) -> None:
-        """Point the pet's model at dsh's official route when it is rideable."""
-        if self._lara_model is None:
+        mapping = self._lara_model
+        if mapping is None:
+            config.model_config_mapping = {}
+            config.model_config = None
+            config.model_configuration_status = "unconfigured"
+            config.model_configuration_error = None
+            config.resolved_agent = None
             return
-        route = self._lara_model
-        model = route["model"]
-        if self._dsh_settings.lara_model and self._dsh_settings.lara_model != model:
-            model = self._dsh_settings.lara_model  # explicit pet-side override
-        mapping = build_model_mapping(
-            model,
-            route["base_url"],
-            route.get("key_env"),
-            protocol=route["protocol"],
-            headers=route.get("headers"),
-        )
         config.model_config_mapping = mapping
         config.model_config = ModelConfig.from_mapping(mapping)
         config.model_configuration_status = "configured"
@@ -359,28 +329,17 @@ class PetSession:
         # compression and eternal extraction budget off RunConfig.context_window
         # alone. Clamp the inherited budget to the borrowed model's declared
         # window so compaction fires before the real API window overflows.
-        limits = config.model_config.models[model].spec.capabilities.limits
+        model = next(iter(config.model_config.models.values()))
+        limits = model.spec.capabilities.limits
         if limits.context_tokens:
             config.context_window = min(
                 v for v in (config.context_window, limits.context_tokens) if v
             )
             log(f"context budget {config.context_window} tokens (model declares {limits.context_tokens})")
 
-    def _credential_environ(self):
-        key = None if self._lara_model is None else self._lara_model.get("key")
-        transient = {} if not key else {LARA_DSH_KEY_ENV: key}
-        return build_credential_environment(self.config.user_pygent_root, transient=transient)
-
-    def _start_dsh(self, settings: DshSettings) -> DshDaemon | None:
-        """Lara's seat as dsh system agent: one resident runtime for the pet's life.
-
-        The daemon publishes its port for ``lara dsh`` (which Lara runs via
-        bash) and reports finished dsh turns back into Lara's own session as
-        ``<dsh-event>`` messages. A dsh that cannot boot (no credential, no
-        runtime download) degrades to a pet without a worker, not a dead pet.
-        """
+    def _start_dsh(self, config: DshGatewayConfig) -> DshDaemon | None:
+        """Attach the pet's daemon to the running dsh."""
         try:
-            config = settings.gateway_config()
             if "LARA_DSH_PLUGIN_PID" in os.environ:
                 endpoint = PluginEndpoint(
                     port=int(os.environ["LARA_DSH_PLUGIN_PORT"]),
@@ -390,14 +349,14 @@ class PetSession:
                 config = replace(config, plugin_endpoint=endpoint)
             daemon = DshDaemon(
                 config,
-                state_dir=user_lara_root(settings.dsh_home),
+                state_dir=user_lara_root(config.dsh_home),
                 on_event=self._on_dsh_event,
             )
             daemon.start()
         except Exception as exc:
             log(f"dsh daemon unavailable: {exc!r}")
             return None
-        log(f"dsh daemon on port {daemon.port}, home {settings.dsh_home}, mode {daemon.mode}")
+        log(f"dsh daemon on port {daemon.port}, home {config.dsh_home}, mode {daemon.mode}")
         return daemon
 
     def _on_dsh_event(self, event: DshEvent | DshEventBatch) -> None:
@@ -450,7 +409,7 @@ class PetSession:
 
     async def _start_event_turn(self, event: DshEvent | DshEventBatch) -> None:
         host = self._host
-        if host is None:
+        if host is None or self._lara_model is None:
             return
         input_id = f"dsh-event-{uuid.uuid4().hex[:12]}"
         # The runtime adds the speak reply-instruction only to <user-context>
@@ -482,7 +441,7 @@ class PetSession:
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         async with LaraExecutionHost(
-            credential_environ=self._credential_environ(),
+            credential_environ=build_credential_environment(self.config.user_pygent_root),
             run_config_loader=self._config_loader,
             speak_channels=[PetSpeakChannel()],
         ) as host:
@@ -534,16 +493,7 @@ class PetSession:
         """Why the pet cannot answer right now, as one actionable line."""
         if self._lara_model is not None:
             return None
-        if self.config.model_configuration_status == "configured":
-            return None
-        hint = (
-            "我这边没有可用的模型：dsh 里还没有登录，Lara 也没有自己的 config.yaml。"
-            "在 dsh 里登录后重试，或者运行 `lara dsh credentials DEEPSEEK_API_KEY --set`。"
-            if self._dsh is None
-            else "我这边没有可用的模型：dsh 没有返回可用的 provider/key。"
-            "请在 dsh 里登录，或运行 `lara dsh credentials DEEPSEEK_API_KEY --set`。"
-        )
-        return hint
+        return "桌宠需要运行中的 dsh。请在 dsh 登录官方账号、选择账号模型，再重启桌宠。"
 
     async def _deliver(self, host: LaraExecutionHost, text: str) -> None:
         input_id = f"turn-{uuid.uuid4().hex}"

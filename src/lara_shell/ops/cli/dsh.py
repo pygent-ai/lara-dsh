@@ -2,11 +2,9 @@
 
 常驻的 dsh 运行时由 DshDaemon 持有（pet sidecar 内嵌，或 ``lara dsh daemon``
 单独运行），端口发布在 ``<dsh home>/lara/dsh-daemon.json``。``send/wait`` 只在
-daemon 存在时可用；``run/resume/sessions/status`` 优先连 daemon，没有时自起一个
-临时运行时（命令结束即退出）。
+daemon 存在时可用；``run/resume/sessions/status`` 优先连 daemon，没有时连接运行中的 dsh 插件。
 
-路由来自 ``<dsh home>/lara/dsh.yaml``（见 lara_shell.dsh_settings），凭据在 dsh
-自己的凭据库；``DSH_HOME / DSH_MODEL / DEEPSEEK_BASE_URL`` 环境变量可覆盖。
+模型和凭据由 dsh 自己管理。
 """
 
 from __future__ import annotations
@@ -27,14 +25,7 @@ from lara_shell import dsh_home, user_lara_root
 from lara_shell.config.loader import resolve_workspace
 from lara_shell.dsh_daemon import DaemonUnavailable, DshDaemon, DshDaemonClient, DshEvent, DshEventBatch, SessionView
 from lara_shell.dsh_gateway import DshGatewayConfig, DshSessionEntry, open_gateway
-from lara_shell.dsh_settings import (
-    DEEPSEEK_API_KEY_REF,
-    DSH_SETTINGS_FILENAME,
-    SETTABLE_KEYS,
-    load_dsh_settings,
-    read_dsh_settings_file,
-    write_dsh_settings_file,
-)
+from lara_shell.dsh_settings import DEEPSEEK_API_KEY_REF, dsh_target
 
 
 def register_dsh_parser(subparsers: Any) -> None:
@@ -59,7 +50,7 @@ def register_dsh_parser(subparsers: Any) -> None:
     wait.set_defaults(handler=_dsh_wait)
 
     run = commands.add_parser(
-        "run", help="Run one prompt and wait for the reply (daemon if running, else the user's dsh or a temporary runtime)"
+        "run", help="Run one prompt and wait for the reply (daemon if running, else the user's dsh)"
     )
     run.add_argument("prompt", help="Prompt for the dsh agent")
     run.add_argument(
@@ -138,19 +129,6 @@ def register_dsh_parser(subparsers: Any) -> None:
     decline.add_argument("request_id", help="Request id from the question event")
     decline.set_defaults(handler=_dsh_decline)
 
-    config = commands.add_parser(
-        "config", help=f"Show or change dsh routing ({DSH_SETTINGS_FILENAME}: {', '.join(SETTABLE_KEYS)})"
-    )
-    config.add_argument(
-        "assignments",
-        nargs="*",
-        metavar="KEY=VALUE",
-        help="Settings to change, e.g. model=deepseek-v4-flash base_url=https://host/v1; "
-        f"an empty value unsets the key. Keys: {', '.join(SETTABLE_KEYS)}. "
-        "The running daemon keeps its current settings until restarted.",
-    )
-    config.set_defaults(handler=_dsh_config_cmd)
-
     models = commands.add_parser(
         "models", help="List the providers and models dsh can use (from its own configuration)"
     )
@@ -217,7 +195,7 @@ def _cwd_arg(args: argparse.Namespace) -> Path | None:
 
 
 def _dsh_config(args: argparse.Namespace) -> DshGatewayConfig:
-    return load_dsh_settings(args.home).gateway_config(_cwd_arg(args))
+    return dsh_target(args.home, _cwd_arg(args))
 
 
 def _daemon_client(home: str | Path | None) -> DshDaemonClient | None:
@@ -420,23 +398,18 @@ def _dsh_artifact(args: argparse.Namespace) -> dict[str, str]:
 
 
 def _with_runtime(home, call_daemon, call_gateway):
-    """Run against the daemon when one is up, else attach to the user's dsh or spawn a temporary runtime."""
+    """Run against the daemon or attach directly to the user's dsh."""
     client = _daemon_client(home)
     if client is not None:
         with client:
             return call_daemon(client)
-    with open_gateway(load_dsh_settings(home).gateway_config()) as gateway:
+    with open_gateway(dsh_target(home)) as gateway:
         return call_gateway(gateway)
 
 
 def _dsh_models(args: argparse.Namespace) -> dict[str, Any]:
     providers = _with_runtime(args.home, lambda c: c.models(), lambda g: g.list_models())
-    settings = load_dsh_settings(args.home)
-    return {
-        "selected": {"provider": settings.provider, "model": settings.model, "lara_model": settings.lara_model},
-        "providers": providers,
-        "note": "`lara dsh config provider=<id> model=<id>` selects; a provider with no models usually lacks its credential",
-    }
+    return {"providers": providers}
 
 
 def _dsh_credentials(args: argparse.Namespace) -> dict[str, Any]:
@@ -472,7 +445,7 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
 
     from deepseek_harness_runtime import resolve_bundled_launch_args
 
-    settings = load_dsh_settings(args.home)
+    settings = dsh_target(args.home)
     state_path = user_lara_root(settings.dsh_home) / WEB_STATE_FILENAME
     url: str | None = None
     try:
@@ -486,17 +459,14 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
         url = None
     started = False
     if url is None:
-        workspace = settings.gateway_config().prepare_workspace()
+        workspace = settings.prepare_workspace()
         # The web UI is token-gated: only the URL dsh prints opens it, so run
         # it detached with --no-open, read that line, and remember it. The
         # web profile carries the Lara plugin once `lara dsh plugin install`
         # ran, so this runtime is also what the daemon attaches to. It gets
-        # the endpoint Lara's dsh.yaml names and dsh's own credential store,
-        # never a DEEPSEEK_API_KEY Lara's shell happens to export.
+        # dsh's own login and credential store.
         env = {k: v for k, v in os.environ.items() if k not in ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL")}
         env["DSH_HOME"] = str(settings.dsh_home)
-        if settings.base_url:
-            env["DEEPSEEK_BASE_URL"] = settings.base_url
         process = subprocess.Popen(
             [*resolve_bundled_launch_args(), "--profile", "web", "--no-open", "--port", "0"],
             env=env,
@@ -535,37 +505,6 @@ def _dsh_open(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _dsh_config_cmd(args: argparse.Namespace) -> dict[str, Any]:
-    root = user_lara_root(args.home)
-    changed: dict[str, str | None] = {}
-    for item in args.assignments:
-        key, sep, value = item.partition("=")
-        if not sep or not key.strip():
-            raise ValueError(f"expected KEY=VALUE, got {item!r}")
-        changed[key.strip()] = value.strip() or None
-    if changed:
-        write_dsh_settings_file(root, changed)
-    settings = load_dsh_settings(args.home)
-    daemon_running = _daemon_client(args.home)
-    if daemon_running is not None:
-        daemon_running.close()
-    return {
-        "file": str(root / DSH_SETTINGS_FILENAME),
-        "settings": read_dsh_settings_file(root),
-        "effective": {
-            "home": str(settings.dsh_home),
-            "provider": settings.provider,
-            "model": settings.model,
-            "base_url": settings.base_url,
-            "workspace": str(settings.workspace),
-            "lara_model": settings.lara_model,
-        },
-        "changed": sorted(changed),
-        "daemon_running": daemon_running is not None,
-        "note": "restart the pet or `lara dsh daemon` for a running daemon to pick up changes" if changed and daemon_running else None,
-    }
-
-
 def _dsh_daemon(args: argparse.Namespace) -> None:
     config = _dsh_config(args)
     stop = threading.Event()
@@ -595,7 +534,7 @@ def _dsh_plugin(args: argparse.Namespace) -> dict[str, Any]:
 
     from lara_shell.dsh_gateway import SESSION_CONTROL_PLUGIN_DIR, probe_plugin_endpoint
 
-    settings = load_dsh_settings(args.home)
+    settings = dsh_target(args.home)
     # Prefer the assembled npm package (plugin + bundled pet/sidecar/CLI under
     # `bin/`); the bare source plugin dir is the fallback for a checkout that
     # has not run scripts/build_npm_package.py yet.

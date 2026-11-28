@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from lara_shell.dsh_gateway import DEFAULT_DSH_MODEL, DshGatewayConfig, DshSessionEntry
+from lara_shell.dsh_gateway import DshGatewayConfig, DshSessionEntry
 from lara_shell.ops.cli import dsh as dsh_cli
 from lara_shell.ops.cli.main import build_parser, main
 
@@ -60,7 +60,7 @@ def _reset_fake_instances() -> None:
 
 
 def _use_fake_gateway(monkeypatch: pytest.MonkeyPatch, user_root: Path) -> None:
-    """Fake gateway, an empty user root (so no dsh.yaml and no daemon), no DEEPSEEK env."""
+    """Fake gateway, an empty dsh home (so no daemon), no DEEPSEEK env."""
     monkeypatch.setattr(dsh_cli, "open_gateway", FakeGateway)
     for name in ("DSH_MODEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
@@ -191,7 +191,7 @@ def test_resume_requires_session_and_prompt() -> None:
         _parse(["dsh", "resume", "s1"])
 
 
-def test_run_forwards_prompt_and_env_config_to_gateway(
+def test_run_forwards_prompt_and_target_to_gateway(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _use_fake_gateway(monkeypatch, tmp_path / "root")
@@ -216,10 +216,9 @@ def test_run_forwards_prompt_and_env_config_to_gateway(
     config = gateway.config
     assert str(config.dsh_home) == str(tmp_path / "home")
     assert str(config.cwd) == str(tmp_path / "work")
-    assert config.model == "test-model"
     # dsh resolves its own key from its credential store; the CLI never injects one.
     assert config.api_key is None
-    assert config.base_url == "http://test-endpoint/v1"
+    assert config.base_url is None
     assert gateway.run_calls == [("你好", None)]
     payload = json.loads(capsys.readouterr().out)
     assert payload["session_id"] == "generated-session"
@@ -260,10 +259,12 @@ def test_explicit_home_selects_its_daemon_settings_and_workspace(
     _use_fake_gateway(monkeypatch, tmp_path / "ambient" / "lara")
     monkeypatch.chdir(tmp_path)
     selected = tmp_path / "selected"
-    (selected / "lara").mkdir(parents=True)
-    (selected / "lara" / "dsh.yaml").write_text(
-        "model: selected-model\nworkspace: ../project\n", encoding="utf-8"
-    )
+    workspace_store = selected / "storages" / "workspace.json"
+    workspace_store.parent.mkdir(parents=True)
+    workspace_store.write_text(json.dumps({
+        "global": {"defaultWorkspaceId": "project"},
+        "tables": {"workspaces": {"project": {"path": "project"}}},
+    }), encoding="utf-8")
     probed = []
 
     def offline(state_dir, *, home):
@@ -274,7 +275,6 @@ def test_explicit_home_selects_its_daemon_settings_and_workspace(
     assert main(["dsh", "run", "hi", "--home", "selected"]) == 0
     assert probed == [(selected / "lara", selected)]
     (gateway,) = FakeGateway.instances
-    assert gateway.config.model == "selected-model"
     assert gateway.config.cwd == selected / "project"
 
 
@@ -319,31 +319,8 @@ def test_resume_forwards_session_and_prompt(
     payload = json.loads(capsys.readouterr().out)
     assert payload["session_id"] == "s1"
     assert payload["response"] == "resumed:继续"
-    # from_env falls back to the gateway defaults when the env is absent.
-    assert gateway.config.model == DEFAULT_DSH_MODEL
 
 
-def test_config_shows_and_changes_settings(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    _use_fake_gateway(monkeypatch, tmp_path / "root")
-
-    assert main(["dsh", "config"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["settings"] == {}
-    assert payload["effective"]["model"] == DEFAULT_DSH_MODEL
-    assert payload["effective"]["provider"] == "deepseek-official"
-    assert Path(payload["effective"]["home"]) == tmp_path.resolve()
-    assert payload["daemon_running"] is False
-
-    assert main(["dsh", "config", "model=deepseek-v4-pro", "workspace=E:/work"]) == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["changed"] == ["model", "workspace"]
-    assert payload["settings"] == {"model": "deepseek-v4-pro", "workspace": "E:/work"}
-    assert payload["effective"]["model"] == "deepseek-v4-pro"
-    assert (tmp_path / "lara" / "dsh.yaml").is_file()
-
-    assert main(["dsh", "config", "model="]) == 0
-    assert json.loads(capsys.readouterr().out)["settings"] == {"workspace": "E:/work"}
-    assert main(["dsh", "config", "bogus"]) == 2  # KEY=VALUE required
-    assert main(["dsh", "config", "connection=az"]) == 2  # retired key is refused
+def test_lara_model_configuration_command_has_been_removed() -> None:
+    with pytest.raises(SystemExit):
+        _parse(["dsh", "config"])

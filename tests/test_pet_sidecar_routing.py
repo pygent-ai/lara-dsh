@@ -23,6 +23,46 @@ from pygent.agent.react_projection_operations import (
 )
 
 
+def test_sealing_interrupted_batch_preserves_completed_tool_results() -> None:
+    first_call = {
+        "role": "assistant",
+        "tool_calls": [{"call_id": "completed", "name": "speak"}],
+    }
+    completed_result = {
+        "role": "tool",
+        "results": [{"call_id": "completed", "name": "speak", "output": "delivered"}],
+    }
+    interrupted_call = {
+        "role": "assistant",
+        "tool_calls": [{"call_id": "interrupted", "name": "speak"}],
+    }
+    session = SimpleNamespace(history=[first_call, completed_result, interrupted_call])
+    saved = []
+    manager: Any = SimpleNamespace(load=lambda _: session, save=saved.append)
+
+    assert sidecar.seal_interrupted_tool_calls(manager, "pet") == 1
+    assert session.history[:3] == [first_call, completed_result, interrupted_call]
+    (result,) = session.history[3]["results"]
+    assert result["call_id"] == "interrupted"
+    assert result["status"] == "cancelled"
+    assert sidecar.seal_interrupted_tool_calls(manager, "pet") == 0
+    assert saved == [session]
+
+
+def test_existing_pet_session_adopts_dsh_account_model_without_clearing_history() -> None:
+    history = [{"role": "user", "content": "previous conversation"}]
+    session = SimpleNamespace(
+        selected_model_key="deepseek-v4-flash", model_group_name="dsh", history=history,
+    )
+    saved = []
+    manager: Any = SimpleNamespace(load=lambda _: session, save=saved.append)
+
+    assert sidecar.resolve_session(manager, "deepseek-flash") == sidecar.PYGENT_SAYS_SESSION_MODE
+    assert session.selected_model_key == "deepseek-flash"
+    assert session.history is history
+    assert saved == [session]
+
+
 class _Handle:
     def __init__(self, status: str = "accepted") -> None:
         self.status = status
@@ -183,24 +223,23 @@ def test_fork_reply_is_rendered_once_via_the_speak_channel(capsys) -> None:
     ]
 
 
-def _model_session(tmp: Any, route: dict[str, Any] | None, lara_model: str = ""):
+def _model_session(tmp: Any, route: dict[str, Any] | None):
     """A PetSession shell wired for the model-route path (no dsh boot)."""
     session = sidecar.PetSession.__new__(sidecar.PetSession)
     session._lara_model = None
     setattr(session, "config", SimpleNamespace(user_pygent_root=tmp))
     gateway = SimpleNamespace(model_route=lambda: (_ for _ in ()).throw(route) if isinstance(route, Exception) else route)
     setattr(session, "_dsh", SimpleNamespace(gateway=gateway) if route is not None else None)
-    setattr(session, "_dsh_settings", SimpleNamespace(lara_model=lara_model))
     return session
 
 
 def _model_route(
     *,
-    provider: str = "deepseek-official",
+    provider: str = "deepseek-account",
     model: str = "deepseek-flash",
     key: str | None = "sk-dsh",
-    account_signed_in: bool = False,
-    account_token: str | None = None,
+    account_signed_in: bool = True,
+    account_token: str | None = "grant-token-1",
 ) -> dict[str, Any]:
     """A `lara/model/route` reply; built with variables so the tool layer's
     credential redactor never mangles the fixture source."""
@@ -219,22 +258,9 @@ def _model_route(
     }
 
 
-def test_pet_rides_dsh_official_api_key_route(tmp_path: Any) -> None:
-    session = _model_session(tmp_path, _model_route())
-    config = SimpleNamespace(
-        model_config_mapping=None, model_config=None, model_configuration_status=None,
-        model_configuration_error="unset", resolved_agent=None, context_window=None,
-    )
-    session._lara_model = session._borrow_dsh_model()
-    session._apply_lara_model(config)
-    assert config.model_configuration_status == "configured"
-    assert config.model_config_mapping["models"]["deepseek-flash"]["model_id"] == "deepseek-flash"
-    assert config.model_config_mapping["models"]["deepseek-flash"]["protocol"] == "openai_chat_completions"
-    assert config.model_config_mapping["connections"]["dsh"]["protocols"]["openai_chat_completions"]["base_url"] == "https://api.deepseek.com/v1"
-    assert "headers" not in config.model_config_mapping["connections"]["dsh"]
-    assert config.resolved_agent.default_model_group == "dsh"
-    environ = session._credential_environ()
-    assert environ.transient["LARA_DSH_DEEPSEEK_API_KEY"] == "sk-dsh"
+def test_pet_rejects_api_key_route(tmp_path: Any) -> None:
+    session = _model_session(tmp_path, _model_route(provider="deepseek-official"))
+    assert session._borrow_dsh_model() is None
 
 
 def test_pet_rides_dsh_account_route_with_grant_token(tmp_path: Any) -> None:
@@ -256,8 +282,7 @@ def test_pet_rides_dsh_account_route_with_grant_token(tmp_path: Any) -> None:
         "context_tokens": 128_000, "max_output_tokens": 32_000,
     }
     # the account route carries no API key: the credential resolves to nothing
-    environ = session._credential_environ()
-    assert not environ.transient
+    assert conn["credential"] == {"none": True}
 
 
 def test_pet_clamps_context_budget_to_borrowed_model_window(tmp_path: Any) -> None:
@@ -266,7 +291,7 @@ def test_pet_clamps_context_budget_to_borrowed_model_window(tmp_path: Any) -> No
     window must bound it (deepseek-flash declares 1M), and the mapping must
     carry the catalog's declaration verbatim."""
     entry = ModelCapabilityCatalog.builtin().models[
-        ("deepseek", "deepseek-flash", "openai_chat_completions")
+        ("deepseek", "deepseek-flash", "anthropic_messages")
     ]
     assert entry.limits.context_tokens == 1_000_000
     for inherited, expected in ((None, 1_000_000), (1_000_000, 1_000_000), (64_000, 64_000)):
@@ -284,8 +309,8 @@ def test_pet_clamps_context_budget_to_borrowed_model_window(tmp_path: Any) -> No
         assert mapping_caps == expected_caps
 
 
-def test_pet_falls_back_when_account_route_has_no_grant(tmp_path: Any, capsys: Any) -> None:
-    session = _model_session(tmp_path, _model_route(provider="deepseek-account", model="deepseek-chat", key=None))
+def test_pet_does_not_fall_back_when_account_route_has_no_grant(tmp_path: Any, capsys: Any) -> None:
+    session = _model_session(tmp_path, _model_route(provider="deepseek-account", model="deepseek-chat", key=None, account_token=None))
     config = SimpleNamespace(
         model_config_mapping=None, model_config="native", model_configuration_status=None,
         model_configuration_error=None, resolved_agent=None,
@@ -293,8 +318,9 @@ def test_pet_falls_back_when_account_route_has_no_grant(tmp_path: Any, capsys: A
     session._lara_model = session._borrow_dsh_model()
     session._apply_lara_model(config)
     assert session._lara_model is None
-    assert config.model_config == "native"  # config.yaml model untouched
-    assert "no signed-in grant" in capsys.readouterr().err
+    assert config.model_config is None
+    assert config.model_configuration_status == "unconfigured"
+    assert "no selected model on a signed-in DeepSeek account" in capsys.readouterr().err
 
 
 def _messages_fork_config(*, disable_supported: bool) -> Any:

@@ -19,7 +19,7 @@
  *                                                -> { sessionId, messageId, created }   (attach only)
  *   lara/session/resume   { sessionId }          -> { sessionId, status }               (attach only)
  *   lara/session/select-model { sessionId, provider, model } -> { sessionId, provider, model }  (attach only)
- *   lara/model/route                             -> { default?, providers, apiKey, account, baseURL }
+ *   lara/model/route                             -> { default?, account }
  *                                                   (the official model-config view: agentDefaultModel plus
  *                                                    the credential material dsh itself would use)
  *   lara/session/cancel   { sessionId }          -> { cancelled: boolean }
@@ -550,40 +550,11 @@ async function resolveAgent(ctx, sessionId) {
 }
 
 /** The official inference origin for the DeepSeek API-key route. */
-const OFFICIAL_BASE_URL = 'https://api.deepseek.com/v1'
-/** The official Messages origin the account route authenticates against. */
 const OFFICIAL_MESSAGES_BASE_URL = 'https://api.deepseek.com/anthropic'
 
-/**
- * The official model-config view in one call: the saved default selection,
- * the provider catalogs, and the credential material dsh itself would use.
- *
- * `default` is agentDefaultModel (what the web/desktop model picker saves);
- * new sessions ride it unless a caller selects per session. `apiKey` is the
- * deepseek-official credential (credential store first, then the trusted
- * launch environment). `account` carries the signed-in grant token, which
- * authenticates the official Messages protocol via `x-dsh-auth-token` at
- * `baseURL` — consumers that speak that wire (e.g. an anthropic_messages
- * connection) ride the account route with it.
- */
 async function modelRoute(ctx) {
   const defaults = ctx.get('agentDefaultModel')
   const selection = defaults !== undefined ? defaults.currentSelection() : null
-  const baseURL = (process.env.DEEPSEEK_BASE_URL || '').trim() || OFFICIAL_BASE_URL
-  let apiKey = { configured: false, value: null }
-  try {
-    const credentials = requireService(ctx, 'credentials')
-    const described = await credentials.describe('DEEPSEEK_API_KEY')
-    apiKey = { configured: Boolean(described.configured), value: null }
-    if (apiKey.configured) {
-      const resolved = await credentials.resolve('DEEPSEEK_API_KEY')
-      apiKey.value = resolved === undefined ? null : resolved.value
-    }
-  } catch {
-    // no credentials service: the launch environment is the only source
-    const ambient = (process.env.DEEPSEEK_API_KEY || '').trim()
-    apiKey = { configured: ambient.length > 0, value: ambient.length > 0 ? ambient : null }
-  }
   let account = { signedIn: false, token: null, baseURL: OFFICIAL_MESSAGES_BASE_URL }
   try {
     const deepseekAccount = ctx.get('deepseekAccount')
@@ -601,10 +572,7 @@ async function modelRoute(ctx) {
   }
   return {
     default: selection === null ? null : { ...selection },
-    providers: await listModels(ctx),
-    apiKey,
     account,
-    baseURL,
   }
 }
 

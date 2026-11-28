@@ -46,6 +46,7 @@ def load_run_config(
     max_steps: int | None = None,
     context_window: int | None = None,
     dsh_home: str | Path | None = None,
+    load_local_model: bool = True,
 ) -> RunConfig:
     root = resolve_workspace(workspace_root)
     user_root = user_lara_root(dsh_home)
@@ -67,8 +68,8 @@ def load_run_config(
         config_data=config_data,
         cli_agent_alias=agent_alias,
     )
-    model_mapping, model_config, model_status, model_error = _parse_model_config(
-        config_data
+    model_mapping, model_config, model_status, model_error = (
+        _parse_model_config(config_data) if load_local_model else ({}, None, "unconfigured", None)
     )
     resolved_agent = (
         _resolve_agent_config(
